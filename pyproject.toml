@@ -11,10 +11,12 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "accelerate>=1.7.0",
     "backoff>=2.2.1",
-    # torch/unsloth/vllm/bitsandbytes are pinned exactly: vllm ships CUDA
-    # kernels built against one specific torch release, so letting the
-    # resolver pick each of these independently produces incompatible
-    # combinations. These versions are the vendored, known-working set from
+    # torch/transformers/unsloth/vllm/bitsandbytes are pinned exactly: vllm
+    # ships CUDA kernels built against one specific torch release, and vllm's
+    # tokenizer caching relies on transformers internals that shift between
+    # major versions, so letting the resolver pick each of these
+    # independently produces incompatible combinations. These versions are
+    # the vendored, known-working set from
     # method/persona_vectors/requirements.txt.
     "bitsandbytes==0.45.5",
     "datasets>=3.6.0",
@@ -29,7 +31,7 @@ dependencies = [
     "setuptools>=80.9.0",
     "torch==2.6.0",
     "tqdm>=4.67.1",
-    "transformers>=4.52.3",
+    "transformers==4.52.3",
     "trl>=0.15.2",
     "unsloth==2025.5.9",
     "vllm==0.8.5.post1",
