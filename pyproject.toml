@@ -1,0 +1,42 @@
+[project]
+name = "method"
+version = "0.1.0"
+description = ""
+authors = [
+    {name = "Your Name",email = "you@example.com"}
+]
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "accelerate>=1.7.0",
+    "backoff>=2.2.1",
+    # torch/unsloth/vllm/bitsandbytes are pinned exactly: vllm ships CUDA
+    # kernels built against one specific torch release, so letting the
+    # resolver pick each of these independently produces incompatible
+    # combinations. These versions are the vendored, known-working set from
+    # method/persona_vectors/requirements.txt.
+    "bitsandbytes==0.45.5",
+    "datasets>=3.6.0",
+    "fire>=0.7.0",
+    "matplotlib>=3.9.0",
+    "openai>=1.70.0",
+    "packaging>=25.0",
+    "pandas>=2.3.1",
+    "peft>=0.15.1",
+    "pydantic>=2.11.7",
+    "PyYAML>=6.0.2",
+    "setuptools>=80.9.0",
+    "torch==2.6.0",
+    "tqdm>=4.67.1",
+    "transformers>=4.52.3",
+    "trl>=0.15.2",
+    "unsloth==2025.5.9",
+    "vllm==0.8.5.post1",
+    "pandas-stubs (>=3.0.3.260530,<4.0.0.0)",
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"

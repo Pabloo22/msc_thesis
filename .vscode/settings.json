@@ -1,0 +1,124 @@
+{
+    "python-envs.defaultEnvManager": "ms-python.python:poetry",
+    "python-envs.defaultPackageManager": "ms-python.python:poetry",
+    "[python]": {
+        "editor.formatOnType": true,
+        "editor.defaultFormatter": "ms-python.black-formatter",
+        "editor.rulers": [
+            88
+        ],
+    },
+    "[git-commit]": {
+        "editor.rulers": [
+            50
+        ]
+    },
+    "editor.inlineSuggest.enabled": true,
+    "github.copilot.enable": {
+        "*": true,
+        "plaintext": false,
+        "markdown": true,
+        "scminput": false,
+        "yaml": true,
+        "python": true
+    },
+    "jupyter.askForKernelRestart": false,
+    "git.autofetch": true,
+    "notebook.lineNumbers": "on",
+    "git.confirmSync": false,
+    "files.autoSave": "afterDelay",
+    "editor.codeActionsOnSave": {},
+    "editor.minimap.enabled": false,
+    "editor.defaultFormatter": "ms-python.black-formatter",
+    "editor.detectIndentation": false,
+    "editor.tabSize": 4,
+    "editor.insertSpaces": true,
+    "workbench.tree.indent": 20,
+    "workbench.tree.renderIndentGuides": "always",
+    "remote.autoForwardPortsSource": "hybrid",
+    "editor.formatOnSave": true,
+    "editor.formatOnPaste": true,
+    "notebook.formatOnSave.enabled": true,
+    "json.schemas": [
+
+
+    ],
+    "grammarly.selectors": [
+        {
+        "language": "markdown",
+        "pattern": "**/*.md"
+        }
+    ],
+    "cSpell.userWords": [
+        "argmax",
+        "Bakhtiyar",
+        "cmap",
+        "dotenv",
+        "dtype",
+        "efficientnet",
+        "figsize",
+        "gantt",
+        "Hyperparameters",
+        "imageio",
+        "imread",
+        "imshow",
+        "Jinkyoo",
+        "JSSP",
+        "Junyoung",
+        "makespan",
+        "ndarray",
+        "networkx",
+        "numel",
+        "preds",
+        "randn",
+        "relu",
+        "resnettransformer",
+        "Sanjar",
+        "Schedulenet",
+        "softmax",
+        "taillard",
+        "Taillard's",
+        "torchsummary",
+        "wandb"
+    ],
+    "CodeGPT.apiKey": "CodeGPT Plus Beta",
+    "editor.unicodeHighlight.ambiguousCharacters": false,
+    "terminal.integrated.enableMultiLinePasteWarning": false,
+    "sqltools.connections": [
+        
+    ],
+    "gitlens.ai.experimental.provider": "openai",
+    "gitlens.ai.experimental.openai.model": "gpt-4-turbo-preview",
+    "github.copilot.editor.enableAutoCompletions": true,
+    "git.ignoreRebaseWarning": true,
+    "scm.experimental.showHistoryGraph": true,
+    "inlineChat.experimental.textButtons": true,
+    "githubPullRequests.pullBranch": "never",
+    "editor.formatOnSaveMode": "modificationsIfAvailable",
+    "notebook.experimental.generate": true,
+    "outline.collapseItems": "alwaysCollapse",
+    "github.copilot.advanced": {
+
+
+        "authProvider": "github"
+    },
+    "github.copilot.chat.startDebugging.enabled": false,
+    "github.copilot.chat.setupTests.enabled": false,
+    "editor.inlineSuggest.edits.renderSideBySide": "never",
+    "github.copilot.nextEditSuggestions.enabled": true,
+    "github.copilot.chat.edits.temporalContext.enabled": true,
+    "github.copilot.chat.editor.temporalContext.enabled": true,
+    "python.analysis.typeCheckingMode": "off",
+    "python.defaultInterpreterPath": "/bin/python",
+    "security.workspace.trust.untrustedFiles": "open",
+    "chat.tools.terminal.autoApprove": {
+        "poetry": true,
+        "pdftocairo": true,
+        "EOF": true,
+        "awk": true
+    },
+    "workbench.colorTheme": "Dark+",
+    "claudeCode.preferredLocation": "panel",
+    "editor.wordWrap": "on",
+    "python.terminal.useEnvFile": true,
+}
