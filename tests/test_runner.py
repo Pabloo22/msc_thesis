@@ -18,11 +18,11 @@ import shutil
 
 import pytest
 
-from method import experiments as E, steps
+from method import experiments as E, run_trajectory, steps
 from method.backends import get_backend
 from method.config import Backend, HNeutralSource
-from method.run_trajectory import _install_adapter
-from method.store import Store
+from method.run_trajectory import _install_adapter, _verify_cached_adapter
+from method.store import Store, file_sha256, get_weights_id
 
 
 class TestInstallAdapterIsAtomic:
@@ -72,6 +72,78 @@ class TestInstallAdapterIsAtomic:
             _install_adapter(produced, target)
 
         assert not target.exists()
+
+
+class TestTrainingDataProvenance:
+    """The ids hash dataset *names*; the recipe's provenance block records the
+    *bytes*, so a machine with a divergent dataset copy fails loudly instead
+    of silently reusing an adapter trained on different data."""
+
+    WID = "t01-feedfeedfeedfeed"
+
+    def _store_with_recipe(self, tmp_path, train_file) -> Store:
+        store = Store(tmp_path / "store")
+        store.adapter_dir(self.WID).mkdir(parents=True)
+        store.write_recipe(
+            self.WID,
+            {"steps": ["irrelevant"]},
+            provenance={"training_sample_sha256": file_sha256(train_file)},
+        )
+        return store
+
+    def test_matching_bytes_pass(self, tmp_path):
+        train_file = tmp_path / "train.jsonl"
+        train_file.write_text('{"messages": []}\n', encoding="utf-8")
+        store = self._store_with_recipe(tmp_path, train_file)
+
+        _verify_cached_adapter(store, self.WID, train_file, step_number=1)
+
+    def test_divergent_bytes_raise(self, tmp_path):
+        train_file = tmp_path / "train.jsonl"
+        train_file.write_text('{"messages": []}\n', encoding="utf-8")
+        store = self._store_with_recipe(tmp_path, train_file)
+
+        train_file.write_text('{"messages": ["other"]}\n', encoding="utf-8")
+        with pytest.raises(RuntimeError, match="training data mismatch"):
+            _verify_cached_adapter(store, self.WID, train_file, step_number=1)
+
+    def test_adapters_without_provenance_are_trusted(self, tmp_path):
+        """Pre-provenance adapters (or a crash between install and recipe
+        write) have no digest; the check must not retroactively reject them."""
+        train_file = tmp_path / "train.jsonl"
+        train_file.write_text("x\n", encoding="utf-8")
+        store = Store(tmp_path / "store")
+        store.adapter_dir(self.WID).mkdir(parents=True)
+
+        _verify_cached_adapter(store, self.WID, train_file, step_number=1)
+
+        store.write_recipe(self.WID, {"steps": []})  # recipe, no provenance
+        _verify_cached_adapter(store, self.WID, train_file, step_number=1)
+
+    def test_end_to_end_mock_run_records_and_enforces_the_digest(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("method.utils.TRAJECTORIES_DIR", tmp_path / "trajectories")
+        store = Store(tmp_path / "store")
+        monkeypatch.setattr(
+            Store, "for_backend", classmethod(lambda cls, backend: store)
+        )
+        cfg = E.SMOKE_MOCK
+
+        run_trajectory.run(cfg, Backend.MOCK, "float16")
+
+        first_step = cfg.steps[0]
+        sample = store.training_sample_path(
+            steps.training_sample_id(first_step, cfg.seed)
+        )
+        recorded = store.recorded_training_sample_sha256(get_weights_id(cfg, 1))
+        assert recorded == file_sha256(sample)
+
+        # Simulate a machine whose dataset file differs: the regenerated
+        # sample keeps its name-based id but carries different bytes.
+        sample.write_text('{"messages": ["divergent"]}\n', encoding="utf-8")
+        with pytest.raises(RuntimeError, match="training data mismatch"):
+            run_trajectory.run(cfg, Backend.MOCK, "float16")
 
 
 class TestLatentSourcesFollowTheConfig:

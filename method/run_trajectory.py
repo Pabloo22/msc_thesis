@@ -25,7 +25,13 @@ from pathlib import Path
 from method import experiments, steps
 from method.backends import ExecutionBackend, get_backend, materialize
 from method.config import Backend, JudgeBackend, TrajectoryConfig, to_json
-from method.store import Store, atomic_dir, atomic_file, get_weights_id
+from method.store import (
+    Store,
+    atomic_dir,
+    atomic_file,
+    file_sha256,
+    get_weights_id,
+)
 from method.utils import (
     DOTENV_PATH,
     check_env_vars,
@@ -99,6 +105,7 @@ def run(cfg: TrajectoryConfig, backend_kind: Backend, dtype: str) -> Path:
 
         target = get_weights_id(cfg, t + 1)
         if store.has_adapter(target):
+            _verify_cached_adapter(store, target, train_file, step_number=t + 1)
             logger.info(
                 "[skip] adapter for step %d already trained (%s)", t + 1, target
             )
@@ -109,7 +116,11 @@ def run(cfg: TrajectoryConfig, backend_kind: Backend, dtype: str) -> Path:
                 model_path, train_file, step, cfg, run_dir / f"train_out_{t + 1}"
             )
             _install_adapter(adapter, store.adapter_dir(target))
-            store.write_recipe(target, cfg.weights_key(t + 1))
+            store.write_recipe(
+                target,
+                cfg.weights_key(t + 1),
+                provenance={"training_sample_sha256": file_sha256(train_file)},
+            )
 
     # The final checkpoint has no successor, so it is measured but never used
     # to compute action features.
@@ -125,6 +136,37 @@ def run(cfg: TrajectoryConfig, backend_kind: Backend, dtype: str) -> Path:
     store.evict_all_merged()
     logger.info("Trajectory complete: %s", run_dir / "trajectory.json")
     return run_dir
+
+
+def _verify_cached_adapter(
+    store: Store, wid: str, train_file: Path, *, step_number: int
+) -> None:
+    """Refuse a cache hit whose adapter was trained on different bytes.
+
+    ``weights_id`` hashes dataset *names*, and ``dataset/`` is gitignored, so
+    two machines with divergent copies of a dataset file resolve to the same
+    id. The training-time recipe records a digest of the exact sample file the
+    adapter trained on; if the sample this machine would train on hashes
+    differently, reusing the adapter would silently mix data versions --
+    better to stop and say so. Adapters with no recorded digest (trained
+    before provenance existed, or a crash between install and recipe write)
+    are trusted as before.
+    """
+    recorded = store.recorded_training_sample_sha256(wid)
+    if recorded is None:
+        return
+    actual = file_sha256(train_file)
+    if actual != recorded:
+        raise RuntimeError(
+            f"training data mismatch for step {step_number} ({wid}): the cached "
+            f"adapter was trained on a sample file with sha256 {recorded}, but "
+            f"{train_file} hashes to {actual}. The dataset files on this "
+            "machine differ from the ones the adapter was trained on. Re-sync "
+            "dataset/ (and delete the stale cached sample under "
+            f"{store.training_samples}) to keep the adapter, or delete "
+            f"{store.adapter_dir(wid)} and every later step's adapter to "
+            "retrain from this machine's data."
+        )
 
 
 #: Trainer bookkeeping inside a checkpoint that the store has no use for. The

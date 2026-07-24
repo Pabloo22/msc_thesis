@@ -53,6 +53,22 @@ def get_weights_id(cfg: TrajectoryConfig, t: int) -> str:
     return f"t{t:02d}-{digest[:_HASH_LEN]}"
 
 
+def file_sha256(path: Path) -> str:
+    """Full SHA-256 of a file's bytes, following symlinks.
+
+    The ids above hash dataset *names*, never dataset *bytes* -- ``dataset/``
+    is gitignored, so nothing else pins the content either. This digest is how
+    an adapter records which bytes it was actually trained on, so a machine
+    with a divergent copy of a dataset fails loudly instead of silently
+    reusing an adapter trained on different data.
+    """
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def get_training_sample_id(
     dataset: str, version: str, n_examples: int | None, seed: int
 ) -> str:
@@ -232,14 +248,46 @@ class Store:
 
     # --- provenance -----------------------------------------------------
 
-    def write_recipe(self, wid: str, recipe: dict[str, Any]) -> None:
-        """Record the recipe next to the adapter, so a hash can be read back."""
+    def write_recipe(
+        self,
+        wid: str,
+        recipe: dict[str, Any],
+        *,
+        provenance: dict[str, Any] | None = None,
+    ) -> None:
+        """Record the recipe next to the adapter, so a hash can be read back.
+
+        ``provenance`` is stored under a reserved ``"provenance"`` key and is
+        *annotation*, not part of what hashed to ``wid``: re-hashing the rest
+        of the file reproduces the id, the provenance block records facts the
+        id deliberately excludes (currently ``training_sample_sha256``, the
+        digest of the exact bytes the adapter's own step trained on -- earlier
+        steps are covered by their own adapters' recipes).
+        """
         path = self.adapter_dir(wid) / "recipe.json"
         if path.exists():
             return
+        payload = dict(recipe)
+        if provenance:
+            payload["provenance"] = provenance
         path.parent.mkdir(parents=True, exist_ok=True)
         with atomic_file(path) as scratch:
-            scratch.write_text(canonical_json(recipe), encoding="utf-8")
+            scratch.write_text(canonical_json(payload), encoding="utf-8")
+
+    def recorded_training_sample_sha256(self, wid: str) -> str | None:
+        """The training-data digest recorded when ``wid``'s adapter was trained.
+
+        ``None`` when unknown: the adapter predates provenance recording, or a
+        crash landed between installing the adapter and writing its recipe.
+        Unknown is treated leniently by callers -- the check exists to catch
+        *divergent* data, not to retroactively distrust old adapters.
+        """
+        path = self.adapter_dir(wid) / "recipe.json"
+        if not path.exists():
+            return None
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        value = payload.get("provenance", {}).get("training_sample_sha256")
+        return str(value) if value is not None else None
 
 
 def adapter_chain(cfg: TrajectoryConfig, t: int, store: Store) -> list[Path]:
