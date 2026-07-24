@@ -82,6 +82,77 @@ class TestProbesAreMeasurementOnly:
         assert {p.dataset_id for p in cfg.probes} <= step_ids
 
 
+class TestBuilderProbeDefaults:
+    """Every family probes the dataset whose figure it has to explain."""
+
+    def test_every_builder_gives_every_config_a_probe(self):
+        for group, build in E.GROUP_BUILDERS.items():
+            for cfg in build(seeds=(0,), measure_traits=("evil",)):
+                assert cfg.probes, f"{group}/{cfg.name} has no probes"
+
+    def test_exp3_probes_the_target_dataset_its_bar_reports(self):
+        """The bar is Delta b of the final step onto the target dataset, so the
+        probe that could explain it is the same dataset's Delta P."""
+        for cfg in E.build_hysteresis_configs(seeds=(0,), measure_traits=("evil",)):
+            assert [p.dataset_id for p in cfg.probes] == [cfg.label_map["dataset"]]
+
+    def test_exp3_arms_probe_the_same_dataset_so_bars_are_comparable(self):
+        cfgs = E.build_hysteresis_configs(
+            seeds=(0,), measure_traits=("evil",), realign_traits=("evil",)
+        )
+        by_target = {}
+        for cfg in cfgs:
+            by_target.setdefault(cfg.label_map["dataset"], set()).add(
+                tuple(p.dataset_id for p in cfg.probes)
+            )
+        for target, probe_sets in by_target.items():
+            assert len(probe_sets) == 1, f"{target} probed inconsistently: {probe_sets}"
+
+    def test_exp4_probes_its_own_realignment_dataset(self):
+        """The realign dataset differs per realign_trait, so the probe has to
+        track it rather than being a fixed module constant."""
+        for cfg in E.build_diversity_configs(seeds=(0,), measure_traits=("evil",)):
+            realign = E.TRAIT_TO_DATASET[cfg.label_map["realign_trait"]]
+            probed = [p.dataset_id for p in cfg.probes]
+            assert f"{realign}/normal" in probed
+
+    def test_probes_can_be_overridden_per_builder(self):
+        for build in E.GROUP_BUILDERS.values():
+            cfgs = build(seeds=(0,), measure_traits=("evil",), probes=())
+            assert cfgs and all(cfg.probes == () for cfg in cfgs)
+
+    def test_a_default_naming_one_dataset_twice_is_deduplicated(self):
+        """exp4's default is (realign, d0); a pool whose d0 *is* the realign
+        dataset would otherwise trip TrajectoryConfig's duplicate check."""
+        pool = (
+            StepConfig(dataset="evil", version=DatasetVersion.NORMAL),
+            StepConfig(dataset="hallucination", version=DatasetVersion.MISALIGNED_1),
+            StepConfig(dataset="mistake_gsm8k", version=DatasetVersion.MISALIGNED_2),
+        )
+        cfgs = E.build_diversity_configs(
+            seeds=(0,), measure_traits=("evil",), realign_traits=("evil",), pool=pool
+        )
+        assert cfgs
+        for cfg in cfgs:
+            assert [p.dataset_id for p in cfg.probes] == ["evil/normal"]
+
+    def test_local_probes_hash_identically_to_local_steps(self):
+        """The saving depends on a probe and the step naming the same dataset
+        resolving to one ``training_sample_id``. That hash includes
+        ``n_examples``, so localising steps but not probes would silently double
+        the measurement cost at local scale."""
+        for build in E.GROUP_BUILDERS.values():
+            for cfg in build(seeds=(0,), measure_traits=("evil",), local=True):
+                by_id = {s.dataset_id: s for s in cfg.steps}
+                shared = [p for p in cfg.probes if p.dataset_id in by_id]
+                assert shared, f"{cfg.name}: no probe overlaps its steps"
+                for probe in shared:
+                    step = by_id[probe.dataset_id]
+                    assert steps.training_sample_id(
+                        probe, cfg.seed
+                    ) == steps.training_sample_id(step, cfg.seed)
+
+
 # --- measure_probes ---------------------------------------------------------
 
 
@@ -112,8 +183,9 @@ class TestMeasureProbes:
         train_file = steps.sample_training_file(
             GSM8K, cfg.seed, tmp_path / "train.jsonl", store
         )
+        sample_id = steps.training_sample_id(GSM8K, cfg.seed)
         action = steps.compute_delta_p(
-            cfg, 0, store, backend, train_file, steps.training_sample_id(GSM8K, cfg.seed)
+            cfg, 0, store, backend, train_file, sample_id
         )
 
         assert probed[GSM8K.dataset_id] == action

@@ -139,6 +139,28 @@ def _localize_steps(steps: tuple[StepConfig, ...]) -> tuple[StepConfig, ...]:
     )
 
 
+def _probe_steps(
+    probes: Sequence[StepConfig], local: bool
+) -> tuple[StepConfig, ...]:
+    """Deduplicate a probe set by dataset and scale it exactly like ``steps``.
+
+    Scaling has to match: a probe naming a dataset the trajectory also trains on
+    only shares that step's cached DeltaP when both resolve to the same
+    ``training_sample_id``, and that hash includes ``n_examples``. Localising one
+    but not the other would silently double the measurement cost.
+
+    Duplicates are dropped rather than rejected, because a per-design default can
+    legitimately name one dataset twice -- a diversity pool whose first entry is
+    also the re-alignment dataset, say -- and ``TrajectoryConfig`` refuses
+    duplicate probes.
+    """
+    unique: dict[str, StepConfig] = {}
+    for probe in probes:
+        unique.setdefault(probe.dataset_id, probe)
+    ordered = tuple(unique.values())
+    return _localize_steps(ordered) if local else ordered
+
+
 def _scale_presets(
     local: bool,
 ) -> tuple[ModelConfig, EvalConfig, DeltaPConfig, LatentConfig]:
@@ -178,7 +200,7 @@ def build_exp2_configs(
     *,
     seeds: Sequence[int] = SEEDS,
     measure_traits: Sequence[str] = MEASURE_TRAITS,
-    probes: Sequence[StepConfig] = EXP2_PROBES,
+    probes: Sequence[StepConfig] | None = None,
     local: bool = False,
 ) -> list[TrajectoryConfig]:
     """Section 6.2: the fixed 8-step trajectory, every seed x measured trait.
@@ -187,13 +209,14 @@ def build_exp2_configs(
     fine-tuning chain per seed is shared across every trait in
     ``measure_traits``.
 
-    ``probes`` are localised alongside ``steps`` so that a probe naming the same
-    dataset as a training step resolves to the same ``training_sample_id``, and
-    the two share one cached DeltaP artifact instead of measuring twice.
+    ``probes`` defaults to :data:`EXP2_PROBES` -- the two contrasting datasets
+    whose DeltaP the drift line plot follows across all nine checkpoints.
     """
     model, eval_cfg, delta_p, latent = _scale_presets(local)
     steps = _localize_steps(_EXP2_STEPS) if local else _EXP2_STEPS
-    probe_steps = _localize_steps(tuple(probes)) if local else tuple(probes)
+    probe_steps = _probe_steps(
+        EXP2_PROBES if probes is None else probes, local
+    )
     suffix = "_local" if local else ""
     return [
         TrajectoryConfig(
@@ -228,6 +251,7 @@ def build_hysteresis_configs(
     measure_traits: Sequence[str] = MEASURE_TRAITS,
     realign_traits: Sequence[str] = ("evil", "sycophantic"),
     datasets: Sequence[StepConfig] = HYSTERESIS_DATASETS,
+    probes: Sequence[StepConfig] | None = None,
     local: bool = False,
 ) -> list[TrajectoryConfig]:
     """Section 6.3: is a realigned model easier (or harder) to re-misalign?
@@ -241,10 +265,24 @@ def build_hysteresis_configs(
         and a *different* trajectory (D_other -> realign -> D2), where
         D_other is the next dataset in ``datasets`` (cyclic pairing -- a
         default, easy to change via the ``datasets`` argument).
+
+    Every arm probes its *target* dataset D2 at each checkpoint. That is what
+    turns the bar chart from an observation into an explanation: if a re-aligned
+    model really is easier to re-misalign, DeltaP(D2) measured just before the
+    final step is where the difference should be visible, and it is measured on
+    the same checkpoint whose Delta b the bar reports. Probing D2 (rather than
+    each arm's own first dataset) keeps that quantity comparable across arms.
+
+    Cheap, because most of it is already being measured: the baseline's probe at
+    t=0 *is* its action feature, and every arm's probe of D2 at the base
+    checkpoint resolves to the one artifact all of them share.
     """
     model, eval_cfg, delta_p, latent = _scale_presets(local)
     suffix = "_local" if local else ""
     n = len(datasets)
+
+    def probes_for(target: StepConfig) -> tuple[StepConfig, ...]:
+        return tuple(probes) if probes is not None else (target,)
 
     def mk(
         name: str,
@@ -252,6 +290,7 @@ def build_hysteresis_configs(
         trait: str,
         seed: int,
         labels: tuple[tuple[str, str], ...],
+        probe_set: Sequence[StepConfig],
     ) -> TrajectoryConfig:
         return TrajectoryConfig(
             name=f"{name}{suffix}",
@@ -264,6 +303,7 @@ def build_hysteresis_configs(
             latent=latent,
             group=EXP3,
             labels=labels,
+            probes=_probe_steps(probe_set, local),
         )
 
     configs: list[TrajectoryConfig] = []
@@ -279,6 +319,7 @@ def build_hysteresis_configs(
                         # No realign_trait label: the baseline has no realign
                         # step, so one baseline run serves every realign_trait.
                         (("condition", "baseline"), ("dataset", d2.dataset_id)),
+                        probes_for(d2),
                     )
                 )
             for realign_trait in realign_traits:
@@ -297,6 +338,7 @@ def build_hysteresis_configs(
                             trait,
                             seed,
                             (("condition", "same"), *common),
+                            probes_for(d2),
                         )
                     )
                     configs.append(
@@ -310,6 +352,7 @@ def build_hysteresis_configs(
                                 *common,
                                 ("first_dataset", d_other.dataset_id),
                             ),
+                            probes_for(d2),
                         )
                     )
     return configs
@@ -324,6 +367,7 @@ def build_diversity_configs(
     measure_traits: Sequence[str] = MEASURE_TRAITS,
     realign_traits: Sequence[str] = ("evil", "sycophantic"),
     pool: Sequence[StepConfig] = HYSTERESIS_DATASETS,
+    probes: Sequence[StepConfig] | None = None,
     local: bool = False,
 ) -> list[TrajectoryConfig]:
     """Section 6.4: does training-data diversity hinder re-alignment?
@@ -333,6 +377,14 @@ def build_diversity_configs(
     realign_trait. same2/same3 and diff2/diff3 share their non-realign
     prefix, so those adapters are reused automatically by content addressing
     once written -- no special-casing needed here.
+
+    Each arm probes the *re-alignment* dataset and ``d0`` at every checkpoint.
+    The re-alignment dataset is the load-bearing one: this experiment asks
+    whether diverse prior training blunts re-alignment, so "how much pull back
+    toward normal does the re-alignment data still have, measured just before it
+    is applied" is the mechanism under test -- and it is read off the checkpoint
+    whose residual the bar reports. ``d0`` comes along because it is the dataset
+    every arm starts on, making the drift comparable across conditions.
     """
     if len(pool) < 3:
         raise ValueError("diversity pool needs at least 3 datasets")
@@ -365,6 +417,12 @@ def build_diversity_configs(
                             delta_p=delta_p,
                             latent=latent,
                             group=EXP4,
+                            probes=_probe_steps(
+                                tuple(probes)
+                                if probes is not None
+                                else (realign, d0),
+                                local,
+                            ),
                             labels=(
                                 ("condition", label),
                                 ("realign_trait", realign_trait),
