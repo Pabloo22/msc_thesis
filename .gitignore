@@ -1,5 +1,9 @@
 dataset/
 trajectories/
+trajectories-mock/
+store/
+store-mock/
+unsloth_compiled_cache/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

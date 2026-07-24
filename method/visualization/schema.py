@@ -1,0 +1,270 @@
+r"""Typed views over the ``trajectory.json`` files written by
+:mod:`method.run_trajectory`, plus tidy-data shaping for the figures.
+
+Kept separate from plotting and from fake-data generation so that real
+trajectories (once produced by actual fine-tuning runs) and
+:mod:`method.visualization.synthetic` fixtures are interchangeable: both are
+just :class:`Trajectory` objects.
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+
+
+@dataclass(frozen=True)
+class StepRecord:
+    """One entry of a trajectory's ``"steps"`` list -- everything known about
+    checkpoint ``M_t``, plus (if ``t`` is not the last step) the action
+    features for the update that follows it.
+    """
+
+    t: int
+    weights_id: str
+    behavior: dict[str, float]
+    z: dict[str, dict[str, float]]  # keyed by h_neutral source, e.g. "base"
+    delta_p: dict[str, float] | None = None  # absent on the final checkpoint
+    next_dataset: str | None = None  # "dataset/version"; absent on final checkpoint
+    #: DeltaP for datasets measured at *this* checkpoint whether or not the
+    #: trajectory trains on them next, keyed by ``"dataset/version"`` (see
+    #: ``TrajectoryConfig.probes``). Present on every checkpoint including the
+    #: last, unlike ``delta_p``. Empty for trajectories saved before probing
+    #: existed, which is why it defaults rather than being required.
+    probes: dict[str, dict[str, float]] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> StepRecord:
+        return cls(
+            t=payload["t"],
+            weights_id=payload["weights_id"],
+            behavior=dict(payload["behavior"]),
+            z={k: dict(v) for k, v in payload["z"].items()},
+            delta_p=(
+                dict(payload["delta_p"]) if payload.get("delta_p") is not None else None
+            ),
+            next_dataset=payload.get("next_dataset"),
+            probes={
+                dataset: dict(stats)
+                for dataset, stats in (payload.get("probes") or {}).items()
+            },
+        )
+
+
+@dataclass(frozen=True)
+class Trajectory:
+    """A full trajectory: identifying metadata plus its ordered checkpoints."""
+
+    name: str
+    trait: str
+    seed: int
+    steps: tuple[StepRecord, ...]
+    source: Path | None = None
+
+    @classmethod
+    def from_dict(
+        cls, payload: Mapping[str, Any], source: Path | None = None
+    ) -> Trajectory:
+        cfg = payload["config"]
+        return cls(
+            name=cfg["name"],
+            trait=cfg["trait"],
+            seed=cfg["seed"],
+            steps=tuple(StepRecord.from_dict(s) for s in payload["steps"]),
+            source=source,
+        )
+
+    def behavior_series(self, key: str | None = None) -> list[float]:
+        """``b_t`` for one behaviour key across every checkpoint (default the trait)."""
+        key = key or self.trait
+        return [s.behavior[key] for s in self.steps]
+
+    def z_series(self, component: str, source: str = "base") -> list[float]:
+        """One ``z_t`` component (``p``/``q``/``rho``/``r``) across every checkpoint."""
+        return [s.z[source][component] for s in self.steps]
+
+    def datasets(self) -> list[str]:
+        """The ``dataset/version`` trained on after each non-terminal checkpoint."""
+        return [s.next_dataset for s in self.steps if s.next_dataset is not None]
+
+    def probe_series(self, dataset: str, *, stat: str = "mean") -> list[float]:
+        r"""$\Delta P_t$ for one probed dataset at every checkpoint, ordered by $t$.
+
+        The series behind the drift plot: a fixed dataset measured against a
+        moving model, so any change is the model's, not the data's. Raises
+        ``KeyError`` if this trajectory did not probe ``dataset`` -- silently
+        returning a short or empty series would show up as a truncated line
+        rather than as the missing measurement it is.
+        """
+        missing = [s.t for s in self.steps if dataset not in s.probes]
+        if missing:
+            raise KeyError(
+                f"trajectory {self.name!r} (seed {self.seed}) has no probe for "
+                f"{dataset!r} at checkpoint(s) {missing}; add it to the config's "
+                "`probes` and re-run to fill in the measurement"
+            )
+        return [s.probes[dataset][stat] for s in self.steps]
+
+    def probed_datasets(self) -> list[str]:
+        """Datasets probed at *every* checkpoint, so a full series exists."""
+        if not self.steps:
+            return []
+        common = set(self.steps[0].probes)
+        for step in self.steps[1:]:
+            common &= set(step.probes)
+        return sorted(common)
+
+
+def load_trajectory(path: Path) -> Trajectory:
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    return Trajectory.from_dict(payload, source=Path(path))
+
+
+def load_trajectory_set(paths: Iterable[Path]) -> list[Trajectory]:
+    """Load several ``trajectory.json`` files, e.g. one per seed of the same design."""
+    return [load_trajectory(p) for p in paths]
+
+
+def to_frame(
+    trajectories: Iterable[Trajectory], *, source: str = "base"
+) -> pd.DataFrame:
+    """Tidy long-format frame, one row per ``(seed, t)``, for ad-hoc analysis."""
+    rows = []
+    for traj in trajectories:
+        for step in traj.steps:
+            row: dict[str, Any] = {
+                "name": traj.name,
+                "trait": traj.trait,
+                "seed": traj.seed,
+                "t": step.t,
+                "weights_id": step.weights_id,
+                "next_dataset": step.next_dataset,
+                **{f"behavior_{k}": v for k, v in step.behavior.items()},
+                **{f"z_{comp}": val for comp, val in step.z.get(source, {}).items()},
+            }
+            if step.delta_p is not None:
+                row.update({f"delta_p_{k}": v for k, v in step.delta_p.items()})
+            rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def projection_pairs(
+    trajectories: Iterable[Trajectory],
+    delta_p_0: Mapping[str, float],
+    *,
+    stat: str = "mean",
+) -> pd.DataFrame:
+    r"""Pair each step's actual $\Delta P_t$ with the dataset's $\Delta P_0$.
+
+    ``delta_p_0`` maps ``"dataset/version"`` to the projection difference that
+    dataset would have produced against the base model $M_0$ -- computable in
+    advance for any dataset, per the action-encoder definition in the
+    proposal, so it does not need to come from the same trajectory. Steps
+    whose dataset is missing from ``delta_p_0`` are skipped. This is the data
+    behind the RQ1 projection-correlation scatter
+    (``figures.scatter_projection_correlation``).
+    """
+    rows = []
+    for traj in trajectories:
+        for step, nxt in zip(traj.steps, traj.steps[1:]):
+            if step.delta_p is None or step.next_dataset is None:
+                continue
+            dataset = step.next_dataset
+            if dataset not in delta_p_0:
+                continue
+            rows.append(
+                {
+                    "name": traj.name,
+                    "seed": traj.seed,
+                    "t": step.t,
+                    "dataset": dataset,
+                    "delta_p_0": delta_p_0[dataset],
+                    "delta_p_t": step.delta_p[stat],
+                    "delta_behavior": (
+                        nxt.behavior[traj.trait] - step.behavior[traj.trait]
+                    ),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def metric_pairs(
+    trajectories: Iterable[Trajectory], component: str, *, source: str = "base"
+) -> pd.DataFrame:
+    r"""Pair a $z_t$ component with the behaviour change it precedes, $\Delta b_{t+1}$.
+
+    Used for the "same thing with $p$, $q$, $\rho$ and $r$" scatters
+    (``figures.scatter_metric_grid``).
+    """
+    rows = []
+    for traj in trajectories:
+        for step, nxt in zip(traj.steps, traj.steps[1:]):
+            rows.append(
+                {
+                    "name": traj.name,
+                    "seed": traj.seed,
+                    "t": step.t,
+                    "value": step.z[source][component],
+                    "delta_behavior": (
+                        nxt.behavior[traj.trait] - step.behavior[traj.trait]
+                    ),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def z_component_matrix(
+    trajectories: Iterable[Trajectory], component: str, *, source: str = "base"
+) -> list[list[float]]:
+    """One list per trajectory of a $z_t$ component across the whole trajectory.
+
+    Feeds the "how much has $\\rho$/$r$/$p$/$q$ drifted from step 0" line plot
+    (``figures.drift_line``); rows may differ in length across trajectories of
+    different lengths.
+    """
+    return [traj.z_series(component, source=source) for traj in trajectories]
+
+
+def probe_matrix(
+    trajectories: Iterable[Trajectory], dataset: str, *, stat: str = "mean"
+) -> list[list[float]]:
+    r"""One row per trajectory of $\Delta P_t$ for ``dataset`` across all $t$.
+
+    Feeds :func:`method.visualization.figures.drift_line`, which normalises each
+    row against its own step-0 value and draws mean $\pm$ 1 std across seeds.
+    Trajectories that never probed ``dataset`` are skipped rather than raising,
+    so a mixed set (e.g. exp2 alongside exp3 runs that carry no probes) still
+    plots the seeds that do have the series.
+    """
+    rows = []
+    for traj in trajectories:
+        if dataset in traj.probed_datasets():
+            rows.append(traj.probe_series(dataset, stat=stat))
+    return rows
+
+
+def delta_p_by_dataset(
+    trajectories: Iterable[Trajectory], dataset: str, *, stat: str = "mean"
+) -> list[list[float]]:
+    r"""Per-trajectory $\Delta P_t$ values at every occurrence of ``dataset``.
+
+    Occurrences are ordered by ``t``, so index 0 is always the first time a
+    given trajectory trained on ``dataset`` and index 1 the second -- what
+    the repeated-dataset designs in RQ2/RQ3 need to compare "first exposure"
+    against "later exposure" regardless of the absolute step they land on.
+    """
+    out = []
+    for traj in trajectories:
+        values = [
+            s.delta_p[stat]
+            for s in traj.steps
+            if s.next_dataset == dataset and s.delta_p is not None
+        ]
+        if values:
+            out.append(values)
+    return out

@@ -39,6 +39,9 @@
     "editor.formatOnSave": true,
     "editor.formatOnPaste": true,
     "notebook.formatOnSave.enabled": true,
+    "flake8.args": [
+        "--max-line-length=88"
+    ],
     "json.schemas": [
 
 
@@ -121,4 +124,5 @@
     "claudeCode.preferredLocation": "panel",
     "editor.wordWrap": "on",
     "python.terminal.useEnvFile": true,
+    
 }

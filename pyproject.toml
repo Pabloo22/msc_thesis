@@ -9,7 +9,7 @@ license = {text = "MIT"}
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-    "accelerate>=1.7.0",
+    "accelerate==1.7.0",
     "backoff>=2.2.1",
     # torch/transformers/unsloth/vllm/bitsandbytes are pinned exactly: vllm
     # ships CUDA kernels built against one specific torch release, and vllm's
@@ -32,13 +32,47 @@ dependencies = [
     "torch==2.6.0",
     "tqdm>=4.67.1",
     "transformers==4.52.3",
-    "trl>=0.15.2",
+    "trl==0.15.2",
     "unsloth==2025.5.9",
     "vllm==0.8.5.post1",
     "pandas-stubs (>=3.0.3.260530,<4.0.0.0)",
+    "mypy (>=2.3.0,<3.0.0)",
+    "pytest (>=9.1.1,<10.0.0)",
+    "black (>=26.5.1,<27.0.0)",
+    "python-dotenv (>=1.2.2,<2.0.0)",
 ]
 
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.mypy]
+exclude = "^method/persona_vectors/"
+
+[[tool.mypy.overrides]]
+# These ship no type stubs; installing stub packages for them buys nothing.
+# "judge" and "eval.*" are vendored persona_vectors modules, importable only
+# with cwd set to method/persona_vectors, so mypy cannot resolve them from here.
+module = [
+    "tqdm.*",
+    "transformers.*",
+    "peft.*",
+    "vllm.*",
+    "unsloth.*",
+    "datasets.*",
+    "judge",
+    "eval.*",
+]
+ignore_missing_imports = true
+
+[tool.pylint.messages_control]
+disable = [
+    "C0412",
+    "C0413",
+    "missing-class-docstring",
+    "missing-function-docstring",
+    "missing-module-docstring",
+    "wrong-import-order",
+    "import-outside-toplevel",
+]
