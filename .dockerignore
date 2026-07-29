@@ -1,0 +1,6 @@
+# The build only needs pyproject.toml and poetry.lock; everything else would be
+# uploaded to the daemon as build context for nothing. .venv and the stores are
+# gigabytes on their own.
+*
+!pyproject.toml
+!poetry.lock
