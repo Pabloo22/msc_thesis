@@ -424,8 +424,11 @@ poetry run python -m method.run_trajectory --config EXP1 --seed 3
 
 **Outputs land in two places:** measurements go into the content-addressed
 `store/` (or `store-mock/`), keyed by checkpoint so they are shared across runs;
-the per-run `trajectories/<name>_seed<n>/` directory records which checkpoints a
-trajectory visited and the final `trajectory.json` summary.
+the per-run `trajectories/<name>_<model>_seed<n>/` directory records which
+checkpoints a trajectory visited and the final `trajectory.json` summary. The
+model is in the path because re-pointing a config at a different base model is a
+second experiment, not a replacement -- the store already keeps their adapters
+apart, since `weights_key` hashes the model.
 
 ### To add a new experiment
 

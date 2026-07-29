@@ -80,7 +80,10 @@ def write_run(
             record["next_dataset"] = cfg.steps[t].dataset_id
         records.append(record)
 
-    path = trajectory_run_dir(cfg.name, cfg.seed, mock=mock) / "trajectory.json"
+    path = (
+        trajectory_run_dir(cfg.name, cfg.seed, cfg.model.name, mock=mock)
+        / "trajectory.json"
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps({"config": json.loads(to_json(cfg)), "steps": records}),
@@ -174,10 +177,27 @@ class TestConfigMetadata:
 
 
 class TestRunDirQuarantine:
+    MODEL = E.QWEN_7B.name
+
     def test_mock_runs_do_not_share_a_directory_with_real_ones(self):
-        assert trajectory_run_dir("exp2_evil", 0) != trajectory_run_dir(
-            "exp2_evil", 0, mock=True
+        assert trajectory_run_dir("exp2_evil", 0, self.MODEL) != trajectory_run_dir(
+            "exp2_evil", 0, self.MODEL, mock=True
         )
+
+    def test_two_base_models_do_not_share_a_directory(self):
+        """The same config re-pointed at another base model is a second run.
+
+        Its adapters are already separate (the model is in ``weights_key``), so
+        only the run directory could collide, and the collision would replace
+        the first model's ``trajectory.json``.
+        """
+        assert trajectory_run_dir("exp1", 0, self.MODEL) != trajectory_run_dir(
+            "exp1", 0, "meta-llama/Llama-3.1-8B-Instruct"
+        )
+
+    def test_the_model_is_named_readably_in_the_path(self):
+        name = trajectory_run_dir("exp1", 3, self.MODEL).name
+        assert name == "exp1_qwen2.5-7b-instruct_seed3"
 
     def test_the_module_is_not_shadowed_by_its_own_function(self):
         """``from method.visualization import collect`` must give the module."""

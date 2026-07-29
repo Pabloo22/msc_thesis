@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
@@ -45,8 +46,21 @@ def base_probes_path(
     return root / "base_probes" / f"{base_weights_id}_{trait}.json"
 
 
-def trajectory_run_dir(name: str, seed: int, *, mock: bool = False) -> Path:
-    """Where a run of trajectory ``name`` at ``seed`` writes its outputs.
+def model_slug(model_name: str) -> str:
+    """Filesystem-safe short form of a model id.
+
+    ``"Qwen/Qwen2.5-7B-Instruct"`` becomes ``"qwen2.5-7b-instruct"``: the
+    organisation prefix is dropped because it would introduce a path separator
+    and carries no information the repository name lacks.
+    """
+    tail = model_name.rsplit("/", 1)[-1].lower()
+    return re.sub(r"[^a-z0-9.-]+", "-", tail).strip("-") or "model"
+
+
+def trajectory_run_dir(
+    name: str, seed: int, model_name: str, *, mock: bool = False
+) -> Path:
+    """Where a run of trajectory ``name`` on ``model_name`` at ``seed`` writes.
 
     Takes the plain fields rather than a ``TrajectoryConfig`` so that this
     module stays free of config imports. It exists so the runner and the
@@ -55,14 +69,24 @@ def trajectory_run_dir(name: str, seed: int, *, mock: bool = False) -> Path:
     this path from the registry, so a divergence here would silently look like
     "no runs on disk".
 
+    The model is part of the path because it is the one thing that changes a
+    trajectory's weights without changing its name: ``weights_key`` hashes the
+    model, so re-pointing a config at a different base model gives every step a
+    fresh ``weights_id`` and the store keeps the two chains apart -- but the run
+    directory would collide, and the second run's ``trajectory.json`` would
+    replace the first's. Both are legitimate experiments that should coexist.
+    Editing a config's *steps* in place is the opposite case: that is a
+    replacement, not a second experiment, so steps stay out of the path and the
+    new run is meant to overwrite the old one (``collect`` flags any leftover as
+    stale by comparing weights_ids).
+
     Mock runs go to a parallel root, for the same reason ``Store.for_backend``
-    keeps a separate store: a config's run directory depends only on its name
-    and seed, so a mock run and a real run of the same config would otherwise
-    write to the same path. Adapters merely being overwritten would be
+    keeps a separate store: a mock run and a real run of the same config would
+    otherwise write to the same path. Adapters merely being overwritten would be
     survivable; a figure silently drawn from synthetic measurements would not
     be.
     """
-    return trajectories_root(mock=mock) / f"{name}_seed{seed}"
+    return trajectories_root(mock=mock) / f"{name}_{model_slug(model_name)}_seed{seed}"
 
 
 def load_dotenv(path: Path) -> None:

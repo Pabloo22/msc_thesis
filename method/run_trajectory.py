@@ -32,6 +32,7 @@ from method.store import (
     file_sha256,
     get_weights_id,
 )
+from method.sync import Syncer
 from method.utils import (
     DOTENV_PATH,
     check_env_vars,
@@ -76,9 +77,17 @@ def run(cfg: TrajectoryConfig, backend_kind: Backend, dtype: str) -> Path:
     store = Store.for_backend(backend_kind)
     backend = get_backend(backend_kind, dtype=dtype)
     run_dir = trajectory_run_dir(
-        cfg.name, cfg.seed, mock=backend_kind is Backend.MOCK
+        cfg.name, cfg.seed, cfg.model.name, mock=backend_kind is Backend.MOCK
     )
     run_dir.mkdir(parents=True, exist_ok=True)
+
+    # No-op unless MSC_STORE_REMOTE is set (and never for a mock store). Pulling
+    # first turns adapters another box already trained into local cache hits, so
+    # a shared prefix is not retrained here.
+    syncer = Syncer.from_env(store)
+    if syncer is not None:
+        logger.info("Remote store configured; pulling reusable prefix")
+        syncer.pull_before_run()
 
     logger.info(
         "Trajectory %r: %d step(s), model=%s, seed=%d, backend=%s",
@@ -121,6 +130,10 @@ def run(cfg: TrajectoryConfig, backend_kind: Backend, dtype: str) -> Path:
                 cfg.weights_key(t + 1),
                 provenance={"training_sample_sha256": file_sha256(train_file)},
             )
+            # Push each adapter as soon as it exists, so a spot preemption
+            # mid-trajectory loses at most the step currently training.
+            if syncer is not None:
+                syncer.push_adapter(target)
 
     # The final checkpoint has no successor, so it is measured but never used
     # to compute action features.
@@ -131,6 +144,12 @@ def run(cfg: TrajectoryConfig, backend_kind: Backend, dtype: str) -> Path:
             json.dumps({"config": json.loads(to_json(cfg)), "steps": record}, indent=2),
             encoding="utf-8",
         )
+    # Flush measurements, the run dir and base probes to the remote before the
+    # box goes away; adapters and samples are mostly pushed already and skip.
+    if syncer is not None:
+        logger.info("Pushing run artifacts to remote store")
+        syncer.push_after_run(run_dir)
+
     # Merged weights are rebuildable from the adapter chain; do not leave a
     # full checkpoint occupying rental disk after the run.
     store.evict_all_merged()

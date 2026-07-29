@@ -12,9 +12,6 @@ disk. Collection is driven by the *registry*, not by globbing
 * enumerating the configs that *should* exist is what makes a run that has not
   happened yet distinguishable from one that is not part of the experiment, so
   a half-finished sweep plots what it has and says what it is missing;
-* it needs no migration -- runs saved before ``group``/``labels`` existed are
-  matched by path, and nothing is ever read back out of the file's ``config``
-  block.
 
 The staleness check guards the one failure mode this design introduces: if a
 config is edited after its runs were saved, the code-as-manifest assumption
@@ -167,7 +164,7 @@ def collect(
     stale: list[Path] = []
 
     for cfg in configs:
-        run_dir = trajectory_run_dir(cfg.name, cfg.seed, mock=mock)
+        run_dir = trajectory_run_dir(cfg.name, cfg.seed, cfg.model.name, mock=mock)
         path = run_dir / "trajectory.json"
         if not path.exists():
             missing.append(path)
