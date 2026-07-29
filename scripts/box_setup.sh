@@ -80,6 +80,29 @@ else
 fi
 
 echo
+echo "== Dataset =="
+# Extracted by the on-start script, not by git: dataset/ is gitignored and rides
+# along as a zip inside the vendored tree.
+DATASET_ZIP="${REPO_ROOT}/method/persona_vectors/dataset.zip"
+UNZIP_CMD="unzip -nq ${DATASET_ZIP} -d ${REPO_ROOT}"
+if [[ ! -d "${REPO_ROOT}/dataset" ]]; then
+    bad "no dataset/ -- run: ${UNZIP_CMD}"
+elif [[ ! -f "${DATASET_ZIP}" ]]; then
+    warn "dataset/ present but dataset.zip is gone; cannot verify it is complete"
+else
+    # A half-finished extraction (disk filled mid-unzip) leaves a dataset/ that
+    # looks fine until a trajectory asks for the one file that never landed.
+    # Comparing counts only reads the zip's central directory, so it is cheap.
+    want=$(unzip -Z1 "${DATASET_ZIP}" '*.jsonl' 2>/dev/null | wc -l)
+    have=$(find "${REPO_ROOT}/dataset" -name '*.jsonl' | wc -l)
+    if (( want > 0 && have >= want )); then
+        ok "dataset/ complete (${have} jsonl files)"
+    else
+        bad "dataset/ has ${have} jsonl files, dataset.zip has ${want} -- run: ${UNZIP_CMD}"
+    fi
+fi
+
+echo
 echo "== Credentials =="
 env_has_key HF_TOKEN && ok ".env has HF_TOKEN" \
     || bad ".env is missing HF_TOKEN (scp it from your laptop)"
