@@ -21,10 +21,15 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import logging
 import os
+from pathlib import Path
 
+from method.eval_progress import ProgressStore, make_eval_batched
 from method.utils import DOTENV_PATH, load_dotenv
 from method.vllm_patches import force_vllm_dtype, force_vllm_max_model_len
+
+logger = logging.getLogger(__name__)
 
 
 class StubJudge:
@@ -63,6 +68,86 @@ def install_stub_judge() -> None:
     judge.OpenAiJudge = StubJudge  # type: ignore[misc,assignment]
 
 
+def vendored_generate(
+    *,
+    llm,
+    tokenizer,
+    conversations,
+    temperature: float,
+    max_tokens: int,
+    coef,
+    vector,
+    layer,
+    steering_type: str,
+    lora_path,
+) -> tuple[list[str], list[str]]:
+    """Generate answers exactly as the vendored ``eval_batched`` would.
+
+    The dispatch between steered and unsteered sampling is the vendored one,
+    lifted verbatim so the resumable path and the original produce the same
+    thing. Injected into :func:`make_eval_batched` rather than imported there,
+    which keeps the resume logic testable without vLLM.
+    """
+    from eval import eval_persona
+
+    if coef != 0:
+        return eval_persona.sample_steering(
+            llm,
+            tokenizer,
+            conversations,
+            vector,
+            layer,
+            coef,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            steering_type=steering_type,
+        )
+    return eval_persona.sample(
+        llm,
+        tokenizer,
+        conversations,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        lora_path=lora_path,
+    )
+
+
+def skip_model_load(model: str):
+    """Stand in for ``load_vllm_model`` when every answer is already cached.
+
+    Returns the ``(llm, tokenizer, lora_path)`` triple that ``main`` unpacks.
+    All three are unused once generation is skipped, and not loading a 7B model
+    to do nothing turns a resumed judging pass into a CPU-only job that needs
+    no GPU at all.
+    """
+    logger.info("every answer is already generated; not loading %s", model)
+    return None, None, None
+
+
+def progress_store(args: argparse.Namespace) -> ProgressStore | None:
+    """The store for this invocation, or None when resuming is switched off.
+
+    The two identities are what each half of the work depends on. Generation
+    covers everything that decides which answers get produced; judging covers
+    who scores them. ``max_concurrent`` is in neither: it changes how fast the
+    requests go out, not what they are.
+    """
+    if args.progress_dir is None:
+        return None
+    return ProgressStore(
+        Path(args.progress_dir),
+        generation={
+            "model": args.model,
+            "trait": args.trait,
+            "version": args.version,
+            "persona_instruction_type": args.persona_instruction_type,
+            "n_per_question": args.n_per_question,
+            "max_tokens": args.max_tokens,
+        },
+        judging={"model": args.judge_model, "backend": args.judge_backend},
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
@@ -96,7 +181,21 @@ def main() -> None:
         "needs, inflating GPU memory use for no benefit.",
     )
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--progress_dir",
+        default=None,
+        help="Directory for crash-resumable partial results. Generations are "
+        "saved once vLLM finishes and each judge score as it lands, so a "
+        "failed run resumes instead of re-paying for the whole pass. Must be "
+        "derived from the final artifact path, not the caller's scratch path, "
+        "or every attempt gets a fresh (empty) directory. Unset disables it.",
+    )
     args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
 
     # Usually inherited from the parent process, but load explicitly so the
     # wrapper also works when invoked by hand.
@@ -117,6 +216,14 @@ def main() -> None:
     # Imported only now, so the patch above is in place first.
     from eval import eval_persona
 
+    store = progress_store(args)
+    if store is not None:
+        store.prepare()
+        # main() looks both of these up on the module at call time.
+        eval_persona.eval_batched = make_eval_batched(store, vendored_generate)
+        if store.has_generations():
+            eval_persona.load_vllm_model = skip_model_load
+
     eval_persona.main(
         model=args.model,
         trait=args.trait,
@@ -129,6 +236,11 @@ def main() -> None:
         max_concurrent_judges=args.max_concurrent,
         overwrite=args.overwrite,
     )
+
+    # Only now: main() has written the CSV, so the partial results it was
+    # rebuilt from are no longer worth anything.
+    if store is not None:
+        store.clear()
 
 
 if __name__ == "__main__":

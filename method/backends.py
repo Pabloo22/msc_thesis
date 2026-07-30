@@ -138,8 +138,16 @@ class ExecutionBackend(ABC):
         *,
         version: str = "eval",
         persona_instruction_type: str | None = None,
+        progress_dir: Path | None = None,
     ) -> None:
-        """Generate and judge responses, writing eval_persona's CSV."""
+        """Generate and judge responses, writing eval_persona's CSV.
+
+        ``out_csv`` is a caller-owned scratch path, so it cannot identify the
+        work across attempts. ``progress_dir`` is the stable one, derived from
+        the final artifact: it is where generated answers and judge scores are
+        banked as they arrive, so a failed attempt resumes rather than paying
+        for every request again.
+        """
 
     @abstractmethod
     def extract_vector(
@@ -246,6 +254,7 @@ class RealBackend(ExecutionBackend):
         *,
         version: str = "eval",
         persona_instruction_type: str | None = None,
+        progress_dir: Path | None = None,
     ) -> None:
         n = (
             cfg.eval.extract_n_per_question
@@ -278,6 +287,8 @@ class RealBackend(ExecutionBackend):
         ]
         if persona_instruction_type is not None:
             cmd += ["--persona_instruction_type", persona_instruction_type]
+        if progress_dir is not None:
+            cmd += ["--progress_dir", str(progress_dir)]
         if self.vllm_dtype is not None:
             cmd += ["--vllm_dtype", self.vllm_dtype]
         cmd += ["--vllm_max_model_len", str(cfg.model.max_seq_length)]
@@ -444,6 +455,7 @@ class MockBackend(ExecutionBackend):
         *,
         version: str = "eval",
         persona_instruction_type: str | None = None,
+        progress_dir: Path | None = None,  # nothing to resume: no work is done
     ) -> None:
         import pandas as pd
 

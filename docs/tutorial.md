@@ -282,6 +282,11 @@ Every one of these functions first checks whether its output artifact already
 exists and returns early if so — that is what makes the whole run **idempotent
 and resumable**.
 
+That granularity is the artifact, though, and one artifact can be very
+expensive: a single pos/neg extraction pass is 2000 generated answers and 4000
+billed judge requests. So the eval has a second, finer layer of resume inside
+it — see [`eval_progress.py`](../method/eval_progress.py) below.
+
 ### What `materialize` does
 
 When a step needs an actual model path,
@@ -343,7 +348,17 @@ subprocesses:
   `eval_persona`, but with a **swappable judge**. The vendored code hard-codes
   `OpenAiJudge`, so this monkey-patches the `judge` module *before* importing
   `eval_persona`, allowing a deterministic offline `StubJudge` for smoke runs
-  (paying OpenAI to score throwaway 0.5B generations buys nothing).
+  (paying OpenAI to score throwaway 0.5B generations buys nothing). It also
+  swaps in the resumable `eval_batched` below.
+- [`eval_progress.py`](../method/eval_progress.py) — make an eval pass
+  **survive its own failure**. The vendored `eval_batched` holds every answer
+  and every judge score in memory until the last request lands, so anything
+  that goes wrong discards the whole pass — 4000 billed requests, at EXP1's
+  extraction settings. This replacement banks generated answers (once,
+  atomically) and each judge score (as it arrives) in a progress directory
+  beside the artifact, so a rerun asks only for what is missing. When the
+  answers are all cached the model is never loaded, which turns a resumed
+  judging pass into a **CPU-only** job.
 
 ---
 
@@ -402,7 +417,8 @@ a model with a shorter window fails to load. See the comment block in
 | [`_generate_worker.py`](../method/_generate_worker.py) | Subprocess: vLLM answer generation (neutral + training prompts). |
 | [`_vector_worker.py`](../method/_vector_worker.py) | Subprocess: vendored persona-vector extraction, loaded in our dtype with autograd off. |
 | [`hf_patches.py`](../method/hf_patches.py) / [`vllm_patches.py`](../method/vllm_patches.py) | Runtime overrides of loader defaults the vendored code hard-codes (dtype, `max_model_len`). |
-| [`eval_wrapper.py`](../method/eval_wrapper.py) | Runs vendored `eval_persona` with a swappable (`StubJudge`) judge. |
+| [`eval_wrapper.py`](../method/eval_wrapper.py) | Runs vendored `eval_persona` with a swappable (`StubJudge`) judge and resumable batching. |
+| [`eval_progress.py`](../method/eval_progress.py) | Durable partial results for one eval pass: cached generations, per-request judge scores. |
 | [`steps.py`](../method/steps.py) | Resumable per-checkpoint ops: `measure_behavior`, `extract_persona_vector`, `measure_h_neutral`, `compute_step_latent`, `compute_delta_p`. |
 | [`run_trajectory.py`](../method/run_trajectory.py) | The orchestrator / CLI; the measure→ΔP→train loop. |
 | [`experiments.py`](../method/experiments.py) | Named trajectory configs (`SMOKE_MOCK`, `SMOKE_TINY`, `EXP1`) in a `REGISTRY`. |

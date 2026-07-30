@@ -163,7 +163,14 @@ def measure_behavior(
     trait_dir = store.trait_measurement_dir(wid, cfg.trait)
     with atomic_dir(trait_dir / "behavior_scratch") as scratch:
         tmp_csv = scratch / Artifacts.BEHAVIOR_CSV
-        backend.eval_persona(model_path, cfg.trait, tmp_csv, cfg, version="eval")
+        backend.eval_persona(
+            model_path,
+            cfg.trait,
+            tmp_csv,
+            cfg,
+            version="eval",
+            progress_dir=eval_progress_dir(out_csv),
+        )
         df = pd.read_csv(tmp_csv)
         (scratch / Artifacts.BEHAVIOR_JSON).write_text(
             json.dumps(
@@ -183,6 +190,18 @@ def measure_behavior(
         marker=Artifacts.BEHAVIOR_CSV,
     )
     return out_csv
+
+
+def eval_progress_dir(final_csv: Path) -> Path:
+    """Where an eval banks partial results, keyed by the artifact it builds.
+
+    Every attempt writes its CSV to a fresh scratch path (see ``atomic_file`` /
+    ``atomic_dir``), so only the final destination is stable enough to resume
+    against. Dot-prefixed and sitting beside that destination, it is
+    self-evidently not the artifact -- resume checks look for exact filenames --
+    and ``eval_wrapper`` deletes it as soon as the CSV exists.
+    """
+    return final_csv.parent / f".{final_csv.name}.progress"
 
 
 def _promote(scratch_dir: Path, target_dir: Path, *, marker: str) -> None:
@@ -234,6 +253,7 @@ def extract_persona_vector(
                     cfg,
                     version="extract",
                     persona_instruction_type=kind,
+                    progress_dir=eval_progress_dir(path),
                 )
 
     model_path = materialize(cfg, t, store, backend)
