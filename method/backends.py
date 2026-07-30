@@ -280,6 +280,7 @@ class RealBackend(ExecutionBackend):
             cmd += ["--persona_instruction_type", persona_instruction_type]
         if self.vllm_dtype is not None:
             cmd += ["--vllm_dtype", self.vllm_dtype]
+        cmd += ["--vllm_max_model_len", str(cfg.model.max_seq_length)]
         # cwd is persona_vectors because eval_persona resolves trait files by
         # the relative path data_generation/trait_data_*/.
         run_step(cmd, cwd=PERSONA_VECTORS_DIR, dry_run=False)
@@ -349,23 +350,24 @@ class RealBackend(ExecutionBackend):
         prompt_file.write_text(
             "\n".join(json.dumps(p) for p in prompts) + "\n", encoding="utf-8"
         )
-        run_step(
-            [
-                sys.executable,
-                "-m",
-                "method._generate_worker",
-                "--model",
-                model_path,
-                "--input",
-                str(prompt_file),
-                "--output",
-                str(out_jsonl),
-                "--max_tokens",
-                str(cfg.eval.max_tokens),
-            ],
-            cwd=REPO_ROOT,
-            dry_run=False,
-        )
+        cmd = [
+            sys.executable,
+            "-m",
+            "method._generate_worker",
+            "--model",
+            model_path,
+            "--input",
+            str(prompt_file),
+            "--output",
+            str(out_jsonl),
+            "--max_tokens",
+            str(cfg.eval.max_tokens),
+            "--vllm_max_model_len",
+            str(cfg.model.max_seq_length),
+        ]
+        if self.vllm_dtype is not None:
+            cmd += ["--vllm_dtype", self.vllm_dtype]
+        run_step(cmd, cwd=REPO_ROOT, dry_run=False)
 
 
 class MockBackend(ExecutionBackend):

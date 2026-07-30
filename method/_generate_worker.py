@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 
 from method.utils import PERSONA_VECTORS_DIR
+from method.vllm_patches import force_vllm_dtype, force_vllm_max_model_len
 
 
 def main() -> None:
@@ -28,7 +29,15 @@ def main() -> None:
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--max_tokens", type=int, default=1000)
     parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument("--vllm_dtype", default=None)
+    # Mirrors config.ModelConfig.max_seq_length's default (see eval_wrapper.py).
+    parser.add_argument("--vllm_max_model_len", type=int, default=2048)
     args = parser.parse_args()
+
+    if args.vllm_dtype:
+        force_vllm_dtype(args.vllm_dtype)
+    if args.vllm_max_model_len:
+        force_vllm_max_model_len(args.vllm_max_model_len)
 
     # The vendored package imports itself by bare top-level names (e.g.
     # ``from config import ...``, ``from eval.model_utils import ...``), which

@@ -24,6 +24,7 @@ import hashlib
 import os
 
 from method.utils import DOTENV_PATH, load_dotenv
+from method.vllm_patches import force_vllm_dtype, force_vllm_max_model_len
 
 
 class StubJudge:
@@ -62,28 +63,6 @@ def install_stub_judge() -> None:
     judge.OpenAiJudge = StubJudge  # type: ignore[misc,assignment]
 
 
-def force_vllm_dtype(dtype: str) -> None:
-    """Make every ``vllm.LLM(...)`` use ``dtype``, whatever the caller asked.
-
-    The vendored ``load_vllm_model`` constructs ``LLM(...)`` without a dtype, so
-    vLLM falls back to the model's config dtype (bfloat16 for Qwen) and refuses
-    to start on GPUs below compute capability 8.0. Turing cards such as the
-    T550 therefore cannot run the eval at all without this override. Patching
-    the constructor keeps persona_vectors untouched, exactly as the judge stub
-    does. Only needed locally: on Ampere and newer this is a no-op worth
-    skipping.
-    """
-    import vllm
-
-    original_init = vllm.LLM.__init__
-
-    def patched_init(self, *args, **kwargs):
-        kwargs.setdefault("dtype", dtype)
-        return original_init(self, *args, **kwargs)
-
-    vllm.LLM.__init__ = patched_init  # type: ignore[method-assign]
-
-
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
@@ -102,6 +81,20 @@ def main() -> None:
         help="Force vLLM's dtype (e.g. 'half' on pre-Ampere GPUs, which cannot "
         "run bfloat16). Left unset, vLLM picks the model's own dtype.",
     )
+    parser.add_argument(
+        "--vllm_max_model_len",
+        type=int,
+        # Mirrors config.ModelConfig.max_seq_length's default; every registry
+        # entry (QWEN_7B, QWEN_0_5B) leaves it unset, so this is the value a
+        # real run actually uses. Defaulting to it here (rather than None)
+        # means a manual invocation without the flag still gets the fix
+        # instead of reverting to the vendored 20000/30000.
+        default=2048,
+        help="Override vLLM's max_model_len, which the vendored loader "
+        "hardcodes to 30000 (hub) / 20000 (local) regardless of model size. "
+        "That reserves far more KV-cache than a persona-eval request ever "
+        "needs, inflating GPU memory use for no benefit.",
+    )
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
 
@@ -111,6 +104,8 @@ def main() -> None:
 
     if args.vllm_dtype:
         force_vllm_dtype(args.vllm_dtype)
+    if args.vllm_max_model_len:
+        force_vllm_max_model_len(args.vllm_max_model_len)
 
     if args.judge_backend == "stub":
         # Both judge.py and eval_persona's module-level setup_credentials()
