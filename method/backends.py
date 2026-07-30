@@ -294,24 +294,31 @@ class RealBackend(ExecutionBackend):
         save_dir: Path,
         threshold: int,
     ) -> None:
+        # Goes through our worker rather than calling generate_vec.py directly:
+        # the vendored script loads the model in float32 and keeps autograd on,
+        # which no 24GB card survives at 7B. The worker imports the vendored
+        # function unchanged, so it runs from the repo root.
         run_step(
             [
                 sys.executable,
-                "generate_vec.py",
-                "--model_name",
+                "-m",
+                "method._vector_worker",
+                "--model",
                 model_path,
+                "--trait",
+                trait,
                 "--pos_path",
                 str(pos_csv),
                 "--neg_path",
                 str(neg_csv),
-                "--trait",
-                trait,
                 "--save_dir",
                 str(save_dir),
                 "--threshold",
                 str(threshold),
+                "--dtype",
+                self.dtype,
             ],
-            cwd=PERSONA_VECTORS_DIR,
+            cwd=REPO_ROOT,
             dry_run=False,
         )
 

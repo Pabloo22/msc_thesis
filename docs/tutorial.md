@@ -333,6 +333,12 @@ subprocesses:
 - [`_generate_worker.py`](../method/_generate_worker.py) — generate answers with
   **vLLM**, reusing the vendored loader. Used only twice per trajectory (`M₀`'s
   answers to neutral prompts, and to training prompts), then reused unchanged.
+- [`_vector_worker.py`](../method/_vector_worker.py) — run the vendored
+  `generate_vec.save_persona_vector`, but load the model in the backend's dtype
+  (the vendored script names none, so transformers would pick **float32** — 30GB
+  at 7B) and with **autograd off** (the vendored loop retains an activation
+  graph nothing ever backpropagates through). Same computation, same output
+  files, a footprint that fits a 24GB card.
 - [`eval_wrapper.py`](../method/eval_wrapper.py) — run the vendored
   `eval_persona`, but with a **swappable judge**. The vendored code hard-codes
   `OpenAiJudge`, so this monkey-patches the `judge` module *before* importing
@@ -394,6 +400,8 @@ a model with a shorter window fails to load. See the comment block in
 | [`_merge_worker.py`](../method/_merge_worker.py) | Subprocess: merge a LoRA adapter into a base model (on CPU). |
 | [`_hidden_worker.py`](../method/_hidden_worker.py) | Subprocess: response-averaged hidden states for `h_neutral` and both `ΔP` terms. |
 | [`_generate_worker.py`](../method/_generate_worker.py) | Subprocess: vLLM answer generation (neutral + training prompts). |
+| [`_vector_worker.py`](../method/_vector_worker.py) | Subprocess: vendored persona-vector extraction, loaded in our dtype with autograd off. |
+| [`hf_patches.py`](../method/hf_patches.py) / [`vllm_patches.py`](../method/vllm_patches.py) | Runtime overrides of loader defaults the vendored code hard-codes (dtype, `max_model_len`). |
 | [`eval_wrapper.py`](../method/eval_wrapper.py) | Runs vendored `eval_persona` with a swappable (`StubJudge`) judge. |
 | [`steps.py`](../method/steps.py) | Resumable per-checkpoint ops: `measure_behavior`, `extract_persona_vector`, `measure_h_neutral`, `compute_step_latent`, `compute_delta_p`. |
 | [`run_trajectory.py`](../method/run_trajectory.py) | The orchestrator / CLI; the measure→ΔP→train loop. |

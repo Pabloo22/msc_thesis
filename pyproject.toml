@@ -52,8 +52,9 @@ exclude = "^method/persona_vectors/"
 
 [[tool.mypy.overrides]]
 # These ship no type stubs; installing stub packages for them buys nothing.
-# "judge" and "eval.*" are vendored persona_vectors modules, importable only
-# with cwd set to method/persona_vectors, so mypy cannot resolve them from here.
+# "judge", "eval.*" and "generate_vec" are vendored persona_vectors modules,
+# importable only once their directory is on sys.path (the workers put it
+# there at runtime), so mypy cannot resolve them from here.
 module = [
     "tqdm.*",
     "transformers.*",
@@ -63,6 +64,7 @@ module = [
     "datasets.*",
     "judge",
     "eval.*",
+    "generate_vec",
 ]
 ignore_missing_imports = true
 
