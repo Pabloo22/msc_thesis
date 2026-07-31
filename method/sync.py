@@ -25,8 +25,15 @@ Design constraints inherited from :mod:`method.store`:
 * **Immutable ids skip cheaply.** Adapters and training samples are pure
   functions of their id, so once uploaded they never change: push skips them if
   the remote object already exists. Measurement and trajectory bundles *grow*
-  (a second trait adds files; a re-run rewrites a run dir), so those are
-  re-uploaded, last-writer-wins.
+  (a second trait adds files; a re-run rewrites a run dir), so presence proves
+  nothing about them and they are instead skipped only when unchanged since
+  this box last pushed them (:class:`PushLedger`), last-writer-wins otherwise.
+* **Push one artifact at a time.** Every ``push_*`` entry point below covers a
+  single artifact, so a run ships each one the moment it lands in the store
+  rather than banking a trajectory's worth of GPU hours until the end. The
+  sweeps (:meth:`Syncer.push_store`, :meth:`Syncer.push_after_run`) are built
+  from those calls and serve as a backstop; the ledger is what stops the
+  backstop from re-uploading what the eager calls already sent.
 * **Mock artifacts never sync.** ``store-mock`` deliberately shares ids with the
   real store; syncing it would let synthetic adapters poison real boxes.
   :func:`Syncer.from_env` refuses any root whose name ends in ``-mock``.
@@ -34,6 +41,7 @@ Design constraints inherited from :mod:`method.store`:
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import shutil
@@ -45,7 +53,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from method.store import Store, atomic_dir, atomic_file
-from method.utils import DOTENV_PATH, REPO_ROOT, load_dotenv, trajectories_root
+from method.utils import DOTENV_PATH, load_dotenv, trajectories_root
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +75,17 @@ class Transport:
     file by the layer above before they reach a transport, so a transport never
     has to reason about partial directories.
     """
+
+    @property
+    def identity(self) -> str:
+        """Stable name for the remote root this transport points at.
+
+        :class:`PushLedger` is scoped by it, so that repointing
+        ``MSC_STORE_REMOTE`` at a different back-end starts from an empty
+        record rather than skipping uploads on the strength of what was pushed
+        somewhere else entirely.
+        """
+        raise NotImplementedError
 
     def exists(self, relpath: str) -> bool:
         raise NotImplementedError
@@ -93,6 +112,10 @@ class RcloneTransport(Transport):
     def __init__(self, root: str, *, binary: str = "rclone") -> None:
         self.root = root.rstrip("/")
         self.binary = binary
+
+    @property
+    def identity(self) -> str:
+        return self.root
 
     def _target(self, relpath: str) -> str:
         return f"{self.root}/{relpath.lstrip('/')}"
@@ -147,6 +170,10 @@ class LocalTransport(Transport):
 
     def __init__(self, root: Path) -> None:
         self.root = Path(root)
+
+    @property
+    def identity(self) -> str:
+        return str(self.root)
 
     def _target(self, relpath: str) -> Path:
         return self.root / relpath.lstrip("/")
@@ -250,13 +277,111 @@ def _safe_extractall(tar: tarfile.TarFile, dest: Path) -> None:
         if not (target == dest or dest in target.parents):
             raise RuntimeError(f"unsafe path in archive: {member.name!r}")
         if member.issym() or member.islnk():
-            logger.warning("skipping link member %s -> %s", member.name, member.linkname)
+            logger.warning(
+                "skipping link member %s -> %s", member.name, member.linkname
+            )
             continue
         members.append(member)
     # ``data`` filter (Python 3.12+) additionally strips unsafe members; our
     # own check above is the belt to its braces. Silences the 3.14 default-change
     # warning and is a no-op on the plain files we archive.
     tar.extractall(dest, members=members, filter="data")
+
+
+# --------------------------------------------------------------------------- #
+# Push ledger: what each mutable artifact looked like when it last went up.
+# --------------------------------------------------------------------------- #
+
+
+class PushLedger:
+    """Records the on-disk state of every mutable artifact this box has pushed.
+
+    Immutable artifacts need no such record: their id *is* their content, so a
+    single ``exists`` call on the remote settles whether the upload can be
+    skipped. Measurement bundles and run dirs have no such property -- they
+    grow a trait, a probe or a rewritten ``trajectory.json`` at a time -- so
+    presence proves only that *some* version is up there, and the only safe
+    thing to do on its own is re-upload every time.
+
+    That re-upload is what makes a repeated push expensive: it costs the full
+    bytes of every bundle in the store whether or not anything changed. The
+    ledger removes it by remembering a cheap signature of each artifact under
+    the remote path it was pushed as; a later push recomputes the signature and
+    uploads only on a mismatch. Repeated pushes then cost what actually changed
+    instead of what the store contains.
+
+    It is deliberately local, per-box state rather than a remote manifest: the
+    question it answers is "did *I* already upload exactly these bytes", which
+    needs no request to answer and is exactly what the caller is deciding. The
+    trade is that deleting objects from the remote behind its back leaves it
+    claiming an upload that no longer exists -- ``push --force`` (or deleting
+    the ledger directory) is the way back.
+
+    Scoped per remote by :meth:`for_transport`, because "already uploaded" is
+    only ever true of one destination: pointing ``MSC_STORE_REMOTE`` at a
+    second back-end must start from an empty record, not inherit the first's.
+    """
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+
+    @classmethod
+    def for_transport(cls, store_root: Path, transport: Transport) -> PushLedger:
+        """A ledger inside ``store_root``, private to ``transport``'s remote.
+
+        Lives inside the store because it describes this box's copy of it:
+        wiping the store must wipe the record of what was pushed from it, or
+        the next push would skip artifacts the box no longer has. The remote is
+        identified by a digest rather than its name so the directory is
+        filesystem-safe whatever ``MSC_STORE_REMOTE`` happens to contain.
+        """
+        scope = hashlib.sha256(transport.identity.encode()).hexdigest()[:16]
+        return cls(store_root / ".sync-state" / scope)
+
+    def _entry(self, relpath: str) -> Path:
+        return self.root / relpath.lstrip("/")
+
+    def is_current(self, relpath: str, signature: str) -> bool:
+        """Whether ``relpath`` was last pushed with exactly this signature."""
+        entry = self._entry(relpath)
+        return entry.is_file() and entry.read_text(encoding="utf-8") == signature
+
+    def record(self, relpath: str, signature: str) -> None:
+        """Note that ``relpath`` now holds the artifact with this signature."""
+        with atomic_file(self._entry(relpath)) as scratch:
+            scratch.write_text(signature, encoding="utf-8")
+
+
+def _dir_signature(path: Path) -> str:
+    """Digest of a directory's shape: every file's relpath, size and mtime.
+
+    Stat-based rather than content-based on purpose. Measurement bundles hold
+    hidden-state tensors of hundreds of megabytes, and re-hashing those bytes
+    on every push would cost more than the upload the digest exists to avoid.
+    The case stat-based digests classically miss -- an in-place rewrite that
+    preserves both size and timestamp -- cannot arise here, because every write
+    into the store lands via :func:`method.store.atomic_dir` or
+    :func:`~method.store.atomic_file`, i.e. as a fresh inode.
+
+    Mirrors :func:`_tar_dir`'s view of the directory: symlinks are followed
+    (``is_file`` and ``stat`` both resolve them, so the signature tracks the
+    bytes that would actually be archived) and dangling ones are skipped, since
+    the tar skips them too.
+    """
+    digest = hashlib.sha256()
+    for item in sorted(path.rglob("*")):
+        if not item.is_file():
+            continue
+        stat = item.stat()
+        entry = f"{item.relative_to(path)}\0{stat.st_size}\0{stat.st_mtime_ns}\n"
+        digest.update(entry.encode())
+    return digest.hexdigest()
+
+
+def _file_signature(path: Path) -> str:
+    """The single-file analogue of :func:`_dir_signature`."""
+    stat = path.stat()
+    return f"{stat.st_size}-{stat.st_mtime_ns}"
 
 
 # --------------------------------------------------------------------------- #
@@ -276,7 +401,12 @@ class Syncer:
     """Sync a real :class:`Store` (and its trajectory outputs) to a remote."""
 
     def __init__(
-        self, store: Store, transport: Transport, trajectories: Path | None = None
+        self,
+        store: Store,
+        transport: Transport,
+        trajectories: Path | None = None,
+        *,
+        force: bool = False,
     ) -> None:
         self.store = store
         self.transport = transport
@@ -286,9 +416,11 @@ class Syncer:
         self.trajectories = (
             trajectories if trajectories is not None else trajectories_root(mock=False)
         )
+        self.ledger = PushLedger.for_transport(store.root, transport)
+        self.force = force
 
     @classmethod
-    def from_env(cls, store: Store) -> Syncer | None:
+    def from_env(cls, store: Store, *, force: bool = False) -> Syncer | None:
         """A syncer if ``MSC_STORE_REMOTE`` is set and ``store`` is real.
 
         Returns ``None`` (a no-op signal for callers) when no remote is
@@ -302,45 +434,83 @@ class Syncer:
         if store.root.name.endswith("-mock"):
             logger.info("Refusing to sync mock store %s", store.root)
             return None
-        return cls(store, make_transport(remote))
+        return cls(store, make_transport(remote), force=force)
 
-    # --- push (local -> remote) ----------------------------------------- #
+    # --- push: one artifact (local -> remote) ---------------------------- #
+    #
+    # Each of these covers exactly one artifact, so a run can ship a thing the
+    # moment it exists instead of banking hours of GPU output until the end.
 
     def push_adapter(self, wid: str) -> None:
         """Upload one adapter, skipping if the immutable object already exists.
 
-        Called eagerly right after an adapter installs so a preempted box has
-        already durably stored every completed step.
+        Called right after an adapter installs so a preempted box has already
+        durably stored every completed step.
         """
         if not self.store.has_adapter(wid):
             return
         self._push_dir(
-            self.store.adapter_dir(wid), f"{_ADAPTERS}/{wid}.tar", skip_existing=True
+            self.store.adapter_dir(wid), f"{_ADAPTERS}/{wid}.tar", mutable=False
         )
 
-    def push_after_run(self, run_dir: Path) -> None:
-        """Flush everything a completed run produced: adapters, samples,
-        measurements, the run dir itself, and any base-probe summaries.
+    def push_training_sample(self, sample_id: str) -> None:
+        """Upload one cached training subsample (immutable, named by its hash)."""
+        path = self.store.training_sample_path(sample_id)
+        self._push_file(path, f"{_SAMPLES}/{path.name}", mutable=False)
 
-        Adapters and samples are immutable and mostly already pushed; the
-        skip-existing check makes re-pushing them nearly free. Measurements and
-        the run dir are (re-)uploaded because they grow or get rewritten.
+    def push_measurement(self, wid: str) -> None:
+        """Upload checkpoint ``wid``'s measurement bundle if it has changed.
+
+        Mutable, so unlike an adapter this cannot skip on mere presence: a
+        second trait, a later probe, or the DeltaP for the step about to run
+        all add files to a bundle that is already on the remote.
+        """
+        self._push_dir(
+            self.store.measurement_dir(wid), f"{_MEASUREMENTS}/{wid}.tar", mutable=True
+        )
+
+    def push_run_dir(self, run_dir: Path) -> None:
+        """Upload one trajectory's run directory if it has changed."""
+        self._push_dir(run_dir, f"{_RUNS}/{run_dir.name}.tar", mutable=True)
+
+    def push_base_probe(self, path: Path) -> None:
+        """Upload one base-probe summary if it has changed."""
+        self._push_file(path, f"{_BASE_PROBES}/{path.name}", mutable=True)
+
+    # --- push: sweeps ---------------------------------------------------- #
+
+    def push_store(self) -> None:
+        """Push every adapter, training sample and measurement bundle.
+
+        Immutable artifacts cost one existence check each and mutable ones one
+        stat walk, so on a store whose eager pushes all landed this is nearly
+        free -- which is what makes it usable as an end-of-run backstop rather
+        than only as a bulk upload.
         """
         for wid in _child_names(self.store.adapters):
             self.push_adapter(wid)
         for sample in _child_files(self.store.training_samples):
-            self._push_file(sample, f"{_SAMPLES}/{sample.name}", skip_existing=True)
+            self._push_file(sample, f"{_SAMPLES}/{sample.name}", mutable=False)
         for wid in _child_names(self.store.measurements):
-            self._push_dir(
-                self.store.measurement_dir(wid),
-                f"{_MEASUREMENTS}/{wid}.tar",
-                skip_existing=False,
-            )
-        if run_dir.is_dir():
-            self._push_dir(run_dir, f"{_RUNS}/{run_dir.name}.tar", skip_existing=False)
-        base_probes = self.trajectories / "base_probes"
-        for probe in _child_files(base_probes):
-            self._push_file(probe, f"{_BASE_PROBES}/{probe.name}", skip_existing=False)
+            self.push_measurement(wid)
+
+    def push_base_probes(self) -> None:
+        """Push every base-probe summary next to the trajectories root."""
+        for probe in _child_files(self.trajectories / "base_probes"):
+            self.push_base_probe(probe)
+
+    def push_after_run(self, run_dir: Path) -> None:
+        """Backstop flush once a run finishes: the store, ``run_dir``, probes.
+
+        A run pushes each artifact as it is produced, so by the time this runs
+        the only genuinely new object is usually ``run_dir`` itself (its
+        ``trajectory.json`` is written last). It sweeps anyway, to catch
+        anything an eager push missed -- an artifact written by a code path
+        that does not sync, or one produced while the remote was unreachable.
+        """
+        self.push_store()
+        self.push_run_dir(run_dir)
+        self.push_base_probes()
 
     # --- pull (remote -> local) ----------------------------------------- #
 
@@ -352,9 +522,14 @@ class Syncer:
         and it is what turns "another box already trained this prefix" into an
         ordinary local cache hit inside :func:`method.run_trajectory.run`.
         """
-        self._pull_dirs(_ADAPTERS, self.store.adapters, present=self.store.has_adapter)
-        self._pull_files(_SAMPLES, self.store.training_samples)
-        self._pull_dirs(_MEASUREMENTS, self.store.measurements)
+        self._pull_dirs(
+            _ADAPTERS,
+            self.store.adapters,
+            mutable=False,
+            present=self.store.has_adapter,
+        )
+        self._pull_files(_SAMPLES, self.store.training_samples, mutable=False)
+        self._pull_dirs(_MEASUREMENTS, self.store.measurements, mutable=True)
 
     def pull_for_plotting(self) -> None:
         """Fetch just what the collector reads: run dirs and base probes.
@@ -364,32 +539,57 @@ class Syncer:
         pulls only ``trajectories/`` and is safe to run on a machine that never
         touches a GPU.
         """
-        self._pull_dirs(_RUNS, self.trajectories)
-        self._pull_files(_BASE_PROBES, self.trajectories / "base_probes")
+        self._pull_dirs(_RUNS, self.trajectories, mutable=True)
+        self._pull_files(
+            _BASE_PROBES, self.trajectories / "base_probes", mutable=True
+        )
 
     # --- shared machinery ----------------------------------------------- #
 
-    def _push_dir(self, src: Path, relpath: str, *, skip_existing: bool) -> None:
+    def _already_pushed(self, relpath: str, signature: str | None) -> bool:
+        """Whether the remote already holds this artifact in its current form.
+
+        ``signature is None`` marks an immutable artifact, for which presence
+        is proof: the id determines the bytes. Mutable ones are settled against
+        the ledger instead, since presence tells us nothing about *which*
+        version is up there.
+        """
+        if signature is None:
+            return self.transport.exists(relpath)
+        return not self.force and self.ledger.is_current(relpath, signature)
+
+    def _push_dir(self, src: Path, relpath: str, *, mutable: bool) -> None:
         if not src.is_dir():
             return
-        if skip_existing and self.transport.exists(relpath):
-            logger.debug("skip push (exists): %s", relpath)
+        # Signed before tarring, never after: a concurrent write landing in
+        # between then makes the recorded signature older than what was
+        # uploaded, costing one redundant push later. Signing after would make
+        # it *newer*, and the ledger would skip content that never went up.
+        signature = _dir_signature(src) if mutable else None
+        if self._already_pushed(relpath, signature):
+            logger.debug("skip push: %s", relpath)
             return
         with _scratch_file(suffix=".tar") as tmp:
             _tar_dir(src, tmp)
             self.transport.upload(tmp, relpath)
+        if signature is not None:
+            self.ledger.record(relpath, signature)
         logger.info("pushed %s", relpath)
 
-    def _push_file(self, src: Path, relpath: str, *, skip_existing: bool) -> None:
+    def _push_file(self, src: Path, relpath: str, *, mutable: bool) -> None:
         if not src.is_file():
             return
-        if skip_existing and self.transport.exists(relpath):
+        signature = _file_signature(src) if mutable else None
+        if self._already_pushed(relpath, signature):
+            logger.debug("skip push: %s", relpath)
             return
         self.transport.upload(src, relpath)
+        if signature is not None:
+            self.ledger.record(relpath, signature)
         logger.info("pushed %s", relpath)
 
     def _pull_dirs(
-        self, reldir: str, local_parent: Path, *, present=None
+        self, reldir: str, local_parent: Path, *, mutable: bool, present=None
     ) -> None:
         """Download every ``<id>.tar`` under ``reldir`` whose ``<id>`` is missing.
 
@@ -404,18 +604,27 @@ class Syncer:
             have = present(wid) if present else (local_parent / wid).is_dir()
             if have:
                 continue
+            relpath = f"{reldir}/{name}"
             with _scratch_file(suffix=".tar") as tmp:
-                self.transport.download(f"{reldir}/{name}", tmp)
+                self.transport.download(relpath, tmp)
                 _untar_dir(tmp, local_parent / wid)
-            logger.info("pulled %s", f"{reldir}/{name}")
+            if mutable:
+                # What was just written locally *is* the remote object, so
+                # record it as pushed; otherwise the next push would ship every
+                # bundle this box pulled straight back up unchanged.
+                self.ledger.record(relpath, _dir_signature(local_parent / wid))
+            logger.info("pulled %s", relpath)
 
-    def _pull_files(self, reldir: str, local_parent: Path) -> None:
+    def _pull_files(self, reldir: str, local_parent: Path, *, mutable: bool) -> None:
         for name in self.transport.list_names(reldir):
             dest = local_parent / name
             if dest.exists():
                 continue
-            self.transport.download(f"{reldir}/{name}", dest)
-            logger.info("pulled %s", f"{reldir}/{name}")
+            relpath = f"{reldir}/{name}"
+            self.transport.download(relpath, dest)
+            if mutable:
+                self.ledger.record(relpath, _file_signature(dest))
+            logger.info("pulled %s", relpath)
 
 
 # --------------------------------------------------------------------------- #
@@ -465,6 +674,15 @@ def main() -> None:
             "pull-plots: fetch only run dirs + base probes (plotting box)"
         ),
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "re-upload mutable artifacts (measurements, run dirs, base probes) "
+            "even when unchanged since this box last pushed them; needed only "
+            "after deleting objects from the remote by hand"
+        ),
+    )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
     logging.basicConfig(
@@ -478,19 +696,20 @@ def main() -> None:
     load_dotenv(DOTENV_PATH)
 
     store = Store()  # real store; mock never syncs
-    syncer = Syncer.from_env(store)
+    syncer = Syncer.from_env(store, force=args.force)
     if syncer is None:
         raise SystemExit(f"{REMOTE_ENV} is not set; nothing to sync to.")
 
     if args.action == "push":
-        # Push every run dir alongside the store.
-        run_dirs = sorted(
-            p for p in syncer.trajectories.glob("*_seed*") if p.is_dir()
-        )
+        # The store is swept once, not once per run dir: it is shared by every
+        # trajectory, so folding it into the per-run loop re-tarred and
+        # re-uploaded every measurement bundle N times over for N run dirs.
+        # Sweeping it here also means a store with no runs still gets pushed.
+        syncer.push_store()
+        run_dirs = sorted(p for p in syncer.trajectories.glob("*_seed*") if p.is_dir())
         for run_dir in run_dirs:
-            syncer.push_after_run(run_dir)
-        # A store with no runs still has adapters/samples/measurements to push.
-        syncer.push_after_run(REPO_ROOT / "does-not-exist")
+            syncer.push_run_dir(run_dir)
+        syncer.push_base_probes()
     elif args.action == "pull":
         syncer.pull_before_run()
     else:

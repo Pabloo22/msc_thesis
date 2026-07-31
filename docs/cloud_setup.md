@@ -53,7 +53,9 @@ poetry run python -m method.sync pull-plots    # download just trajectories/ (ru
                                                # machine that only makes plots and never touches a GPU
 ```
 
-> **What crosses the wire:** Every remote read/write moves one whole artifact at a time (tarred adapter, measurement dir, etc.) -- never a partial one. Adapters and training samples are immutable and skipped once uploaded; measurement bundles and run dirs are re-uploaded because they grow. `store-mock/` never syncs at all to avoid poisoning real boxes.
+> **What crosses the wire:** Every remote read/write moves one whole artifact at a time (tarred adapter, measurement dir, etc.) -- never a partial one. Adapters and training samples are immutable and skipped once uploaded; measurement bundles and run dirs grow, so they are skipped only while unchanged since this box last pushed them, and re-uploaded whole once they change. `store-mock/` never syncs at all to avoid poisoning real boxes.
+
+> **Repeated pushes are incremental.** `push` is safe to re-run and costs roughly what changed since the last one: an artifact already uploaded is skipped, not re-sent. That record is local to the box (`store/.sync-state/`), so if you delete objects from the remote by hand, run `push --force` to ignore it and re-upload everything mutable.
 
 ---
 

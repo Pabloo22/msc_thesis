@@ -8,6 +8,8 @@ needed. The invariants under test:
 * an artifact survives a round trip byte-for-byte, packed as exactly one remote
   object per id;
 * immutable adapters/samples are not re-uploaded once present;
+* mutable measurements/run dirs are re-uploaded when they change and skipped
+  when they do not, including after a pull;
 * a pull only fetches ids missing locally, and never a half-written directory;
 * mock stores refuse to sync.
 """
@@ -33,10 +35,31 @@ def _make_adapter(store: Store, wid: str, *, marker: str = "x") -> None:
     (adir / "adapter_model.safetensors").write_text(marker, encoding="utf-8")
 
 
-def _syncer(tmp_path, *, store_name="store", remote_name="remote") -> Syncer:
+def _syncer(tmp_path, *, store_name="store", remote_name="remote", **kwargs) -> Syncer:
     store = Store(root=tmp_path / store_name)
     transport = LocalTransport(tmp_path / remote_name)
-    return Syncer(store, transport, trajectories=tmp_path / f"{store_name}-traj")
+    return Syncer(
+        store, transport, trajectories=tmp_path / f"{store_name}-traj", **kwargs
+    )
+
+
+def _record_uploads(monkeypatch, syncer: Syncer) -> list[str]:
+    """Collect the relpaths ``syncer`` uploads, while still uploading them."""
+    uploaded: list[str] = []
+    real_upload = syncer.transport.upload
+
+    def spy(local, relpath):
+        uploaded.append(relpath)
+        real_upload(local, relpath)
+
+    monkeypatch.setattr(syncer.transport, "upload", spy)
+    return uploaded
+
+
+def _write_measurement(store: Store, wid: str, name: str, text: str) -> None:
+    path = store.measurement_dir(wid) / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
 
 
 class TestTransportSelection:
@@ -94,15 +117,9 @@ class TestAdapterRoundTrip:
         _make_adapter(src.store, "t01-abc")
         src.push_adapter("t01-abc")
 
-        calls = []
-        real_upload = src.transport.upload
-        monkeypatch.setattr(
-            src.transport,
-            "upload",
-            lambda local, rel: (calls.append(rel), real_upload(local, rel)),
-        )
+        uploaded = _record_uploads(monkeypatch, src)
         src.push_adapter("t01-abc")  # already present -> skip
-        assert calls == []
+        assert uploaded == []
 
 
 class TestPullSkipsPresent:
@@ -168,6 +185,119 @@ class TestMeasurementsAndSamples:
         assert (
             dst.store.training_samples / "deadbeef.jsonl"
         ).read_text() == "row"
+
+
+class TestUnchangedMutableArtifactsSkip:
+    """Mutable bundles must not be re-uploaded when nothing about them changed.
+
+    Presence cannot settle this the way it does for an adapter -- a bundle on
+    the remote may be missing a trait measured since -- so the ledger compares
+    against what this box last pushed.
+    """
+
+    def test_second_push_of_unchanged_measurement_uploads_nothing(
+        self, tmp_path, monkeypatch
+    ):
+        src = _syncer(tmp_path)
+        _write_measurement(src.store, "t01-abc", "behavior.csv", "a")
+        src.push_measurement("t01-abc")
+
+        uploaded = _record_uploads(monkeypatch, src)
+        src.push_measurement("t01-abc")
+        assert uploaded == []
+
+    def test_changed_measurement_is_reuploaded(self, tmp_path, monkeypatch):
+        src = _syncer(tmp_path)
+        _write_measurement(src.store, "t01-abc", "behavior.csv", "a")
+        src.push_measurement("t01-abc")
+
+        uploaded = _record_uploads(monkeypatch, src)
+        _write_measurement(src.store, "t01-abc", "traits/evil/latent.json", "{}")
+        src.push_measurement("t01-abc")
+        assert uploaded == ["store/measurements/t01-abc.tar"]
+
+    def test_force_reuploads_unchanged(self, tmp_path, monkeypatch):
+        src = _syncer(tmp_path)
+        _write_measurement(src.store, "t01-abc", "behavior.csv", "a")
+        src.push_measurement("t01-abc")
+
+        forced = _syncer(tmp_path, force=True)
+        uploaded = _record_uploads(monkeypatch, forced)
+        forced.push_measurement("t01-abc")
+        assert uploaded == ["store/measurements/t01-abc.tar"]
+
+    def test_sweep_after_eager_pushes_uploads_only_the_run_dir(
+        self, tmp_path, monkeypatch
+    ):
+        """The end-of-run backstop costs nothing for what already went up."""
+        src = _syncer(tmp_path)
+        _make_adapter(src.store, "t01-abc")
+        _write_measurement(src.store, "t00-xyz", "behavior.csv", "a")
+        src.push_adapter("t01-abc")
+        src.push_measurement("t00-xyz")
+        run_dir = src.trajectories / "EXP1_seed0"
+        run_dir.mkdir(parents=True)
+        (run_dir / "trajectory.json").write_text('{"steps": []}', encoding="utf-8")
+
+        uploaded = _record_uploads(monkeypatch, src)
+        src.push_after_run(run_dir)
+        assert uploaded == ["trajectories/runs/EXP1_seed0.tar"]
+
+    def test_a_second_remote_does_not_inherit_the_first_ledger(
+        self, tmp_path, monkeypatch
+    ):
+        """"Already uploaded" is only ever true of one destination."""
+        src = _syncer(tmp_path)
+        _write_measurement(src.store, "t01-abc", "behavior.csv", "a")
+        src.push_measurement("t01-abc")
+
+        elsewhere = _syncer(tmp_path, remote_name="other-remote")
+        uploaded = _record_uploads(monkeypatch, elsewhere)
+        elsewhere.push_measurement("t01-abc")
+        assert uploaded == ["store/measurements/t01-abc.tar"]
+
+    def test_pulled_measurement_is_not_pushed_back(self, tmp_path, monkeypatch):
+        """A box that pulls a bundle must not ship the same bytes back up."""
+        src = _syncer(tmp_path, store_name="src")
+        _write_measurement(src.store, "t01-abc", "behavior.csv", "a")
+        src.push_measurement("t01-abc")
+
+        dst = _syncer(tmp_path, store_name="dst", remote_name="remote")
+        dst.pull_before_run()
+        assert (dst.store.measurement_dir("t01-abc") / "behavior.csv").exists()
+
+        uploaded = _record_uploads(monkeypatch, dst)
+        dst.push_store()
+        assert uploaded == []
+
+
+class TestPushStoreIsSweptOnce:
+    def test_cli_push_sweeps_store_once_for_many_run_dirs(
+        self, tmp_path, monkeypatch
+    ):
+        """Regression: the store sweep used to run once per run directory.
+
+        With N run dirs that re-tarred and re-uploaded every measurement bundle
+        N+1 times, which on a rate-limited Drive remote is the expensive part.
+        """
+        src = _syncer(tmp_path)
+        _write_measurement(src.store, "t00-xyz", "behavior.csv", "a")
+        for name in ("EXP1_seed0", "EXP1_seed1", "EXP1_seed2"):
+            run_dir = src.trajectories / name
+            run_dir.mkdir(parents=True)
+            (run_dir / "trajectory.json").write_text("{}", encoding="utf-8")
+
+        uploaded = _record_uploads(monkeypatch, src)
+        src.push_store()
+        for run_dir in sorted(src.trajectories.glob("*_seed*")):
+            src.push_run_dir(run_dir)
+
+        assert uploaded.count("store/measurements/t00-xyz.tar") == 1
+        assert sorted(u for u in uploaded if u.startswith("trajectories/")) == [
+            "trajectories/runs/EXP1_seed0.tar",
+            "trajectories/runs/EXP1_seed1.tar",
+            "trajectories/runs/EXP1_seed2.tar",
+        ]
 
 
 class TestSymlinkedRunInputs:

@@ -44,7 +44,11 @@ logger = logging.getLogger("run_trajectory")
 
 
 def measure_checkpoint(
-    cfg: TrajectoryConfig, t: int, store: Store, backend: ExecutionBackend
+    cfg: TrajectoryConfig,
+    t: int,
+    store: Store,
+    backend: ExecutionBackend,
+    syncer: Syncer | None = None,
 ) -> dict:
     """All measurements that depend only on checkpoint t: b_t, v_t, h_neutral, z_t.
 
@@ -52,23 +56,39 @@ def measure_checkpoint(
     the *final* checkpoint is probed too: the training loop stops one checkpoint
     early by construction, and a drift series missing its last point would be
     the one place the trajectory ends up unmeasured.
+
+    Pushes after each individual measurement lands, rather than once at the
+    end: persona-vector extraction, h_neutral generation and each probe's
+    DeltaP are all independently expensive, and batching the push behind all
+    of them means a preemption between two still throws away work that was
+    already complete and sitting on local disk, just not yet on the remote.
     """
-    logger.info("--- measuring checkpoint t=%d (%s) ---", t, get_weights_id(cfg, t))
+    wid = get_weights_id(cfg, t)
+    logger.info("--- measuring checkpoint t=%d (%s) ---", t, wid)
+
+    def push() -> None:
+        if syncer is not None:
+            _push_measurements(syncer, cfg, t)
+
     steps.measure_behavior(cfg, t, store, backend)
+    push()
     steps.extract_persona_vector(cfg, t, store, backend)
+    push()
     steps.measure_h_neutral(cfg, t, store, backend)
+    push()
     latent = steps.compute_step_latent(cfg, t, store)
-    behavior = json.loads(
-        store.trait_measurement(
-            get_weights_id(cfg, t), cfg.trait, steps.Artifacts.BEHAVIOR_JSON
-        ).read_text()
+    push()
+    behavior_path = store.trait_measurement(
+        wid, cfg.trait, steps.Artifacts.BEHAVIOR_JSON
     )
+    behavior = json.loads(behavior_path.read_text())
+    probes = steps.measure_probes(cfg, t, store, backend, on_probe_done=push)
     return {
         "t": t,
-        "weights_id": get_weights_id(cfg, t),
+        "weights_id": wid,
         "behavior": behavior,
         "z": latent,
-        "probes": steps.measure_probes(cfg, t, store, backend),
+        "probes": probes,
     }
 
 
@@ -100,17 +120,27 @@ def run(cfg: TrajectoryConfig, backend_kind: Backend, dtype: str) -> Path:
 
     record: list[dict] = []
     for t, step in enumerate(cfg.steps):
-        record.append(measure_checkpoint(cfg, t, store, backend))
+        record.append(measure_checkpoint(cfg, t, store, backend, syncer))
 
         # Action features describe the update about to happen, so they are
         # attributed to the checkpoint that precedes it.
+        sample_id = steps.training_sample_id(step, cfg.seed)
         train_file = steps.sample_training_file(
             step, cfg.seed, run_dir / f"train_step{t + 1}.jsonl", store
         )
+        if syncer is not None:
+            syncer.push_training_sample(sample_id)
+
         record[-1]["delta_p"] = steps.compute_delta_p(
-            cfg, t, store, backend, train_file, steps.training_sample_id(step, cfg.seed)
+            cfg, t, store, backend, train_file, sample_id
         )
         record[-1]["next_dataset"] = step.dataset_id
+
+        # DeltaP is the last (and among the most expensive) thing measured at
+        # checkpoint t, and training is about to start -- so this is the last
+        # chance to ship it before a preemption mid-training-step would lose it.
+        if syncer is not None:
+            _push_measurements(syncer, cfg, t)
 
         target = get_weights_id(cfg, t + 1)
         if store.has_adapter(target):
@@ -130,22 +160,27 @@ def run(cfg: TrajectoryConfig, backend_kind: Backend, dtype: str) -> Path:
                 cfg.weights_key(t + 1),
                 provenance={"training_sample_sha256": file_sha256(train_file)},
             )
-            # Push each adapter as soon as it exists, so a spot preemption
-            # mid-trajectory loses at most the step currently training.
-            if syncer is not None:
-                syncer.push_adapter(target)
+        # Outside the branch, and so covering the cache hit too: an adapter
+        # trained by a run that was preempted before it could push is a local
+        # hit here but still missing from the remote. Costs one existence
+        # check when it is already up there.
+        if syncer is not None:
+            syncer.push_adapter(target)
 
     # The final checkpoint has no successor, so it is measured but never used
-    # to compute action features.
-    record.append(measure_checkpoint(cfg, len(cfg.steps), store, backend))
+    # to compute action features. Nothing writes to its bundle afterwards, so
+    # measure_checkpoint's own eager pushes are all it needs.
+    record.append(measure_checkpoint(cfg, len(cfg.steps), store, backend, syncer))
 
     with atomic_file(run_dir / "trajectory.json") as scratch:
         scratch.write_text(
             json.dumps({"config": json.loads(to_json(cfg)), "steps": record}, indent=2),
             encoding="utf-8",
         )
-    # Flush measurements, the run dir and base probes to the remote before the
-    # box goes away; adapters and samples are mostly pushed already and skip.
+    # Everything the loop produced is already on the remote; what is new here
+    # is the run dir, whose trajectory.json is only written above. The sweep is
+    # a backstop for anything the eager pushes missed, and is cheap because the
+    # ledger skips what has not changed.
     if syncer is not None:
         logger.info("Pushing run artifacts to remote store")
         syncer.push_after_run(run_dir)
@@ -155,6 +190,20 @@ def run(cfg: TrajectoryConfig, backend_kind: Backend, dtype: str) -> Path:
     store.evict_all_merged()
     logger.info("Trajectory complete: %s", run_dir / "trajectory.json")
     return run_dir
+
+
+def _push_measurements(syncer: Syncer, cfg: TrajectoryConfig, t: int) -> None:
+    """Ship checkpoint ``t``'s measurement bundle, plus the base one it feeds.
+
+    The base checkpoint is included because measuring a *later* checkpoint
+    still writes into its bundle: the pos/neg extraction responses and M_0's
+    answers to each new dataset's training prompts are generated once and
+    stored under the base weights id, so the base bundle keeps growing for the
+    whole run. On the steps where it did not grow the call is a no-op, since
+    the sync ledger skips artifacts unchanged since their last push.
+    """
+    for wid in sorted({get_weights_id(cfg, t), get_weights_id(cfg, 0)}):
+        syncer.push_measurement(wid)
 
 
 def _verify_cached_adapter(

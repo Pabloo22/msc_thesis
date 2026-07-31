@@ -22,6 +22,7 @@ from method import experiments as E, probe_base, steps
 from method.backends import get_backend
 from method.config import Backend, DatasetVersion, StepConfig
 from method.store import Store, get_weights_id
+from method.sync import LocalTransport, Syncer
 from method.utils import base_probes_path
 from method.visualization import collect as collect_mod
 from method.visualization.schema import StepRecord, Trajectory, probe_matrix
@@ -233,6 +234,25 @@ class TestMeasureProbes:
 
         assert set(result) == {EVIL.dataset_id}
 
+    def test_on_probe_done_fires_once_per_probe_not_once_for_the_batch(
+        self, tmp_path, backend
+    ):
+        """Each probe's DeltaP is its own expensive hidden-state pass, so a
+        caller pushing results to a remote needs a hook per probe -- one call
+        after the whole list would batch several preemption-worthy losses
+        behind each other, defeating the point of the hook.
+        """
+        store = Store(tmp_path)
+        cfg = make_cfg(probes=(GSM8K, EVIL))
+        prepared(cfg, store, backend)
+
+        calls: list[int] = []
+        steps.measure_probes(
+            cfg, 0, store, backend, on_probe_done=lambda: calls.append(1)
+        )
+
+        assert len(calls) == 2
+
 
 # --- probe_base -------------------------------------------------------------
 
@@ -247,6 +267,34 @@ class TestProbeBase:
         result = probe_base.probe_base(cfg, (GSM8K, EVIL), store, backend)
 
         assert set(result) == {GSM8K.dataset_id, EVIL.dataset_id}
+
+    def test_pushes_the_base_bundle_after_each_probe_not_once_for_all(
+        self, tmp_path, backend
+    ):
+        """``datasets`` can run to the dozens in the real script; batching the
+        push behind the whole list would mean a preempted box loses every
+        probe finished so far, not just the one in flight.
+        """
+        store = Store(tmp_path / "store")
+        transport = LocalTransport(tmp_path / "remote")
+        syncer = Syncer(store, transport, trajectories=tmp_path / "traj")
+        cfg = make_cfg()
+
+        uploads: list[str] = []
+        real_upload = transport.upload
+
+        def spy(local, relpath):
+            uploads.append(relpath)
+            real_upload(local, relpath)
+
+        transport.upload = spy
+
+        probe_base.probe_base(cfg, (GSM8K, EVIL), store, backend, syncer=syncer)
+
+        base = f"store/measurements/{get_weights_id(cfg, 0)}.tar"
+        # One push after persona-vector extraction, one after each of the two
+        # probes: three real uploads, not one batched at the end.
+        assert uploads.count(base) == 3
 
     def test_summary_round_trips_into_the_collector(
         self, tmp_path, monkeypatch, backend

@@ -15,7 +15,7 @@ import json
 import logging
 import random
 import shutil
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import pandas as pd
@@ -462,6 +462,8 @@ def measure_probes(
     store: Store,
     backend: ExecutionBackend,
     probes: Sequence[StepConfig] | None = None,
+    *,
+    on_probe_done: Callable[[], None] | None = None,
 ) -> dict[str, dict[str, float]]:
     """DeltaP at checkpoint ``t`` for every probe dataset, keyed by ``dataset_id``.
 
@@ -474,6 +476,11 @@ def measure_probes(
     different set (see :mod:`method.probe_base`, which probes every dataset at
     the base checkpoint). Requires ``v_t``, so callers must have run
     :func:`extract_persona_vector` for this checkpoint first.
+
+    ``on_probe_done``, if given, runs after each probe's DeltaP lands on disk --
+    a hook a caller can use to sync that one result immediately rather than
+    waiting on the whole (potentially long) list of probes. This module stays
+    unaware of what the hook does; ``steps.py`` has no sync-layer import.
     """
     probes = cfg.probes if probes is None else probes
     results: dict[str, dict[str, float]] = {}
@@ -482,6 +489,8 @@ def measure_probes(
         results[probe.dataset_id] = compute_delta_p(
             cfg, t, store, backend, train_file, training_sample_id(probe, cfg.seed)
         )
+        if on_probe_done is not None:
+            on_probe_done()
     return results
 
 
