@@ -63,6 +63,16 @@ poetry run python -m method.run_trajectory --config SMOKE_TINY --backend real
     nohup bash scripts/run_family.sh EXP2 > exp2.log 2>&1 &
     ```
 
+    **Splitting a family across GPUs.** `--seeds` restricts the family to a subset of
+    seeds, so disjoint subsets can run concurrently on different devices. The seed is
+    part of `weights_key`, so two subsets never train the same adapter; store writes are
+    atomic, so the seed-independent base-model measurements they share are safe to race.
+    ```bash
+    CUDA_VISIBLE_DEVICES=0 nohup bash scripts/run_family.sh EXP3 --seeds 0 1 2 > exp3_a.log 2>&1 &
+    CUDA_VISIBLE_DEVICES=1 nohup bash scripts/run_family.sh EXP3 --seeds 3 4   > exp3_b.log 2>&1 &
+    ```
+    `LOCAL` still works alongside it (`scripts/run_family.sh EXP3 LOCAL --seeds 0`).
+
 ## Base-model DeltaP Probes
 $\\Delta P_0$ (DeltaP frozen at the base model) is needed for the RQ1 scatter plots. It is measured once per seed and shared across experiments:
 ```bash
