@@ -46,12 +46,22 @@ poetry run python -m method.run_trajectory --config SMOKE_TINY --backend real
     ```bash
     poetry run python -m method.run_trajectory --config EXP1
     ```
+    or 
+    ```bash
+    nohup poetry run python -m method.run_trajectory --config EXP1 > exp1.log 2>&1 &
+    ```
+
 *   **Experiments 2-4 (families of trajectories):**
     These expand into many `TrajectoryConfig`s. Append `_LOCAL` to any key to use the small proxy model and capped example counts. 
     ```bash
     poetry run python -m method.run_trajectory --config EXP2_EVIL_SEED0
     ```
     *(Tip: You can use `scripts/run_family.sh EXP2` to run all trajectories in a family sequentially.)*
+
+    To use the script with nohup, run:
+    ```bash
+    nohup bash scripts/run_family.sh EXP2 > exp2.log 2>&1 &
+    ```
 
 ## Base-model DeltaP Probes
 $\\Delta P_0$ (DeltaP frozen at the base model) is needed for the RQ1 scatter plots. It is measured once per seed and shared across experiments:
