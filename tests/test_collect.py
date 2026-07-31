@@ -388,15 +388,23 @@ class TestDeltaP0:
         assert not missing_delta_p_0(collection, lookup)
         assert len(lookup[("evil", 0)]) == len(E._EXP2_STEPS)
 
-    def test_base_probes_are_read_per_seed_not_shared(self):
+    def test_base_probes_are_shared_across_seeds(self):
+        """One base probe sweep serves every seed of a model.
+
+        ``weights_key`` normalizes seed away at t=0, so all seeds resolve to the
+        same base ``weights_id`` and hence the same probe file. Probing once is
+        therefore enough -- the sweep measures the untouched base model, which
+        no seed has acted on yet.
+        """
         exp2 = E.build_exp2_configs(seeds=(0, 1), measure_traits=("evil",))
         for cfg in exp2:
             write_run(cfg)
-        # Only seed 0 has been probed.
-        write_base_probes(exp2[0], {E._EXP2_STEPS[4].dataset_id: 3.0})
+        # Probing under seed 0 alone covers seed 1 as well.
+        probed = E._EXP2_STEPS[4].dataset_id
+        write_base_probes(exp2[0], {probed: 3.0})
         lookup = base_probe_lookup(collect(exp2, group=E.EXP2).runs)
-        assert ("evil", 0) in lookup
-        assert ("evil", 1) not in lookup
+        assert lookup[("evil", 0)][probed] == pytest.approx(3.0)
+        assert lookup[("evil", 1)][probed] == pytest.approx(3.0)
 
     def test_a_missing_base_probe_file_is_not_an_error(self):
         exp2 = E.build_exp2_configs(seeds=(0,), measure_traits=("evil",))

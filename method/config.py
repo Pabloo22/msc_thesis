@@ -282,12 +282,25 @@ class TrajectoryConfig:
         change nothing about training. Adding probes to a config whose runs
         already exist therefore costs measurements, never a retrain -- the
         adapters are found in the store and the runner skips straight past them.
+
+        ``seed`` is normalized away at ``t=0``, where it cannot have acted on
+        anything yet: with no steps taken the weights are the base model
+        verbatim, so every seed must resolve to one base ``weights_id`` or each
+        would re-measure identical weights under its own key. It is pinned to
+        ``0`` rather than dropped so that seed-0 keys -- and the base artifacts
+        already stored under them -- stay valid.
+
+        Normalizing rather than dropping matters a second time downstream: the
+        base checkpoint's measurement directory holds both the ``SAMPLE``-mode
+        DeltaP subsample and M_0's answers to that subsample's prompts, which
+        are compared row-for-row. Sharing one base ``weights_id`` keeps the pair
+        consistent; keying either of them by seed alone would not.
         """
         if not 0 <= t <= len(self.steps):
             raise IndexError(f"step {t} out of range for {len(self.steps)} steps")
         return {
             "model": dataclasses.asdict(self.model),
-            "seed": self.seed,
+            "seed": self.seed if t else 0,
             "steps": [dataclasses.asdict(s) for s in self.steps[:t]],
         }
 

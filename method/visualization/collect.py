@@ -277,10 +277,12 @@ def base_probe_lookup(
     r"""Read the base-model $\Delta P$ sweeps written by :mod:`method.probe_base`.
 
     Located by rebuilding each run's base ``weights_id`` rather than by
-    globbing, so a summary is only ever read for the exact model and seed that
-    produced it. Missing files are not an error: the sweep is a separate,
-    optional pass, and its absence just means fewer datasets appear in the
-    projection scatter.
+    globbing, so a summary is only ever read for the exact base model that
+    produced it. Every seed of that model resolves to the same base
+    ``weights_id`` and so reads one shared sweep -- keyed per trait and seed here
+    only because the callers join on ``(trait, seed)``. Missing files are not an
+    error: the sweep is a separate, optional pass, and its absence just means
+    fewer datasets appear in the projection scatter.
     """
     out: dict[tuple[str, int], dict[str, float]] = {}
     for run in runs:

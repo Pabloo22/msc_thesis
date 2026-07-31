@@ -35,12 +35,13 @@ def base_probes_path(
 ) -> Path:
     """Where the base-model DeltaP probe summary for one trait is written.
 
-    Keyed by the *base* ``weights_id`` (which encodes model and seed, since no
-    training has happened at t=0) rather than by an experiment name: every
-    experiment sharing a base model and seed shares these numbers, so keying by
-    experiment would measure the same thing several times under different
-    names. Written next to the trajectories, not into the store, so a plotting
-    machine needs only the trajectories root synced from the GPU box.
+    Keyed by the *base* ``weights_id`` (which reduces to the model alone, since
+    no training has happened at t=0 and ``weights_key`` normalizes seed away
+    there) rather than by an experiment name: every experiment and seed sharing
+    a base model shares these numbers, so keying by experiment would measure the
+    same thing several times under different names. Written next to the
+    trajectories, not into the store, so a plotting machine needs only the
+    trajectories root synced from the GPU box.
     """
     root = trajectories_root(mock=mock)
     return root / "base_probes" / f"{base_weights_id}_{trait}.json"

@@ -90,19 +90,31 @@ class TestTraitSharesFineTuning:
         )
         assert get_weights_id(a, 1) != get_weights_id(b, 1)
 
-    def test_seeds_do_not_share_the_base_checkpoint(self):
-        """``weights_key`` includes seed even at t=0, where no training has
-        happened yet, so each seed measures the base model independently.
+    def test_seeds_share_the_base_checkpoint(self):
+        """``weights_key`` normalizes seed away at t=0, where no training has
+        happened yet, so every seed resolves to one base ``weights_id``.
 
-        That costs a repeated base-model measurement per seed, but it buys an
-        independent draw of ``v_0`` per seed, which is what makes the
-        across-seed spread an estimate of measurement noise.
+        The weights at t=0 are the base model verbatim regardless of seed, so
+        keying them by seed would re-measure identical weights once per seed.
+        The seed does not reach the evaluation path (it drives the trainer and
+        the training subsample only), so the repeat bought a *nondeterministic*
+        redraw of ``v_0``, not a seed-controlled one -- an across-seed spread
+        that no rerun of the same seed could reproduce.
         """
         a, b = (
             E.build_exp2_configs(seeds=(s,), measure_traits=("evil",))[0]
             for s in (0, 1)
         )
-        assert get_weights_id(a, 0) != get_weights_id(b, 0)
+        assert get_weights_id(a, 0) == get_weights_id(b, 0)
+
+    def test_normalizing_seed_at_t0_preserves_seed_0_keys(self):
+        """Seed is pinned to 0 at t=0 rather than dropped from the key.
+
+        Dropping the field would rehash the seed-0 base checkpoint too and
+        orphan the base measurements already in the store.
+        """
+        cfg = E.build_exp2_configs(seeds=(0,), measure_traits=("evil",))[0]
+        assert get_weights_id(cfg, 0) == "t00-7fabae59bda88957"
 
 
 class TestPrefixSharing:
