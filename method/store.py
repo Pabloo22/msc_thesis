@@ -4,7 +4,10 @@ The durable artifacts are LoRA adapters (small) and measurements (small); full
 merged weights are treated as a disposable cache, because any checkpoint can be
 rebuilt by replaying ``base -> merge adapter_1 -> ... -> merge adapter_t``. That
 replay is exact, not an approximation, because adapter ``t+1`` is trained on top
-of the merged result of adapter ``t``.
+of the merged result of adapter ``t``. Being disposable, merged weights are also
+the one thing here scoped per process rather than shared: each run drops the lot
+when it finishes, so two runs on one box (one per GPU) would otherwise delete
+each other's mid-step.
 
 Everything is keyed by ``weights_id``, a hash of the recipe that produced the
 weights. Two trajectories sharing a prefix therefore share adapters and
@@ -93,6 +96,22 @@ def get_training_sample_id(
     return digest[:_HASH_LEN]
 
 
+def _process_alive(pid: int) -> bool:
+    """Whether ``pid`` names a running process.
+
+    Signal 0 performs the permission and existence checks without delivering
+    anything. ``PermissionError`` means the process exists but belongs to
+    another user, which still counts as alive.
+    """
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 @contextmanager
 def atomic_dir(target: Path) -> Generator[Path]:
     """Yield a scratch directory that is renamed onto ``target`` on success.
@@ -151,7 +170,11 @@ class Store:
         self.root = root
         self.adapters = root / "adapters"
         self.measurements = root / "measurements"
-        self.merged = root / "merged"
+        # Merged weights are scoped to the process that materialised them, so
+        # that two runs sharing a box (one per GPU) cannot evict each other's
+        # checkpoints -- see :meth:`evict_all_merged`.
+        self.merged_root = root / "merged"
+        self.merged = self.merged_root / str(os.getpid())
         self.training_samples = root / "training_samples"
         # Where a training run's raw output dir is staged before the adapter is
         # installed. Like ``merged`` it is disposable and, unlike every other
@@ -240,9 +263,49 @@ class Store:
             shutil.rmtree(path, ignore_errors=True)
 
     def evict_all_merged(self) -> None:
-        """Drop every materialised checkpoint, e.g. when reclaiming disk."""
+        """Drop every checkpoint *this process* materialised.
+
+        Scoped to this process because it is called at the end of every run
+        (:mod:`method.run_trajectory`, :mod:`method.probe_base`) while a second
+        run may be halfway through its own. When both shared one ``merged/``
+        directory, the first to finish deleted the checkpoint the other was
+        evaluating, and the victim died mid-step on a missing ``config.json``.
+        Nothing durable was lost -- adapters and measurements are installed and
+        pushed as they land, so a re-invocation resumes -- but the GPU hours
+        spent on the step in flight were.
+
+        Read-sharing was never the problem: merged directories are named by
+        ``weights_id`` and written through :func:`atomic_dir`, so one is either
+        absent or a complete, correct checkpoint whoever built it. Only the
+        wholesale delete was unsafe, so only it is scoped.
+        """
         if self.merged.exists():
             shutil.rmtree(self.merged, ignore_errors=True)
+
+    def evict_orphaned_merged(self) -> None:
+        """Drop merged roots whose owning process is gone.
+
+        A run killed outright (spot preemption, ``pkill``) never reaches
+        :meth:`evict_all_merged`, and a 7B checkpoint is ~15GB against the
+        150GB budget in ``docs/cloud_setup.md`` -- enough leaked roots and the
+        next run has nowhere to materialise. Called at the start of a run,
+        where the alternative is a human remembering to clear ``store/merged``
+        between rentals.
+
+        A live pid is left alone, which is what makes this safe to call while
+        another run is in flight. Pid reuse can only cause a leak (a stale root
+        skipped because some unrelated process now holds the number), never a
+        deletion of something in use.
+        """
+        if not self.merged_root.is_dir():
+            return
+        for path in self.merged_root.iterdir():
+            if path == self.merged or not path.is_dir() or not path.name.isdigit():
+                continue
+            if _process_alive(int(path.name)):
+                continue
+            logger.info("Evicting merged weights orphaned by pid %s", path.name)
+            shutil.rmtree(path, ignore_errors=True)
 
     def merged_size_gb(self) -> float:
         """Total size of materialised full weights, for disk budgeting."""

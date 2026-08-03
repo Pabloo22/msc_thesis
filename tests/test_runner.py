@@ -12,11 +12,15 @@ Failure modes that once existed silently:
 * Measurements reached the remote only after the whole trajectory finished, so
   a spot preemption during the last training step threw away every eval the
   run had paid for.
+* ``evict_all_merged`` wiped one shared ``store/merged``, so the first of two
+  runs sharing a box to finish deleted the checkpoint the other was still
+  evaluating.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import os
 import shutil
 
 import pytest
@@ -25,7 +29,7 @@ from method import experiments as E, run_trajectory, steps
 from method.backends import get_backend
 from method.config import Backend, HNeutralSource
 from method.run_trajectory import _install_adapter, _verify_cached_adapter
-from method.store import Store, file_sha256, get_weights_id
+from method.store import Store, _process_alive, file_sha256, get_weights_id
 from method.sync import REMOTE_ENV, LocalTransport
 from method.utils import trajectory_run_dir
 
@@ -77,6 +81,62 @@ class TestInstallAdapterIsAtomic:
             _install_adapter(produced, target)
 
         assert not target.exists()
+
+
+def _dead_pid() -> int:
+    """A pid number that names no running process."""
+    for candidate in range(4_000_000, 4_000_200):
+        if not _process_alive(candidate):
+            return candidate
+    raise RuntimeError("found no unused pid to test with")
+
+
+class TestMergedWeightsAreScopedPerProcess:
+    """Both GPUs on a box run against one repo, and every run drops its merged
+    weights when it finishes. Sharing one ``merged/`` directory meant the first
+    to finish deleted the checkpoint the second was mid-evaluation on, killing
+    it on a missing ``config.json`` and burning the step's GPU hours."""
+
+    def _checkpoint(self, parent, wid) -> object:
+        path = parent / wid
+        path.mkdir(parents=True)
+        (path / "config.json").write_text("{}", encoding="utf-8")
+        return path
+
+    def test_finishing_a_run_leaves_a_live_run_untouched(self, tmp_path):
+        store = Store(tmp_path / "store")
+        mine = self._checkpoint(store.merged, "t01-aaaaaaaaaaaaaaaa")
+        # os.getppid() is the pytest launcher: a pid that is certainly alive
+        # and certainly not this process, i.e. the other GPU's run.
+        theirs = self._checkpoint(
+            store.merged_root / str(os.getppid()), "t01-bbbbbbbbbbbbbbbb"
+        )
+
+        store.evict_all_merged()
+
+        assert not mine.exists()
+        assert theirs.exists()
+
+    def test_orphaned_roots_are_reclaimed_but_live_ones_are_not(self, tmp_path):
+        """A preempted run never reaches its own eviction, and a leaked 7B
+        checkpoint is ~15GB of the box's budget."""
+        store = Store(tmp_path / "store")
+        dead = self._checkpoint(
+            store.merged_root / str(_dead_pid()), "t01-cccccccccccccccc"
+        )
+        live = self._checkpoint(
+            store.merged_root / str(os.getppid()), "t01-dddddddddddddddd"
+        )
+        mine = self._checkpoint(store.merged, "t01-eeeeeeeeeeeeeeee")
+
+        store.evict_orphaned_merged()
+
+        assert not dead.parent.exists()
+        assert live.exists()
+        assert mine.exists()
+
+    def test_sweeping_an_untouched_store_is_a_no_op(self, tmp_path):
+        Store(tmp_path / "store").evict_orphaned_merged()
 
 
 class TestTrainingOutputIsNotRetained:

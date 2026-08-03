@@ -125,6 +125,8 @@ def run(
     store = Store.for_backend(backend_kind)
     backend = get_backend(backend_kind, dtype=dtype)
     datasets = experiments.all_probe_datasets(local=local)
+    # Reclaim what a preempted run left behind, without touching a live one's.
+    store.evict_orphaned_merged()
     # No-op unless MSC_STORE_REMOTE is set (and never for a mock store). Each
     # (seed, trait) below is a full pass over every probe dataset at the base
     # model, so its results are pushed as soon as they exist rather than after

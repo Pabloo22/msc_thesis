@@ -104,6 +104,11 @@ def run(cfg: TrajectoryConfig, backend_kind: Backend, dtype: str) -> Path:
     )
     run_dir.mkdir(parents=True, exist_ok=True)
 
+    # Reclaim whatever a preempted or killed run left materialised. Leaves any
+    # live sibling's checkpoints alone, so this is safe with a second run
+    # already going on the box's other GPU.
+    store.evict_orphaned_merged()
+
     # No-op unless MSC_STORE_REMOTE is set (and never for a mock store). Pulling
     # first turns adapters another box already trained into local cache hits, so
     # a shared prefix is not retrained here.
