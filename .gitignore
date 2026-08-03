@@ -4,7 +4,8 @@ trajectories-mock/
 store/
 store-mock/
 unsloth_compiled_cache/
-plots/
+plots/mock*/
+plots/real/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
