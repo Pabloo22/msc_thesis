@@ -79,6 +79,52 @@ class TestInstallAdapterIsAtomic:
         assert not target.exists()
 
 
+class TestTrainingOutputIsNotRetained:
+    """The trainer's output directory is a full ``checkpoint-N`` plus optimizer
+    state, and nothing reads it once ``_install_adapter`` has lifted the adapter
+    out of it. Kept in the run directory it survived the whole box *and* went up
+    a second time inside the run tar, which is what made an otherwise-identical
+    trajectory ship hundreds of megabytes where a fully cache-hit one shipped
+    sixteen."""
+
+    def test_a_finished_run_leaves_no_training_output(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("method.utils.TRAJECTORIES_DIR", tmp_path / "trajectories")
+        store = Store(tmp_path / "store")
+        monkeypatch.setattr(
+            Store, "for_backend", classmethod(lambda cls, backend: store)
+        )
+        cfg = E.SMOKE_MOCK
+
+        run_dir = run_trajectory.run(cfg, Backend.MOCK, "float16")
+
+        assert store.has_adapter(get_weights_id(cfg, 1))  # training did happen
+        assert not list(run_dir.glob("train_out*"))
+        assert list(store.train_scratch.iterdir()) == []
+
+    def test_scratch_is_removed_when_training_fails(self, tmp_path):
+        """A failed step is exactly when the box most needs the disk back."""
+        store = Store(tmp_path / "store")
+
+        with pytest.raises(RuntimeError, match="training blew up"):
+            with run_trajectory.training_scratch(store, "t01-feedfeedfeedfeed") as out:
+                (out / "checkpoint-1").mkdir(parents=True)
+                raise RuntimeError("training blew up")
+
+        assert list(store.train_scratch.iterdir()) == []
+
+    def test_concurrent_steps_get_separate_directories(self, tmp_path):
+        """Two boxes (or two GPUs) training the same weights_id at once must not
+        write into one directory: ``find_adapter`` takes the highest
+        ``checkpoint-N`` it finds, so a shared path could hand one run the
+        other's checkpoint."""
+        store = Store(tmp_path / "store")
+        wid = "t01-feedfeedfeedfeed"
+
+        with run_trajectory.training_scratch(store, wid) as first:
+            with run_trajectory.training_scratch(store, wid) as second:
+                assert first != second
+
+
 class TestTrainingDataProvenance:
     """The ids hash dataset *names*; the recipe's provenance block records the
     *bytes*, so a machine with a divergent dataset copy fails loudly instead

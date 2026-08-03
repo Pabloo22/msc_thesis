@@ -20,6 +20,9 @@ import dataclasses
 import json
 import logging
 import shutil
+import tempfile
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
 
 from method import experiments, steps
@@ -151,10 +154,9 @@ def run(cfg: TrajectoryConfig, backend_kind: Backend, dtype: str) -> Path:
         else:
             logger.info("--- training step %d -> %s ---", t + 1, target)
             model_path = materialize(cfg, t, store, backend)
-            adapter = backend.train(
-                model_path, train_file, step, cfg, run_dir / f"train_out_{t + 1}"
-            )
-            _install_adapter(adapter, store.adapter_dir(target))
+            with training_scratch(store, target) as train_out:
+                adapter = backend.train(model_path, train_file, step, cfg, train_out)
+                _install_adapter(adapter, store.adapter_dir(target))
             store.write_recipe(
                 target,
                 cfg.weights_key(t + 1),
@@ -235,6 +237,50 @@ def _verify_cached_adapter(
             f"{store.adapter_dir(wid)} and every later step's adapter to "
             "retrain from this machine's data."
         )
+
+
+@contextmanager
+def training_scratch(store: Store, wid: str) -> Generator[Path]:
+    """Yield a throwaway output directory for one vendored training run.
+
+    The vendored ``training.py`` saves through HF Trainer's checkpointing
+    (``save_strategy="epoch"``), so its output directory is not the adapter --
+    it is a full ``checkpoint-N`` plus trainer bookkeeping, roughly 250 MB per
+    step. :func:`_install_adapter` copies the part the store needs out of it,
+    after which every byte left behind is either a duplicate of
+    ``store/adapters/<wid>/`` or something ``_ADAPTER_EXCLUDES`` already judged
+    worthless.
+
+    It therefore lives here rather than in the run directory. Inside the run
+    directory it was retained for the life of the box *and* uploaded a second
+    time inside the run tar by :meth:`Syncer.push_after_run`, which is why an
+    otherwise-identical trajectory's archive came to hundreds of megabytes
+    while a fully cache-hit one came to sixteen. Nothing read it: resume is
+    decided by :meth:`Store.has_adapter` against the store, and the
+    hyperparameters it recorded in ``training_config_input.json`` are already
+    in the run's ``trajectory.json`` and the adapter's ``recipe.json``.
+
+    Removed on the way out whether or not training succeeded -- a failed step
+    is exactly when a rental box most needs the disk back for the retry.
+
+    Under the store rather than ``/tmp`` because a rental box's ``/tmp`` is
+    routinely a small tmpfs, while the store root is on the volume whose size
+    ``docs/cloud_setup.md`` budgets. A fresh directory per attempt (rather than
+    one stable path per ``wid``) keeps two trajectories training the same step
+    concurrently from writing into each other, and stops
+    :func:`method.backends.find_adapter` from ever seeing a higher-numbered
+    ``checkpoint-N`` left by an earlier interrupted attempt.
+
+    A hard kill (SIGKILL, preemption) leaves a directory behind, as it does for
+    :func:`method.store.atomic_dir`. They are inert and safe to delete; the
+    whole of ``store/train_scratch`` can go whenever no run is in flight.
+    """
+    store.train_scratch.mkdir(parents=True, exist_ok=True)
+    scratch = Path(tempfile.mkdtemp(dir=store.train_scratch, prefix=f"{wid}."))
+    try:
+        yield scratch
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
 
 
 #: Trainer bookkeeping inside a checkpoint that the store has no use for. The

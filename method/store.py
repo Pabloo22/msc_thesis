@@ -153,6 +153,11 @@ class Store:
         self.measurements = root / "measurements"
         self.merged = root / "merged"
         self.training_samples = root / "training_samples"
+        # Where a training run's raw output dir is staged before the adapter is
+        # installed. Like ``merged`` it is disposable and, unlike every other
+        # directory here, holds nothing addressed by an id -- see
+        # :func:`method.run_trajectory.training_scratch`.
+        self.train_scratch = root / "train_scratch"
 
     @classmethod
     def for_backend(cls, backend: Backend) -> Store:
