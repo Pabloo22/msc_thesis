@@ -120,10 +120,14 @@ else
     if [[ "${remote%%/*}" == *:* && "${remote}" != /* ]]; then
         if [[ ! -f "${RCLONE_CONF}" ]]; then
             bad "rclone target '${remote}' but no ${RCLONE_CONF} (scp it; do not redo OAuth headless)"
-        elif rclone lsd "${remote%%:*}:" >/dev/null 2>&1; then
+        # Probes the configured bucket, not the bare remote: a bucket-scoped R2
+        # token (least-privilege, Cloudflare's recommended type) has no
+        # account-level list-buckets permission, so "remote:" alone 403s even
+        # when the bucket itself is fully readable.
+        elif rclone lsd "${remote}" >/dev/null 2>&1; then
             ok "rclone remote '${remote%%:*}' reachable"
         else
-            bad "rclone cannot reach '${remote%%:*}' -- check ${RCLONE_CONF}"
+            bad "rclone cannot reach '${remote}' -- check ${RCLONE_CONF}"
         fi
     else
         [[ -d "${remote}" ]] && ok "mounted remote ${remote}" \

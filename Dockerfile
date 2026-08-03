@@ -11,14 +11,23 @@ ENV DEBIAN_FRONTEND=noninteractive
 # python3.12 comes from deadsnakes because 22.04 ships 3.10 and pyproject pins
 # >=3.12,<3.13. rclone is not optional: method/sync.py shells out to the binary
 # for every push/pull, so a box without it silently degrades to local-only work
-# and loses its artifacts when the instance goes away.
+# and loses its artifacts when the instance goes away. Installed from the
+# official script rather than the jammy apt package: that package predates R2
+# and mishandles its API (every request 501s once before a retry succeeds).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         software-properties-common curl ca-certificates && \
     add-apt-repository ppa:deadsnakes/ppa -y && \
     apt-get update && apt-get install -y --no-install-recommends \
         python3.12 python3.12-venv python3.12-dev \
-        build-essential git unzip rclone && \
-    rm -rf /var/lib/apt/lists/*
+        build-essential git unzip && \
+    rm -rf /var/lib/apt/lists/* && \
+    curl https://rclone.org/install.sh | bash
+
+# A bucket-scoped R2 token (Cloudflare's least-privilege, recommended type) has
+# no account-level bucket permissions, so rclone's pre-upload HeadBucket check
+# 403s and rclone reports the whole copy as AccessDenied. This skips that
+# check; safe here since the remote's bucket is always known to already exist.
+ENV RCLONE_S3_NO_CHECK_BUCKET=true
 
 # Deliberately no `update-alternatives` for python3: on this base /usr/bin/python3
 # is the 3.10 that apt's own tooling (add-apt-repository) imports, and repointing
