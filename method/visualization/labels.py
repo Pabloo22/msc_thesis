@@ -44,9 +44,16 @@ _VERSION_NUMERALS = {"normal": None, "misaligned_1": "I", "misaligned_2": "II"}
 #: family (see :attr:`method.config.TrajectoryConfig.labels`). Keys must match
 #: the strings the builders in :mod:`method.experiments` write, so these dicts
 #: double as the readable definition of what each condition *is*.
-HYSTERESIS_CONDITIONS = ("baseline", "same", "diff")
+#: Ordered by how much training precedes the final step: none, one and two
+#: steps of normal data, then the two arms whose two prior steps included
+#: misalignment. Reading left to right within a group therefore separates "was
+#: it fine-tuned at all" (baseline -> normal1 -> normal2) from "was it
+#: *misaligned*" (normal2 -> same/diff, which are step-count-matched).
+HYSTERESIS_CONDITIONS = ("baseline", "normal1", "normal2", "same", "diff")
 HYSTERESIS_CONDITION_LABELS = {
     "baseline": "First exposure",
+    "normal1": r"After normal $\times$1",
+    "normal2": r"After normal $\times$2",
     "same": "After realign (same data)",
     "diff": "After realign (other data)",
 }

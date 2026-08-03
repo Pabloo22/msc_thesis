@@ -146,6 +146,69 @@ class TestPrefixSharing:
         for c in baselines:
             assert len(c.steps) == 1
 
+    def test_plasticity_arms_are_n_normal_steps_then_the_target(self):
+        """The "was it just fine-tuned at all?" controls: only normal data
+        before the same target step whose Delta b every other arm reports."""
+        cfgs = E.build_hysteresis_configs(
+            seeds=(0,), measure_traits=("evil",), realign_traits=("evil",)
+        )
+        arms = {c.label_map["condition"]: c for c in cfgs}
+        realign = E._realign_step("evil")
+        target = arms["baseline"].steps[0]
+        assert arms["normal1"].steps == (realign, target)
+        assert arms["normal2"].steps == (realign, realign, target)
+        for name in ("normal1", "normal2"):
+            assert arms[name].label_map["dataset"] == arms["baseline"].label_map[
+                "dataset"
+            ]
+
+    def test_normal2_is_step_matched_with_same_and_diff(self):
+        """The claim the matched control rests on: normal2 and same/diff differ
+        in *what* the two prior steps trained on, not how many there were."""
+        cfgs = E.build_hysteresis_configs(
+            seeds=(0,), measure_traits=("evil",), realign_traits=("evil",)
+        )
+        arms = {c.label_map["condition"]: c for c in cfgs}
+        matched = ("normal2", "same", "diff")
+        counts = {name: len(arms[name].steps) - 1 for name in matched}
+        assert set(counts.values()) == {2}, counts
+        for cfg in cfgs:
+            assert cfg.label_map["n_prior_steps"] == str(len(cfg.steps) - 1)
+
+    def test_normal_prefixes_is_configurable(self):
+        cfgs = E.build_hysteresis_configs(
+            seeds=(0,), measure_traits=("evil",), normal_prefixes=(2,)
+        )
+        conditions = {c.label_map["condition"] for c in cfgs}
+        assert "normal2" in conditions
+        assert "normal1" not in conditions
+        with pytest.raises(ValueError, match="step counts"):
+            E.build_hysteresis_configs(seeds=(0,), normal_prefixes=(0,))
+
+    def test_every_arm_ends_on_the_dataset_its_bar_names(self):
+        """The bars are only comparable because every condition's final step is
+        a step onto the same dataset."""
+        for cfg in E.build_hysteresis_configs(seeds=(0,), measure_traits=("evil",)):
+            assert cfg.steps[-1].dataset_id == cfg.label_map["dataset"]
+
+    def test_the_plasticity_arms_share_their_normal_prefix(self):
+        """Both normal-only arms start from the same 1-step realign chain, and
+        normal2 extends it, so the prefix is trained once per (trait, seed)
+        rather than once per target dataset."""
+        cfgs = [
+            c
+            for c in E.build_hysteresis_configs(seeds=(0,), measure_traits=("evil",))
+            if c.label_map["condition"].startswith("normal")
+        ]
+        by_realign = {}
+        for cfg in cfgs:
+            by_realign.setdefault(cfg.label_map["realign_trait"], set()).add(
+                get_weights_id(cfg, 1)
+            )
+        assert by_realign
+        for realign_trait, ids in by_realign.items():
+            assert len(ids) == 1, f"{realign_trait} retrains its realign step: {ids}"
+
     def test_same_and_diff_differ_only_in_the_first_step(self):
         cfgs = E.build_hysteresis_configs(
             seeds=(0,), measure_traits=("evil",), realign_traits=("evil",)

@@ -4,10 +4,16 @@
 set -e
 
 usage() {
-    echo "Usage: bash scripts/run_family.sh <FAMILY_PREFIX> [LOCAL] [--seeds N [N ...]]"
+    echo "Usage: bash scripts/run_family.sh <FAMILY_PREFIX> [LOCAL] [MOCK] [--seeds N [N ...]]"
     echo
     echo "  FAMILY_PREFIX  EXP2 | EXP3 | EXP4"
     echo "  LOCAL          run the small-proxy '_local' variants instead of paper scale"
+    echo "  MOCK           fabricate artifacts instead of training (no GPU, no judge)."
+    echo "                 Writes to trajectories-mock/ and store-mock/, which are"
+    echo "                 separate from the real ones, so this is the way to get a"
+    echo "                 complete family on disk and see every bar a figure should"
+    echo "                 have. Plot it with 'make_plots --mock'. Pair with LOCAL"
+    echo "                 to keep the fabricated datasets small."
     echo "  --seeds        restrict to these seeds; disjoint subsets can be run in"
     echo "                 parallel on different GPUs (seeds are part of weights_key,"
     echo "                 so the adapters they train never collide)"
@@ -15,6 +21,7 @@ usage() {
     echo "Examples:"
     echo "  bash scripts/run_family.sh EXP2"
     echo "  bash scripts/run_family.sh EXP3 LOCAL"
+    echo "  bash scripts/run_family.sh EXP3 LOCAL MOCK --seeds 0"
     echo "  CUDA_VISIBLE_DEVICES=0 bash scripts/run_family.sh EXP3 --seeds 0 1 2"
     echo "  CUDA_VISIBLE_DEVICES=1 bash scripts/run_family.sh EXP3 --seeds 3 4"
 }
@@ -29,11 +36,15 @@ FAMILY="$1"
 shift
 
 LOCAL=0
+MOCK=0
 SEEDS=()
 while [ $# -gt 0 ]; do
     case "$1" in
         LOCAL|--local)
             LOCAL=1
+            ;;
+        MOCK|--mock)
+            MOCK=1
             ;;
         --seeds)
             shift
@@ -57,6 +68,12 @@ if [ "$LOCAL" == "1" ]; then
     echo ">>> Running LOCAL proxy variants for family: $FAMILY"
 else
     echo ">>> Running PAPER SCALE variants for family: $FAMILY"
+fi
+
+BACKEND_ARGS=()
+if [ "$MOCK" == "1" ]; then
+    BACKEND_ARGS=(--backend mock)
+    echo ">>> MOCK backend: no GPU, no judge; writing to trajectories-mock/"
 fi
 
 if [ ${#SEEDS[@]} -gt 0 ]; then
@@ -98,7 +115,7 @@ echo "--------------------------------------------------------"
 # Iterate through the generated list and run each trajectory sequentially
 for key in $CONFIGS; do
     echo ">>> Starting trajectory: $key"
-    poetry run python -m method.run_trajectory --config "$key"
+    poetry run python -m method.run_trajectory --config "$key" "${BACKEND_ARGS[@]}"
 done
 
 echo ">>> Finished running all trajectories for family $FAMILY."

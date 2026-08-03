@@ -251,6 +251,7 @@ def build_hysteresis_configs(
     measure_traits: Sequence[str] = MEASURE_TRAITS,
     realign_traits: Sequence[str] = ("evil", "sycophantic"),
     datasets: Sequence[StepConfig] = HYSTERESIS_DATASETS,
+    normal_prefixes: Sequence[int] = (1, 2),
     probes: Sequence[StepConfig] | None = None,
     local: bool = False,
 ) -> list[TrajectoryConfig]:
@@ -261,10 +262,39 @@ def build_hysteresis_configs(
         M0) -- has no realign step, so it doesn't depend on realign_trait and
         is only ever trained once no matter how many realign_traits/
         measure_traits are swept.
-      - for each realign_trait x D2: a *same* trajectory (D2 -> realign -> D2)
-        and a *different* trajectory (D_other -> realign -> D2), where
-        D_other is the next dataset in ``datasets`` (cyclic pairing -- a
-        default, easy to change via the ``datasets`` argument).
+      - for each realign_trait x D2: one *normal-only* trajectory per entry in
+        ``normal_prefixes`` (n steps on the normal data, then D2), a *same*
+        trajectory (D2 -> realign -> D2) and a *different* trajectory
+        (D_other -> realign -> D2), where D_other is the next dataset in
+        ``datasets`` (cyclic pairing -- a default, easy to change via the
+        ``datasets`` argument).
+
+    The normal-only arms are the plasticity-loss controls. Without them,
+    baseline vs. same/diff confounds two things: that the model was trained on
+    trait-eliciting data before, and that it was trained *at all* before --
+    fine-tuning on any data (the re-alignment set included) can leave a model
+    that simply moves less per step. Training only on normal data and then on D2
+    holds the second constant, so the gap to the baseline is the size of the
+    plasticity effect on its own.
+
+    ``normal_prefixes`` defaults to ``(1, 2)`` because the two lengths answer
+    different questions:
+
+    ``normal2``
+        Step-count-matched with same/diff -- two fine-tuning steps before the
+        final one, differing only in *what* they trained on. This is the arm
+        same/diff must be read against for a claim about prior misalignment,
+        and comparing them is also the direct test of whether a
+        misalign-then-realign cycle leaves a model more prone to EM than plain
+        normal training of the same length.
+    ``normal1``
+        One prior step. Not matched to same/diff, but paired with ``normal2``
+        it says whether plasticity loss accumulates per step or lands all at
+        once -- which is what decides how much of the same/diff gap the matched
+        control can be trusted to have removed.
+
+    Pass ``normal_prefixes=(2,)`` to drop the unmatched arm (3 fewer chains per
+    seed and realign trait), or ``()`` for the original design.
 
     Every arm probes its *target* dataset D2 at each checkpoint. That is what
     turns the bar chart from an observation into an explanation: if a re-aligned
@@ -277,6 +307,8 @@ def build_hysteresis_configs(
     t=0 *is* its action feature, and every arm's probe of D2 at the base
     checkpoint resolves to the one artifact all of them share.
     """
+    if any(n_normal < 1 for n_normal in normal_prefixes):
+        raise ValueError("normal_prefixes entries are step counts, so all >= 1")
     model, eval_cfg, delta_p, latent = _scale_presets(local)
     suffix = "_local" if local else ""
     n = len(datasets)
@@ -318,7 +350,11 @@ def build_hysteresis_configs(
                         seed,
                         # No realign_trait label: the baseline has no realign
                         # step, so one baseline run serves every realign_trait.
-                        (("condition", "baseline"), ("dataset", d2.dataset_id)),
+                        (
+                            ("condition", "baseline"),
+                            ("dataset", d2.dataset_id),
+                            ("n_prior_steps", "0"),
+                        ),
                         probes_for(d2),
                     )
                 )
@@ -331,13 +367,28 @@ def build_hysteresis_configs(
                         ("dataset", d2.dataset_id),
                         ("realign_trait", realign_trait),
                     )
+                    for n_normal in normal_prefixes:
+                        configs.append(
+                            mk(
+                                f"exp3_normal{n_normal}_{realign_trait}_{tag}_{trait}",
+                                (realign,) * n_normal + (d2,),
+                                trait,
+                                seed,
+                                (
+                                    ("condition", f"normal{n_normal}"),
+                                    *common,
+                                    ("n_prior_steps", str(n_normal)),
+                                ),
+                                probes_for(d2),
+                            )
+                        )
                     configs.append(
                         mk(
                             f"exp3_same_{realign_trait}_{tag}_{trait}",
                             (d2, realign, d2),
                             trait,
                             seed,
-                            (("condition", "same"), *common),
+                            (("condition", "same"), *common, ("n_prior_steps", "2")),
                             probes_for(d2),
                         )
                     )
@@ -350,6 +401,7 @@ def build_hysteresis_configs(
                             (
                                 ("condition", "diff"),
                                 *common,
+                                ("n_prior_steps", "2"),
                                 ("first_dataset", d_other.dataset_id),
                             ),
                             probes_for(d2),

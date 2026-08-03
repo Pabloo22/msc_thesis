@@ -16,6 +16,7 @@ import pandas as pd
 import torch
 
 from method.latent import summarize
+from method.visualization import labels
 from method.visualization.schema import StepRecord, Trajectory
 
 #: One instance of the 8-dataset design from "Running One Trajectory with
@@ -178,6 +179,28 @@ DIVERSITY_LABELS = {
 }
 
 
+#: Display order and labels for the RQ2 "hysteresis" bar chart, taken from the
+#: real thing rather than restated: a fixture that names its own conditions
+#: silently stops previewing the experiment the moment an arm is added or
+#: renamed, which is exactly how the demo figure came to show fewer bars than
+#: the design has.
+HYSTERESIS_CONDITIONS = labels.HYSTERESIS_CONDITIONS
+HYSTERESIS_LABELS = labels.HYSTERESIS_CONDITION_LABELS
+
+#: Per-condition shape of the fake data: how many steps of prior training the
+#: arm had, and how far its final step moves relative to a first exposure.
+#: ``normal1``/``normal2`` move *less* (plasticity loss, worsening with the
+#: number of prior steps); ``same``/``diff`` move *more* (the hysteresis
+#: hypothesis) and start from a floor left behind by incomplete re-alignment.
+_HYSTERESIS_ARMS = {
+    "baseline": (0, 1.0),
+    "normal1": (1, 0.85),
+    "normal2": (2, 0.75),
+    "same": (2, 1.35),
+    "diff": (2, 1.25),
+}
+
+
 def synthetic_hysteresis_frame(
     datasets: Sequence[str] = (
         "hallucination/misaligned_1",
@@ -187,36 +210,60 @@ def synthetic_hysteresis_frame(
     *,
     n_seeds: int = 5,
     seed: int = 0,
-    hysteresis_factor: float = 1.35,
+    base_behavior: float = 8.0,
+    realigned_floor: float = 12.0,
 ) -> pd.DataFrame:
-    """Fake data for the RQ2 hysteresis bar chart ("Is a model trained on
+    r"""Fake data for the RQ2 hysteresis bar chart ("Is a model trained on
     trait-eliciting data more prone to EM?").
 
-    ``after_realignment`` is drawn with a larger mean than ``fresh``, standing
-    in for the hypothesis that a model already exposed to trait-eliciting
-    data and realigned is easier to re-misalign than a fresh one.
+    One row per (dataset, condition, seed), covering every arm in
+    :data:`HYSTERESIS_CONDITIONS`, so the demo figure has the same bars the real
+    one will. Encodes the two effects the chart has to separate: ``same``/``diff``
+    move further per step than a first exposure (the hysteresis hypothesis),
+    while ``normal1``/``normal2`` move *less* and by increasing amounts
+    (plasticity loss, accumulating with the number of prior steps) -- so a naive
+    reading of same/diff against the baseline would credit hysteresis with a gap
+    that plain fine-tuning already explains part of.
+
+    Emits levels as well as deltas, matching
+    :func:`~method.visualization.collect.hysteresis_frame`: ``behavior_base``
+    ($b_0$), ``behavior_before`` ($b_{T-1}$, the floor the final step starts
+    from), ``behavior`` ($b_T$) and ``delta_behavior`` ($b_T - b_{T-1}$).
+
+    The floors are what make this fixture worth having. ``same``/``diff`` enter
+    their final step at ``realigned_floor``, *above* $b_0$ -- re-alignment is
+    incomplete, which is the premise of the experiment -- so their $\Delta b$ is
+    charged from higher up and understates where they end. That is the whole
+    reason the figure plots levels against a $b_0$ line rather than deltas.
     """
     rng = np.random.default_rng(seed)
     rows = []
     for dataset in datasets:
         base = abs(rng.normal(18, 4))
         for s in range(n_seeds):
-            rows.append(
-                {
-                    "dataset": dataset,
-                    "condition": "fresh",
-                    "seed": s,
-                    "delta_behavior": base + rng.normal(0, 3),
-                }
-            )
-            rows.append(
-                {
-                    "dataset": dataset,
-                    "condition": "after_realignment",
-                    "seed": s,
-                    "delta_behavior": base * hysteresis_factor + rng.normal(0, 3),
-                }
-            )
+            for condition, (n_prior, factor) in _HYSTERESIS_ARMS.items():
+                if condition in ("same", "diff"):
+                    # Re-alignment after misalignment lands short of b_0.
+                    before = realigned_floor
+                elif n_prior:
+                    # Training on normal data has nothing to pull back, so it
+                    # leaves the model at (here, just under) b_0.
+                    before = max(0.0, base_behavior - 3.0)
+                else:
+                    before = base_behavior
+                delta = base * factor + rng.normal(0, 3)
+                rows.append(
+                    {
+                        "dataset": dataset,
+                        "condition": condition,
+                        "seed": s,
+                        "n_prior_steps": n_prior,
+                        "behavior_base": base_behavior,
+                        "behavior_before": before,
+                        "behavior": before + delta,
+                        "delta_behavior": delta,
+                    }
+                )
     return pd.DataFrame(rows)
 
 

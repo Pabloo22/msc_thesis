@@ -86,8 +86,16 @@ def build_and_save(out_dir: Path = style.PLOTS_DIR, *, n_seeds: int = 5) -> list
     hysteresis_df = synthetic.synthetic_hysteresis_frame(n_seeds=n_seeds)
     fig = figures.hysteresis_bar(
         hysteresis_df,
-        condition_labels=("First exposure", "After realignment"),
-        title="Behaviour change: fresh vs. post-realignment exposure",
+        conditions=synthetic.HYSTERESIS_CONDITIONS,
+        condition_labels=[
+            synthetic.HYSTERESIS_LABELS[c] for c in synthetic.HYSTERESIS_CONDITIONS
+        ],
+        # Same arms, same order, same labels as make_plots draws for real runs.
+        start_col="behavior_before",
+        reference=float(hysteresis_df["behavior_base"].mean()),
+        reference_label=r"Base model $b_0$",
+        ylabel=r"Trait score after the final step ($b_T$)",
+        title="Trait score after a step onto each dataset, by prior training",
     )
     emit(fig, "hysteresis")
 

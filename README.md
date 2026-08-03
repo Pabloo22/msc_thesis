@@ -73,6 +73,16 @@ poetry run python -m method.run_trajectory --config SMOKE_TINY --backend real
     ```
     `LOCAL` still works alongside it (`scripts/run_family.sh EXP3 LOCAL --seeds 0`).
 
+    **Seeing the whole figure before spending a GPU on it.** `MOCK` fabricates every
+    artifact instead of training, so a family finishes in seconds and lands in
+    `trajectories-mock/`, separate from the real runs. Use it to check that a figure has
+    every bar the design calls for: `make_plots` only draws conditions that exist on
+    disk, so a partly-run family silently produces a partly-populated chart.
+    ```bash
+    bash scripts/run_family.sh EXP3 LOCAL MOCK --seeds 0
+    poetry run python -m method.visualization.make_plots --experiment exp3 --mock --local
+    ```
+
 ## Base-model DeltaP Probes
 $\\Delta P_0$ (DeltaP frozen at the base model) is needed for the RQ1 scatter plots. It is measured once per seed and shared across experiments:
 ```bash
@@ -86,5 +96,11 @@ Once trajectories (and base probes for RQ1) are on disk, generate figures:
 poetry run python -m method.visualization.make_plots --experiment all
 poetry run python -m method.visualization.make_plots --experiment exp2   # or exp3 / exp4
 poetry run python -m method.visualization.make_plots --local             # local-proxy runs
+poetry run python -m method.visualization.make_plots --mock --local      # fabricated runs
 ```
+
+Each run logs how many runs it loaded and how many are still missing, e.g.
+`exp3: 42 run(s) loaded, 168 not yet run, 0 stale`. A figure is only as complete as
+that line says: conditions with no runs are dropped from the chart rather than drawn
+empty, so check it before reading a bar chart as the finished comparison.
 Plots are written to `plots/real/` (or the path specified by `--out-dir`).

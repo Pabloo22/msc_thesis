@@ -89,8 +89,27 @@ class Run:
         both, the last step trains on the dataset under study, so this is
         "how much did training on that dataset move the model, from wherever
         it happened to be".
+
+        That last clause is why the exp3 bars plot :meth:`final_behavior`
+        instead: this quantity is measured from $b_{T-1}$, not from $M_0$, so
+        arms that enter their final step from different floors are not
+        comparable through it. A baseline going $0 \to 50$ scores 50 while a
+        re-aligned arm going $0 \to 50 \to 10 \to 50$ scores 40, though both
+        end at the same place.
         """
         return self.behavior(-1) - self.behavior(-2)
+
+    def final_behavior(self) -> float:
+        r"""$b_T$: the trait score the trajectory actually ends at."""
+        return self.behavior(-1)
+
+    def behavior_before_final(self) -> float:
+        r"""$b_{T-1}$: the score the final step started from."""
+        return self.behavior(-2)
+
+    def base_behavior(self) -> float:
+        r"""$b_0$: $M_0$'s score, before this trajectory fine-tuned anything."""
+        return self.behavior(0)
 
     def total_delta(self) -> float:
         r"""$b_T - b_0$: how far the whole trajectory left the model from base.
@@ -359,13 +378,30 @@ def projection_frame(
 
 
 def hysteresis_frame(collection: Collection) -> pd.DataFrame:
-    r"""RQ2 hysteresis rows: $\Delta b$ of each run's final step.
+    r"""RQ2 hysteresis rows: where each run's trajectory ends, and from where.
 
     One row per run, with ``condition`` taken straight from the config label
-    (``baseline`` / ``same`` / ``diff``). The value is always the behaviour
-    change caused by the last step, which in every exp3 condition is a step
-    onto the same target dataset -- so the bars differ only in what the model
-    had already been trained on.
+    (``baseline`` / ``normal1`` / ``normal2`` / ``same`` / ``diff``). Every exp3
+    condition ends with a step onto the same target dataset, so the arms differ
+    only in what the model had already been trained on.
+
+    Four behaviour columns, because the comparison needs all four to be honest:
+
+    ``behavior``
+        $b_T$, where the arm ended up. This is what the bars plot, against a
+        reference line at $b_0$ -- so the height above that line reads as
+        $b_T - b_0$, i.e. measured against $M_0$.
+    ``behavior_base``
+        $b_0$, $M_0$'s score. One value per (trait, base model): ``weights_key``
+        normalises the seed away at $t=0$, so every seed reads the same
+        measurement of the same base checkpoint.
+    ``behavior_before``
+        $b_{T-1}$, the floor the final step started from. What distinguishes
+        "this arm barely moved" from "this arm started high".
+    ``delta_behavior``
+        $b_T - b_{T-1}$. Retained because "how far did this step move the
+        model" is the plasticity question, but it must not be read as a level:
+        arms enter their final step from different floors.
 
     Baseline runs carry no ``realign_trait`` (they have no re-alignment step,
     so one baseline serves every realign trait); they are emitted once per
@@ -381,6 +417,9 @@ def hysteresis_frame(collection: Collection) -> pd.DataFrame:
             "seed": run.seed,
             "dataset": run.label("dataset"),
             "condition": run.label("condition"),
+            "behavior": run.final_behavior(),
+            "behavior_base": run.base_behavior(),
+            "behavior_before": run.behavior_before_final(),
             "delta_behavior": run.final_step_delta(),
         }
         own = run.label("realign_trait")

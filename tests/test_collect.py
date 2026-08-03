@@ -27,6 +27,7 @@ from method.visualization.collect import (
     missing_delta_p_0,
     projection_frame,
 )
+from method.visualization.labels import HYSTERESIS_CONDITIONS
 
 D1 = StepConfig(dataset="hallucination", version=DatasetVersion.MISALIGNED_1)
 D2 = StepConfig(dataset="mistake_opinions", version=DatasetVersion.MISALIGNED_1)
@@ -158,7 +159,7 @@ class TestConfigMetadata:
 
     def test_exp3_and_exp4_label_every_run_with_a_condition(self):
         for cfg in hysteresis_configs():
-            assert cfg.label_map["condition"] in {"baseline", "same", "diff"}
+            assert cfg.label_map["condition"] in set(HYSTERESIS_CONDITIONS)
             assert cfg.label_map["dataset"] in {s.dataset_id for s in POOL}
         for cfg in E.build_diversity_configs(
             seeds=(0,), measure_traits=("evil",), realign_traits=("evil",), pool=POOL
@@ -252,7 +253,7 @@ class TestCollect:
             write_run(cfg)
         result = collect(configs, group=E.EXP3)
         assert set(result.values("trait")) == {"evil", "sycophantic"}
-        assert set(result.values("condition")) == {"baseline", "same", "diff"}
+        assert set(result.values("condition")) == set(HYSTERESIS_CONDITIONS)
 
 
 class TestRunDeltas:
@@ -275,6 +276,49 @@ class TestRunDeltas:
 
 
 class TestHysteresisFrame:
+    def test_levels_are_comparable_where_the_final_step_delta_is_not(self):
+        """The reason the bars plot $b_T$ and not the last step's $\\Delta b$.
+
+        A baseline that goes 0 -> 50 and a re-aligned arm that goes
+        0 -> 50 -> 10 -> 50 end in exactly the same place, but the latter's
+        final step is charged from a floor of 10, so its delta is 40. Read as a
+        level, that says "less prone to re-misalignment" about two models that
+        are equally misaligned.
+        """
+        baseline = next(
+            c for c in hysteresis_configs() if c.label_map["condition"] == "baseline"
+        )
+        same = next(
+            c
+            for c in hysteresis_configs()
+            if c.label_map["condition"] == "same"
+            and c.label_map["dataset"] == baseline.label_map["dataset"]
+        )
+        write_run(baseline, behaviors=[0.0, 50.0])
+        write_run(same, behaviors=[0.0, 50.0, 10.0, 50.0])
+        df = hysteresis_frame(collect([baseline, same], group=E.EXP3)).set_index(
+            "condition"
+        )
+
+        assert df.loc["baseline", "behavior"] == df.loc["same", "behavior"] == 50.0
+        assert df.loc["baseline", "behavior_base"] == df.loc["same", "behavior_base"]
+        # The delta is what would have mis-ranked them.
+        assert df.loc["baseline", "delta_behavior"] == 50.0
+        assert df.loc["same", "delta_behavior"] == 40.0
+        # And the floor each entered its final step from is kept, so the figure
+        # can show that the 40 was charged from 10 rather than from b_0.
+        assert df.loc["baseline", "behavior_before"] == 0.0
+        assert df.loc["same", "behavior_before"] == 10.0
+
+    def test_base_behavior_is_m0_not_the_previous_checkpoint(self):
+        cfg = next(c for c in hysteresis_configs() if len(c.steps) == 3)
+        write_run(cfg, behaviors=[7.0, 60.0, 15.0, 55.0])
+        row = hysteresis_frame(collect([cfg], group=E.EXP3)).iloc[0]
+        assert row["behavior_base"] == 7.0
+        assert row["behavior"] == 55.0
+        # Height above the reference line is b_T - b_0, i.e. total_delta.
+        assert row["behavior"] - row["behavior_base"] == pytest.approx(48.0)
+
     def test_value_is_the_final_step_delta_for_every_condition(self):
         configs = hysteresis_configs()
         for cfg in configs:
@@ -296,14 +340,27 @@ class TestHysteresisFrame:
         # One row per (dataset, realign_trait), from a single run each.
         assert len(baselines) == len(POOL) * 2
 
-    def test_each_dataset_has_all_three_conditions(self):
+    def test_each_dataset_has_every_condition(self):
         configs = hysteresis_configs()
         for cfg in configs:
             write_run(cfg)
         df = hysteresis_frame(collect(configs, group=E.EXP3))
         for dataset in {s.dataset_id for s in POOL}:
             present = set(df[df["dataset"] == dataset]["condition"])
-            assert present == {"baseline", "same", "diff"}
+            assert present == set(HYSTERESIS_CONDITIONS)
+
+    def test_the_plasticity_arms_report_only_their_target_step(self):
+        """``normal2`` is (realign, realign, D2): its bar is the step onto D2,
+        so the two normal steps' own behaviour changes must not leak into it."""
+        cfg = next(
+            c for c in hysteresis_configs() if c.label_map["condition"] == "normal2"
+        )
+        write_run(cfg, behaviors=[20.0, 9.0, 6.0, 31.0])
+        row = hysteresis_frame(collect([cfg], group=E.EXP3)).iloc[0]
+        assert row["delta_behavior"] == pytest.approx(25.0)
+        assert row["behavior"] == 31.0
+        assert row["behavior_base"] == 20.0
+        assert row["behavior_before"] == 6.0
 
 
 class TestDiversityFrame:
@@ -339,7 +396,10 @@ class TestDeltaP0:
             write_run(cfg)
         lookup = delta_p_0_lookup(collect(configs, group=E.EXP3).runs)
         # The three baselines each start on a different dataset in the pool.
-        assert set(lookup[("evil", 0)]) == {s.dataset_id for s in POOL}
+        # A superset, not equality: the realign_first arms start on the
+        # re-alignment dataset, so exp3 now measures that one at t=0 too.
+        assert set(lookup[("evil", 0)]) >= {s.dataset_id for s in POOL}
+        assert "evil/normal" in lookup[("evil", 0)]
 
     def test_missing_delta_p_0_names_datasets_no_run_measured_at_t0(self):
         """The exp2 gap: a dataset only ever trained on mid-trajectory has no

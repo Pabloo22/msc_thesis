@@ -2,7 +2,7 @@ r"""Generate every figure from *real* saved trajectories and write them to disk.
 
     poetry run python -m method.visualization.make_plots
     poetry run python -m method.visualization.make_plots --experiment exp3
-    poetry run python -m method.visualization.make_plots --local --out-dir plots/local
+    poetry run python -m method.visualization.make_plots --mock --local
 
 The counterpart to :mod:`method.visualization.demo`, which draws the same
 figures from synthetic fixtures. Both call the same functions in
@@ -12,7 +12,14 @@ says should exist -- so a partially finished sweep plots what has run and
 reports what has not, rather than silently plotting fewer seeds.
 
 ``--local`` selects the small-model variants of each design (the ones a mock
-or laptop run produces); without it, the paper-scale configs are used.
+or laptop run produces); without it, the paper-scale configs are used. Each
+combination writes to its own directory (see :func:`default_out_dir`), so a
+mock smoke test never overwrites a paper-scale figure of the same name.
+
+Note that the figures under ``plots/`` itself are the *synthetic* ones written
+by :mod:`method.visualization.demo`. They are drawn from fixtures, not from any
+run, so they do not change when trajectories finish -- regenerate them with the
+demo module, and read real results from the per-source subdirectories.
 """
 
 from __future__ import annotations
@@ -250,9 +257,52 @@ def build_exp2(
 
 # --- experiment 3 ---------------------------------------------------------
 
+#: How far apart two runs' $b_0$ may be before the shared reference line is
+#: worth a warning. They read one measurement of one shared base checkpoint, so
+#: any spread at all means something is off; a point of judge noise on a 0-100
+#: scale is not worth shouting about.
+_BASE_BEHAVIOR_TOLERANCE = 1.0
+
+
+def _base_behavior(
+    subset: pd.DataFrame, trait: str, realign_trait: str
+) -> float | None:
+    r"""$b_0$ for a figure's runs: the level its dashed reference line sits at.
+
+    Every seed shares one base checkpoint (``weights_key`` normalises the seed
+    away at $t=0$) and therefore one stored measurement, so this is a mean over
+    values that should already be identical. A real spread means the runs were
+    measured against different base models -- which would make the reference
+    line, and so every "how far above $M_0$" reading taken from the figure,
+    quietly wrong -- so it is reported rather than averaged away in silence.
+    """
+    values = subset["behavior_base"].dropna()
+    if values.empty:
+        return None
+    spread = float(values.max() - values.min())
+    if spread > _BASE_BEHAVIOR_TOLERANCE:
+        logger.warning(
+            "exp3/%s/realign=%s: b_0 differs by %.1f across runs (%.1f to %.1f); "
+            "the reference line is their mean, but these runs should share one "
+            "base-model measurement -- check they were not collected across two "
+            "different base models",
+            trait,
+            realign_trait,
+            spread,
+            float(values.min()),
+            float(values.max()),
+        )
+    return float(values.mean())
+
 
 def build_exp3(collection: Collection, out_dir: Path) -> list[Path]:
-    """Hysteresis bar chart, one figure per (measured trait, realign trait)."""
+    r"""Hysteresis bar chart, one figure per (measured trait, realign trait).
+
+    Bars are the trait score each arm *ends* at, referenced to a dashed line at
+    $M_0$'s own score, so what the eye compares is $b_T - b_0$ -- the same
+    origin for every arm. See :func:`~method.visualization.figures.hysteresis_bar`
+    for why the last step's $\Delta b$ is not plotted as the level.
+    """
     saved: list[Path] = []
     if not collection:
         logger.warning("exp3: no runs on disk; skipping")
@@ -280,9 +330,13 @@ def build_exp3(collection: Collection, out_dir: Path) -> list[Path]:
                 subset,
                 conditions=conditions,
                 condition_labels=[HYSTERESIS_CONDITION_LABELS[c] for c in conditions],
+                start_col="behavior_before",
+                reference=_base_behavior(subset, trait, realign_trait),
+                reference_label=rf"Base model $b_0$ ({pretty})",
+                ylabel=rf"{pretty} score after the final step ($b_T$)",
                 title=(
-                    f"{pretty}: behaviour change before vs. after "
-                    f"re-alignment on {realign_pretty} (Normal)"
+                    f"{pretty} after a step onto each dataset, by prior "
+                    f"training (re-aligned on {realign_pretty} Normal)"
                 ),
             )
             _emit(fig, f"exp3_{trait}_realign-{realign_trait}", out_dir, saved)
@@ -378,6 +432,20 @@ def build_and_save(
     return saved
 
 
+def default_out_dir(*, local: bool = False, mock: bool = False) -> Path:
+    """One output directory per run source, so figures cannot be confused.
+
+    ``--mock`` and ``--local`` plot entirely different models: fabricated
+    artifacts, or a 0.5B proxy, rather than the paper-scale runs. Writing them
+    all to ``plots/real`` meant a smoke-test overwrote genuine figures under
+    their exact filenames, leaving no way to tell which run produced the file
+    you are looking at. Directories keep them apart:
+    ``plots/real``, ``plots/real-local``, ``plots/mock``, ``plots/mock-local``.
+    """
+    name = "mock" if mock else "real"
+    return style.PLOTS_DIR / (f"{name}-local" if local else name)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -389,8 +457,11 @@ def main() -> None:
     parser.add_argument(
         "--out-dir",
         type=Path,
-        default=style.PLOTS_DIR / "real",
-        help="directory to write PNG/PDF figures into (default: plots/real)",
+        default=None,
+        help=(
+            "directory to write PNG/PDF figures into (default: one per run "
+            "source -- plots/real, plots/real-local, plots/mock, plots/mock-local)"
+        ),
     )
     parser.add_argument(
         "--local",
@@ -425,8 +496,9 @@ def main() -> None:
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
     groups = list(BUILDERS) if args.experiment == "all" else [args.experiment]
+    out_dir = args.out_dir or default_out_dir(local=args.local, mock=args.mock)
     saved = build_and_save(
-        args.out_dir,
+        out_dir,
         groups=groups,
         local=args.local,
         mock=args.mock,
@@ -439,7 +511,7 @@ def main() -> None:
             "poetry run python -m method.run_trajectory --config <NAME>"
         )
         return
-    print(f"Wrote {len(saved)} file(s) to {args.out_dir}:")
+    print(f"Wrote {len(saved)} file(s) to {out_dir}:")
     for path in saved:
         print(f"  {path}")
 

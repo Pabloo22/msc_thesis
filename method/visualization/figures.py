@@ -19,7 +19,7 @@ from matplotlib.figure import Figure
 from numpy.typing import ArrayLike
 
 from method.visualization import style
-from method.visualization.labels import display_dataset_name
+from method.visualization.labels import HYSTERESIS_CONDITIONS, display_dataset_name
 from method.visualization.metrics import (
     LinearFit,
     linear_fit,
@@ -234,19 +234,39 @@ def hysteresis_bar(
     *,
     dataset_col: str = "dataset",
     condition_col: str = "condition",
-    value_col: str = "delta_behavior",
-    conditions: Sequence[str] = ("fresh", "after_realignment"),
+    value_col: str = "behavior",
+    conditions: Sequence[str] = HYSTERESIS_CONDITIONS,
     condition_labels: Sequence[str] | None = None,
     dataset_labels: Mapping[str, str] | None = None,
-    ylabel: str = r"Behaviour change $\Delta b$",
+    start_col: str | None = None,
+    reference: float | None = None,
+    reference_label: str | None = None,
+    ylabel: str = r"Trait score $b_T$",
     title: str | None = None,
 ) -> Figure:
-    """RQ2 hysteresis bar chart: is a realigned model easier to re-misalign?
+    r"""RQ2 hysteresis bar chart: is a realigned model easier to re-misalign?
 
     Grouped bars: one group per dataset, one bar per ``condition`` within a
-    group (2 colours -> a legend, since colour here encodes a second
-    dimension on top of the x-axis identity). Error bars show the std across
-    seeds.
+    group (colour encodes a second dimension on top of the x-axis identity, so
+    it earns a legend). Error bars show the std across seeds.
+
+    Bars are *levels*, not deltas. ``value_col`` defaults to the trait score
+    each arm ends at, and ``reference`` draws a dashed line at $M_0$'s own
+    score, so a bar's height above that line is $b_T - b_0$ -- a quantity every
+    arm shares an origin for. Plotting the last step's $\Delta b$ instead would
+    measure each arm from its own floor: an arm re-aligned down to 10 that
+    climbs back to 50 would score below a baseline that went straight to 50,
+    despite ending in the same place.
+
+    ``start_col`` adds a tick across each bar at the score the final step
+    started from ($b_{T-1}$). It is what separates the two readings a level
+    alone leaves ambiguous -- an arm that ends low because it moved little
+    (plasticity loss) from one that ends low because it started low.
+
+    The figure grows with the number of conditions, and past two the legend
+    moves above the axes: the plasticity-loss arm makes this a four-bar chart
+    (see :data:`~method.visualization.labels.HYSTERESIS_CONDITIONS`), and at
+    that density ``loc="best"`` has nowhere inside the data to sit.
 
     ``dataset_col`` is expected to hold internal ``dataset/version``
     identifiers (e.g. ``"mistake_gsm8k/misaligned_2"``); tick labels are
@@ -259,12 +279,22 @@ def hysteresis_bar(
     dataset_labels = dataset_labels or {}
     datasets = list(dict.fromkeys(df[dataset_col]))
     stats = df.groupby([dataset_col, condition_col])[value_col].agg(["mean", "std"])
+    starts = (
+        df.groupby([dataset_col, condition_col])[start_col].mean()
+        if start_col
+        else None
+    )
 
     n_conditions = len(conditions)
     width = 0.8 / n_conditions
     x = np.arange(len(datasets))
 
-    fig, ax = plt.subplots(figsize=(max(4.0, 1.4 * len(datasets) + 1.5), 4.2))
+    # 1.4in per dataset group at two conditions, widening by a quarter of that
+    # for each extra bar in the group so the bars stay legible rather than
+    # slivers, and capped so a large pool cannot produce an unprintable figure.
+    group_width = 1.4 * (1 + 0.25 * (n_conditions - 2))
+    width_in = min(9.0, max(4.0, group_width * len(datasets) + 1.5))
+    fig, ax = plt.subplots(figsize=(width_in, 4.2))
     for i, (condition, label) in enumerate(zip(conditions, condition_labels)):
         means = [
             (
@@ -299,14 +329,45 @@ def hysteresis_bar(
             capsize=3,
             zorder=4,
         )
+        if starts is not None:
+            # Drawn as a tick across the bar rather than a second bar: it marks
+            # where this bar's growth began, so it belongs *on* the bar.
+            ax.errorbar(
+                x + offset,
+                [starts.get((ds, condition), np.nan) for ds in datasets],
+                xerr=width * 0.45,
+                fmt="none",
+                ecolor=style.INK,
+                elinewidth=1.2,
+                zorder=5,
+                label="Before the final step" if i == 0 else None,
+            )
+    if reference is not None:
+        ax.axhline(
+            reference,
+            color=style.SECONDARY_INK,
+            linestyle="--",
+            linewidth=1.0,
+            zorder=2,
+            label=reference_label,
+        )
     ax.axhline(0, color=style.BASELINE, linewidth=0.8, zorder=1)
     ax.set_xticks(x)
     tick_labels = [dataset_labels.get(ds, display_dataset_name(ds)) for ds in datasets]
     ax.set_xticklabels(tick_labels, rotation=15, ha="right")
     ax.set_ylabel(ylabel)
+    # Counted from the artists rather than from ``conditions``, since the
+    # reference line and the start ticks add entries of their own.
+    n_entries = len(ax.get_legend_handles_labels()[0])
+    if n_entries > 2:
+        ax.legend(loc="lower center", bbox_to_anchor=(0.5, 1.0), ncol=2)
+        legend_rows = (n_entries + 1) // 2
+        title_pad = 12 * (legend_rows + 1)  # clear the legend, then a gap
+    else:
+        ax.legend(loc="best")
+        title_pad = None
     if title:
-        ax.set_title(title)
-    ax.legend(loc="best")
+        ax.set_title(title, pad=title_pad)
     fig.tight_layout()
     return fig
 

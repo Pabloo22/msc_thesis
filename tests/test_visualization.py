@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from method.visualization import figures, schema, style, synthetic
+from method.visualization import figures, labels, make_plots, schema, style, synthetic
 from method.visualization.demo import build_and_save
 from method.visualization.labels import display_dataset_name
 from method.visualization.metrics import (
@@ -376,8 +376,22 @@ class TestDeltaP0For:
 class TestSyntheticFrames:
     def test_hysteresis_frame_shape(self) -> None:
         df = synthetic.synthetic_hysteresis_frame(("a/normal", "b/normal"), n_seeds=3)
-        assert len(df) == 2 * 3 * 2  # datasets * seeds * conditions
-        assert set(df["condition"]) == {"fresh", "after_realignment"}
+        n_conditions = len(synthetic.HYSTERESIS_CONDITIONS)
+        assert len(df) == 2 * 3 * n_conditions  # datasets * seeds * conditions
+        assert set(df["condition"]) == set(synthetic.HYSTERESIS_CONDITIONS)
+
+    def test_plasticity_arms_move_less_and_worsen_with_prior_steps(self) -> None:
+        """The fixture has to encode the effects the arms exist to detect."""
+        df = synthetic.synthetic_hysteresis_frame(("a/normal",), n_seeds=30)
+        means = df.groupby("condition")["delta_behavior"].mean()
+        assert means["normal2"] < means["normal1"] < means["baseline"]
+        assert means["baseline"] < means["diff"] < means["same"]
+
+    def test_synthetic_conditions_track_the_real_ones(self) -> None:
+        """A fixture naming its own arms silently stops previewing the design."""
+        assert synthetic.HYSTERESIS_CONDITIONS == labels.HYSTERESIS_CONDITIONS
+        df = synthetic.synthetic_hysteresis_frame(("a/normal",), n_seeds=1)
+        assert set(df["condition"]) == set(labels.HYSTERESIS_CONDITIONS)
 
     def test_diversity_frame_matches_fixed_conditions(self) -> None:
         df = synthetic.synthetic_diversity_frame(n_seeds=5)
@@ -457,8 +471,23 @@ class TestHysteresisBar:
         df = synthetic.synthetic_hysteresis_frame(("a/normal", "b/normal"), n_seeds=3)
         fig = figures.hysteresis_bar(df)
         (ax,) = fig.axes
-        assert len(ax.patches) == 2 * 2  # 2 datasets * 2 conditions
+        assert len(ax.patches) == 2 * len(synthetic.HYSTERESIS_CONDITIONS)
         assert ax.get_legend() is not None
+
+    def test_a_condition_absent_from_the_frame_is_simply_not_drawn(self) -> None:
+        """Plotting a partly-finished sweep must narrow the figure, not raise.
+
+        This is what a mock or half-run family looks like: ``make_plots`` filters
+        ``conditions`` down to the ones actually on disk, so a two-bar figure
+        means two arms have run -- not that the design has two arms.
+        """
+        df = synthetic.synthetic_hysteresis_frame(("a/normal",), n_seeds=2)
+        subset = df[df["condition"].isin(("baseline", "same"))]
+        fig = figures.hysteresis_bar(subset, conditions=("baseline", "same"))
+        (ax,) = fig.axes
+        heights = [p.get_height() for p in ax.patches]
+        assert len(heights) == 2
+        assert not any(math.isnan(h) for h in heights)
 
     def test_xtick_labels_are_pretty_by_default(self) -> None:
         df = synthetic.synthetic_hysteresis_frame(
@@ -468,6 +497,34 @@ class TestHysteresisBar:
         (ax,) = fig.axes
         tick_text = [t.get_text() for t in ax.get_xticklabels()]
         assert tick_text == ["Hallucination (I)", "GSM8K (Mistake II)"]
+
+    def test_reference_line_is_drawn_at_the_base_model_score(self) -> None:
+        """The line every bar is read against; without it a level means nothing."""
+        df = synthetic.synthetic_hysteresis_frame(("a/normal",), n_seeds=2)
+        fig = figures.hysteresis_bar(
+            df, reference=8.0, reference_label=r"Base model $b_0$"
+        )
+        (ax,) = fig.axes
+        dashed = [ln for ln in ax.lines if ln.get_linestyle() == "--"]
+        assert len(dashed) == 1
+        assert dashed[0].get_ydata()[0] == 8.0
+        legend_labels = [t.get_text() for t in ax.get_legend().get_texts()]
+        assert r"Base model $b_0$" in legend_labels
+
+    def test_bars_default_to_levels_not_the_final_step_delta(self) -> None:
+        """A re-aligned arm's bar must show where it ended, not how far it
+        moved from its own floor -- see hysteresis_frame's docstring."""
+        df = synthetic.synthetic_hysteresis_frame(("a/normal",), n_seeds=3)
+        fig = figures.hysteresis_bar(df, conditions=("same",))
+        (ax,) = fig.axes
+        expected = df[df["condition"] == "same"]["behavior"].mean()
+        assert ax.patches[0].get_height() == pytest.approx(expected)
+
+    def test_start_ticks_mark_where_the_final_step_began(self) -> None:
+        df = synthetic.synthetic_hysteresis_frame(("a/normal",), n_seeds=2)
+        without = figures.hysteresis_bar(df)
+        with_ticks = figures.hysteresis_bar(df, start_col="behavior_before")
+        assert len(with_ticks.axes[0].collections) > len(without.axes[0].collections)
 
     def test_dataset_labels_override_the_default(self) -> None:
         df = synthetic.synthetic_hysteresis_frame(("evil/normal",), n_seeds=2)
@@ -506,6 +563,31 @@ class TestStyle:
         assert style.categorical_color(0) == style.categorical_color(
             len(style.CATEGORICAL)
         )
+
+
+# --- make_plots.py ------------------------------------------------------------
+
+
+class TestDefaultOutDir:
+    def test_every_run_source_gets_its_own_directory(self) -> None:
+        """Sharing one directory let a mock run overwrite real figures under
+        their exact filenames, with nothing in the file saying which it was."""
+        dirs = {
+            make_plots.default_out_dir(local=local, mock=mock)
+            for local in (False, True)
+            for mock in (False, True)
+        }
+        assert len(dirs) == 4
+        assert make_plots.default_out_dir() == style.PLOTS_DIR / "real"
+
+    def test_the_synthetic_figures_live_outside_all_of_them(self) -> None:
+        """demo.py writes to plots/ itself; nothing real may land there."""
+        for local in (False, True):
+            for mock in (False, True):
+                assert (
+                    make_plots.default_out_dir(local=local, mock=mock)
+                    != style.PLOTS_DIR
+                )
 
 
 # --- demo.py -----------------------------------------------------------------
