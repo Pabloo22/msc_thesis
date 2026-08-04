@@ -19,6 +19,7 @@ needed. The invariants under test:
 
 from __future__ import annotations
 
+import os
 import subprocess
 import tarfile
 from pathlib import Path
@@ -36,6 +37,7 @@ from method.sync import (
     format_unsynced,
     make_transport,
 )
+from method.timing import STAGE_LOG
 
 
 def _make_adapter(store: Store, wid: str, *, marker: str = "x") -> None:
@@ -66,10 +68,55 @@ def _record_uploads(monkeypatch, syncer: Syncer) -> list[str]:
     return uploaded
 
 
+def _record_listings(monkeypatch, syncer: Syncer) -> list[str]:
+    """Collect the reldirs ``syncer`` lists, while still listing them."""
+    listed: list[str] = []
+    real_list = syncer.transport.list_names
+
+    def spy(reldir):
+        listed.append(reldir)
+        return real_list(reldir)
+
+    monkeypatch.setattr(syncer.transport, "list_names", spy)
+    return listed
+
+
 def _write_measurement(store: Store, wid: str, name: str, text: str) -> None:
     path = store.measurement_dir(wid) / name
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
+
+
+def _make_run_dir(
+    syncer: Syncer, name: str = "EXP1_seed0", *, steps: str = "[]"
+) -> Path:
+    """A run directory shaped like one a trajectory leaves behind."""
+    run_dir = syncer.trajectories / name
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "trajectory.json").write_text(f'{{"steps": {steps}}}', encoding="utf-8")
+    (run_dir / STAGE_LOG).write_text('{"stage": "train", "seconds": 900}\n', "utf-8")
+    return run_dir
+
+
+#: An mtime far enough in the future that a rewrite cannot land on the old one,
+#: whatever the filesystem's timestamp resolution.
+_LATER = 2_000_000_000
+
+
+def _rerun(run_dir: Path) -> None:
+    """Do to ``run_dir`` what re-running a fully cached trajectory does.
+
+    ``trajectory.json`` is rewritten through ``atomic_file``, so it comes back
+    byte-identical on a fresh inode with a new mtime, and every stage the run
+    skipped still appends a row to the timing log.
+    """
+    trajectory = run_dir / "trajectory.json"
+    payload = trajectory.read_text(encoding="utf-8")
+    trajectory.unlink()
+    trajectory.write_text(payload, encoding="utf-8")
+    os.utime(trajectory, (_LATER, _LATER))
+    with (run_dir / STAGE_LOG).open("a", encoding="utf-8") as handle:
+        handle.write('{"stage": "train", "seconds": 0.5}\n')
 
 
 class TestTransportSelection:
@@ -104,7 +151,7 @@ class TestAdapterRoundTrip:
         src.push_adapter("t01-abc")
 
         # A second machine sharing only the remote.
-        dst = Syncer(Store(root=tmp_path / "dst"), src.transport)
+        dst = _syncer(tmp_path, store_name="dst")
         assert not dst.store.has_adapter("t01-abc")
         dst.pull_before_run()
 
@@ -138,7 +185,7 @@ class TestPullSkipsPresent:
         _make_adapter(src.store, "t01-abc")
         src.push_adapter("t01-abc")
 
-        dst = Syncer(Store(root=tmp_path / "dst"), src.transport)
+        dst = _syncer(tmp_path, store_name="dst")
         _make_adapter(dst.store, "t01-abc")  # already have it locally
 
         calls = []
@@ -154,7 +201,7 @@ class TestPullSkipsPresent:
         _make_adapter(src.store, "t01-abc", marker="full")
         src.push_adapter("t01-abc")
 
-        dst = Syncer(Store(root=tmp_path / "dst"), src.transport)
+        dst = _syncer(tmp_path, store_name="dst")
         # Simulate a crashed copy: dir exists, completeness marker absent.
         (dst.store.adapter_dir("t01-abc")).mkdir(parents=True)
         assert not dst.store.has_adapter("t01-abc")
@@ -177,7 +224,7 @@ class TestMeasurementsAndSamples:
         (mdir / "extra.csv").write_text("b", encoding="utf-8")
         src.push_after_run(tmp_path / "no-run")
 
-        dst = Syncer(Store(root=tmp_path / "dst"), src.transport)
+        dst = _syncer(tmp_path, store_name="dst")
         dst.pull_before_run()
         got = dst.store.measurement_dir("t01-abc")
         assert (got / "behavior.csv").read_text() == "a"
@@ -190,7 +237,7 @@ class TestMeasurementsAndSamples:
         sample.write_text("row", encoding="utf-8")
         src.push_after_run(tmp_path / "no-run")
 
-        dst = Syncer(Store(root=tmp_path / "dst"), src.transport)
+        dst = _syncer(tmp_path, store_name="dst")
         dst.pull_before_run()
         assert (dst.store.training_samples / "deadbeef.jsonl").read_text() == "row"
 
@@ -304,6 +351,115 @@ class TestPushStoreIsSweptOnce:
             "trajectories/runs/EXP1_seed1.tar",
             "trajectories/runs/EXP1_seed2.tar",
         ]
+
+
+class TestRerunningACachedTrajectoryShipsNothing:
+    """A re-run that recomputed nothing must not re-upload its run directory.
+
+    Every invocation rewrites ``trajectory.json`` (through ``atomic_file``, so
+    a fresh inode and a new mtime) and appends a timing row for each stage it
+    skipped. Under a stat-based signature both counted as a change, so a
+    trajectory whose every stage was a cache hit still spent tens of seconds
+    re-tarring and re-uploading an archive the remote already had -- the bulk
+    of what such a run cost, repeated once per seed and trait sharing the
+    prefix.
+    """
+
+    def test_identical_payload_is_not_reuploaded(self, tmp_path, monkeypatch):
+        src = _syncer(tmp_path)
+        run_dir = _make_run_dir(src)
+        src.push_run_dir(run_dir)
+
+        uploaded = _record_uploads(monkeypatch, src)
+        _rerun(run_dir)
+        src.push_run_dir(run_dir)
+
+        assert uploaded == []
+
+    def test_changed_trajectory_is_reuploaded_with_its_timings(
+        self, tmp_path, monkeypatch
+    ):
+        """The timing log is ignored when *deciding*, never when packing."""
+        src = _syncer(tmp_path)
+        run_dir = _make_run_dir(src)
+        src.push_run_dir(run_dir)
+
+        uploaded = _record_uploads(monkeypatch, src)
+        _rerun(run_dir)
+        (run_dir / "trajectory.json").write_text(
+            '{"steps": [{"t": 0}]}', encoding="utf-8"
+        )
+        src.push_run_dir(run_dir)
+
+        assert uploaded == ["trajectories/runs/EXP1_seed0.tar"]
+        archive = tmp_path / "remote" / "trajectories/runs/EXP1_seed0.tar"
+        with tarfile.open(archive) as tar:
+            names = tar.getnames()
+        assert sorted(names) == sorted(["trajectory.json", STAGE_LOG])
+
+    def test_a_step_trained_on_different_data_is_reuploaded(self, tmp_path):
+        """The signature follows the symlinks, as the archive does.
+
+        A run directory records its steps as links into the content-addressed
+        training samples, so the bytes that make it into the tar are the
+        sample's, and a step pointed at a different sample is a different run.
+        """
+        src = _syncer(tmp_path)
+        run_dir = _make_run_dir(src)
+        src.store.training_samples.mkdir(parents=True)
+        for name, text in (("aaa.jsonl", "first"), ("bbb.jsonl", "second")):
+            (src.store.training_samples / name).write_text(text, encoding="utf-8")
+        link = run_dir / "train_step1.jsonl"
+        link.symlink_to(src.store.training_samples / "aaa.jsonl")
+        src.push_run_dir(run_dir)
+
+        link.unlink()
+        link.symlink_to(src.store.training_samples / "bbb.jsonl")
+        src.push_run_dir(run_dir)
+
+        dst = _syncer(tmp_path, store_name="dst")
+        dst.pull_for_plotting()
+        assert (dst.trajectories / "EXP1_seed0" / "train_step1.jsonl").read_text() == (
+            "second"
+        )
+
+
+class TestImmutablePushesCostOneListingPerKind:
+    """Presence used to be asked one artifact at a time.
+
+    Each ``exists`` was an rclone process and a network round trip, so the
+    end-of-run sweep charged a trajectory for every adapter and sample any run
+    had ever put in the store -- a cost that grew all sweep long and was paid
+    in full by runs that produced nothing new.
+    """
+
+    def test_one_listing_settles_every_artifact(self, tmp_path, monkeypatch):
+        src = _syncer(tmp_path)
+        for i in range(5):
+            _make_adapter(src.store, f"t01-{i}")
+        src.store.training_samples.mkdir(parents=True)
+        for i in range(3):
+            (src.store.training_samples / f"{i}.jsonl").write_text("row")
+
+        listed = _record_listings(monkeypatch, src)
+        src.push_store()
+        src.push_store()  # what push_after_run adds on top
+
+        assert sorted(listed) == ["store/adapters", "store/training_samples"]
+        assert len(src.transport.list_names("store/adapters")) == 5
+
+    def test_an_upload_is_not_repeated_by_a_later_sweep(self, tmp_path, monkeypatch):
+        """The listing was taken before the eager push, so it has to learn."""
+        src = _syncer(tmp_path)
+        _make_adapter(src.store, "t01-abc")
+        src.push_store()  # takes the listing; ships t01-abc
+
+        _make_adapter(src.store, "t02-def")
+        src.push_adapter("t02-def")
+        uploaded = _record_uploads(monkeypatch, src)
+        src.push_store()
+
+        assert uploaded == []
 
 
 class TestNestedDirsArePackedOnce:
@@ -490,11 +646,11 @@ class TestRcloneRetries:
     def test_a_miss_costs_one_call_and_no_sleep(self, monkeypatch):
         """Exit 3 is the normal answer for a skip check, not a failure.
 
-        Retrying it would put the whole backoff budget in front of every
-        artifact a push considers skipping.
+        Retrying it would put the whole backoff budget in front of every push
+        into a directory the remote does not have yet.
         """
         fake = _FakeRclone(monkeypatch, [3])
-        assert RcloneTransport("gdrive:msc").exists("store/a.tar") is False
+        assert RcloneTransport("gdrive:msc").list_names("store/adapters") == []
         assert len(fake.calls) == 1
         assert fake.slept == []
 
@@ -582,10 +738,6 @@ class _UnreachableTransport(LocalTransport):
     def _check(self, relpath: str) -> None:
         if self.down and (self.only is None or self.only in relpath):
             raise RuntimeError("remote unreachable")
-
-    def exists(self, relpath):
-        self._check(relpath)
-        return super().exists(relpath)
 
     def upload(self, local, relpath):
         self._check(relpath)
@@ -751,7 +903,7 @@ class TestPlottingPull:
         src.push_adapter("t01-abc")
         src.push_after_run(run_dir)
 
-        dst = Syncer(Store(root=tmp_path / "dst"), src.transport)
+        dst = _syncer(tmp_path, store_name="dst")
         dst.pull_for_plotting()
 
         assert (dst.trajectories / "EXP1_seed0" / "trajectory.json").exists()
