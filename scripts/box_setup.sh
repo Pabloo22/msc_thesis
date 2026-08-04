@@ -136,6 +136,21 @@ else
 fi
 
 echo
+echo "== Notifications =="
+# Warnings, never failures: a box with no notifier still runs perfectly well.
+# What it cannot do is tell you it died, which on a rental is the difference
+# between losing minutes and losing a night's billing.
+if env_has_key MSC_RESEND_API_KEY && env_has_key MSC_NOTIFY_EMAIL; then
+    ok ".env has MSC_RESEND_API_KEY and MSC_NOTIFY_EMAIL"
+else
+    warn "no email notifications (set MSC_RESEND_API_KEY + MSC_NOTIFY_EMAIL in .env)"
+fi
+env_has_key MSC_HEARTBEAT_URL && ok ".env has MSC_HEARTBEAT_URL" \
+    || warn "no MSC_HEARTBEAT_URL: a box that is killed outright or loses its network cannot email you"
+env_has_key MSC_GPU_HOURLY_USD && ok ".env has MSC_GPU_HOURLY_USD" \
+    || warn "no MSC_GPU_HOURLY_USD: reports will show times but omit costs"
+
+echo
 echo "== Disk =="
 # Set by the image; absent when this runs anywhere else, and there is no sensible
 # place to guess at.

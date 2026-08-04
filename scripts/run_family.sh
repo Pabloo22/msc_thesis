@@ -112,9 +112,48 @@ echo "Found the following trajectories:"
 echo "$CONFIGS"
 echo "--------------------------------------------------------"
 
+TOTAL=$(echo "$CONFIGS" | wc -l)
+
+# Each trajectory is its own process, so the only way one can report how much
+# of the *family* is left -- the number that turns into a cost estimate -- is
+# for this script to tell it where in the queue it sits.
+export MSC_FAMILY="$FAMILY"
+export MSC_FAMILY_TOTAL="$TOTAL"
+
+REPORT_ARGS=(--family "$FAMILY")
+if [ "$MOCK" == "1" ]; then
+    REPORT_ARGS+=(--mock)
+fi
+
+# Mail a family summary however this script ends. run_trajectory sends its own,
+# far more detailed, failure email -- but it cannot when it was killed outright
+# (the OOM killer's SIGKILL runs no handler) or when it died before the
+# notifier existed. This is the backstop for exactly those, and is why the
+# subject says which trajectory was in flight.
+#
+# Reports are best-effort: `|| true` keeps a notifier that cannot reach the
+# network from overwriting the real exit status, which is what a caller and CI
+# actually read.
+finish() {
+    status=$?
+    trap - EXIT
+    if [ "$status" -eq 0 ]; then
+        poetry run python -m method.report "${REPORT_ARGS[@]}" --email || true
+    else
+        poetry run python -m method.report "${REPORT_ARGS[@]}" --email --note \
+            "run_family.sh exited with status ${status} during ${key:-startup}.
+The GPU is still rented until you stop it." || true
+    fi
+    exit "$status"
+}
+trap finish EXIT
+
 # Iterate through the generated list and run each trajectory sequentially
+INDEX=0
 for key in $CONFIGS; do
-    echo ">>> Starting trajectory: $key"
+    INDEX=$((INDEX + 1))
+    export MSC_FAMILY_INDEX="$INDEX"
+    echo ">>> Starting trajectory: $key ($INDEX/$TOTAL)"
     poetry run python -m method.run_trajectory --config "$key" "${BACKEND_ARGS[@]}"
 done
 

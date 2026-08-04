@@ -59,6 +59,57 @@ poetry run python -m method.sync pull-plots    # download just trajectories/ (ru
 
 ---
 
+## Knowing when a run dies (and what it cost)
+
+A rental bills whether or not the process on it is still alive, so the expensive failure is not the crash — it's the hours between the crash and noticing. Two independent channels cover that, because neither covers it alone.
+
+### 1. Email, for the detail
+
+`run_trajectory` and `probe_base` mail you when they finish or fail. A failure mail leads with the traceback and says the box is still rented; a success mail carries the per-stage timing table, the per-checkpoint breakdown, and — once a family is under way — how much of it is left and what the whole thing is projected to cost.
+
+Sending goes through [Resend](https://resend.com)'s HTTP API using only the standard library. That's deliberate: the image tag a box is booked against is a digest of `poetry.lock`, so adding a package just to send mail would force a ~17 GB rebuild and push before the next rental.
+
+Add to `.env`:
+
+```ini
+MSC_RESEND_API_KEY=re_...        # a send-only key
+MSC_NOTIFY_EMAIL=you@example.com
+MSC_GPU_HOURLY_USD=1.80          # what this box costs; omit and reports show times but no money
+MSC_NOTIFY_TAG=vast-4090         # optional; prefixes the subject so two boxes are distinguishable
+```
+
+On the free tier you can send from `onboarding@resend.dev` to the address you registered with, so no domain verification is needed. Set `MSC_NOTIFY_FROM` once you have a verified domain.
+
+> **On credentials and rental boxes:** the host operator can read every file on the instance, so use a **send-only API key**, revocable in one click. Do *not* use a personal Gmail app password — those grant IMAP as well as SMTP, so a leak means your whole mailbox, not just the ability to send. Unset either variable and notifications are silently off; the run is unaffected.
+
+### 2. Heartbeat, for the failures that can't email
+
+An email is sent *by the box, over the box's network*. When the network is what died — or the OOM killer sends SIGKILL, or the instance is preempted — no `finally` block can get a message out. A watchdog inverts this: the run pings a URL every 60 seconds, and the *absence* of pings is the alarm, so nothing on the box has to be alive to raise it.
+
+Create a check at [healthchecks.io](https://healthchecks.io) (free), set **period 1 minute** and **grace 5 minutes**, and put its ping URL in `.env`:
+
+```ini
+MSC_HEARTBEAT_URL=https://hc-ping.com/<uuid>
+```
+
+The period is a constant this code chooses, not a property of the workload, so the grace never needs re-tuning between a 7B family and a `--local` proxy run. The URL is an opaque UUID that can only ping your own check, so it is not a meaningful secret.
+
+A clean failure also pings `/fail` immediately, so when the network *is* up you hear about it at once rather than after the grace period.
+
+### Reading the numbers without email
+
+The same tables print locally, which is how you cost an experiment before committing to it:
+
+```bash
+poetry run python -m method.report                          # every family on disk, with totals
+poetry run python -m method.report --run trajectories/EXP3_..._seed0   # one trajectory, stage by stage
+poetry run python -m method.report --family EXP3            # one family
+```
+
+Timings live in `timings.jsonl` inside each run directory and `runlog.jsonl` beside them, appended as work completes — so a box that was killed still leaves behind everything it had learned about its own speed, and a resumed run's estimates account for what it skipped rather than concluding the remaining work is free.
+
+---
+
 ## Renting a GPU box (vast.ai)
 
 The image in `Dockerfile` already carries the whole dependency set as a pre-built venv at `/opt/app/.venv`, pre-activated on `PATH`. A rental box therefore never runs `poetry install`; it needs only the code and the two credential files a public image must not contain. Every command works verbatim on the box -- `poetry run` reuses the baked venv.

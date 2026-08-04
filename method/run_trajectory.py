@@ -20,14 +20,18 @@ import dataclasses
 import json
 import logging
 import shutil
+import signal
 import tempfile
+import time
+import traceback
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 
-from method import experiments, steps
+from method import experiments, report, steps, timing
 from method.backends import ExecutionBackend, get_backend, materialize
 from method.config import Backend, JudgeBackend, TrajectoryConfig, to_json
+from method.notify import Heartbeat, Notifier
 from method.store import (
     Store,
     atomic_dir,
@@ -36,6 +40,7 @@ from method.store import (
     get_weights_id,
 )
 from method.sync import Syncer
+from method.timing import StageTimer
 from method.utils import (
     DOTENV_PATH,
     check_env_vars,
@@ -52,6 +57,7 @@ def measure_checkpoint(
     store: Store,
     backend: ExecutionBackend,
     syncer: Syncer | None = None,
+    timer: StageTimer | None = None,
 ) -> dict:
     """All measurements that depend only on checkpoint t: b_t, v_t, h_neutral, z_t.
 
@@ -68,24 +74,30 @@ def measure_checkpoint(
     """
     wid = get_weights_id(cfg, t)
     logger.info("--- measuring checkpoint t=%d (%s) ---", t, wid)
+    timer = StageTimer.disabled() if timer is None else timer
 
     def push() -> None:
         if syncer is not None:
             _push_measurements(syncer, cfg, t)
 
-    steps.measure_behavior(cfg, t, store, backend)
+    with timer.stage("behavior", t):
+        steps.measure_behavior(cfg, t, store, backend)
     push()
-    steps.extract_persona_vector(cfg, t, store, backend)
+    with timer.stage("persona_vector", t):
+        steps.extract_persona_vector(cfg, t, store, backend)
     push()
-    steps.measure_h_neutral(cfg, t, store, backend)
+    with timer.stage("h_neutral", t):
+        steps.measure_h_neutral(cfg, t, store, backend)
     push()
-    latent = steps.compute_step_latent(cfg, t, store)
+    with timer.stage("latent", t):
+        latent = steps.compute_step_latent(cfg, t, store)
     push()
     behavior_path = store.trait_measurement(
         wid, cfg.trait, steps.Artifacts.BEHAVIOR_JSON
     )
     behavior = json.loads(behavior_path.read_text())
-    probes = steps.measure_probes(cfg, t, store, backend, on_probe_done=push)
+    with timer.stage("probes", t):
+        probes = steps.measure_probes(cfg, t, store, backend, on_probe_done=push)
     return {
         "t": t,
         "weights_id": wid,
@@ -103,6 +115,9 @@ def run(cfg: TrajectoryConfig, backend_kind: Backend, dtype: str) -> Path:
         cfg.name, cfg.seed, cfg.model.name, mock=backend_kind is Backend.MOCK
     )
     run_dir.mkdir(parents=True, exist_ok=True)
+    timer = StageTimer(
+        timing.stage_log_path(run_dir), trajectory=cfg.name, seed=cfg.seed
+    )
 
     # Reclaim whatever a preempted or killed run left materialised. Leaves any
     # live sibling's checkpoints alone, so this is safe with a second run
@@ -128,7 +143,7 @@ def run(cfg: TrajectoryConfig, backend_kind: Backend, dtype: str) -> Path:
 
     record: list[dict] = []
     for t, step in enumerate(cfg.steps):
-        record.append(measure_checkpoint(cfg, t, store, backend, syncer))
+        record.append(measure_checkpoint(cfg, t, store, backend, syncer, timer))
 
         # Action features describe the update about to happen, so they are
         # attributed to the checkpoint that precedes it.
@@ -139,9 +154,10 @@ def run(cfg: TrajectoryConfig, backend_kind: Backend, dtype: str) -> Path:
         if syncer is not None:
             syncer.push_training_sample(sample_id)
 
-        record[-1]["delta_p"] = steps.compute_delta_p(
-            cfg, t, store, backend, train_file, sample_id
-        )
+        with timer.stage("delta_p", t):
+            record[-1]["delta_p"] = steps.compute_delta_p(
+                cfg, t, store, backend, train_file, sample_id
+            )
         record[-1]["next_dataset"] = step.dataset_id
 
         # DeltaP is the last (and among the most expensive) thing measured at
@@ -151,22 +167,29 @@ def run(cfg: TrajectoryConfig, backend_kind: Backend, dtype: str) -> Path:
             _push_measurements(syncer, cfg, t)
 
         target = get_weights_id(cfg, t + 1)
-        if store.has_adapter(target):
-            _verify_cached_adapter(store, target, train_file, step_number=t + 1)
-            logger.info(
-                "[skip] adapter for step %d already trained (%s)", t + 1, target
-            )
-        else:
-            logger.info("--- training step %d -> %s ---", t + 1, target)
-            model_path = materialize(cfg, t, store, backend)
-            with training_scratch(store, target) as train_out:
-                adapter = backend.train(model_path, train_file, step, cfg, train_out)
-                _install_adapter(adapter, store.adapter_dir(target))
-            store.write_recipe(
-                target,
-                cfg.weights_key(t + 1),
-                provenance={"training_sample_sha256": file_sha256(train_file)},
-            )
+        # The cache hit is timed too, not just the training. A skipped stage
+        # that recorded nothing would be indistinguishable from one still to
+        # come, so a resumed run's estimate would keep counting work it had
+        # already found in the store.
+        with timer.stage("train", t):
+            if store.has_adapter(target):
+                _verify_cached_adapter(store, target, train_file, step_number=t + 1)
+                logger.info(
+                    "[skip] adapter for step %d already trained (%s)", t + 1, target
+                )
+            else:
+                logger.info("--- training step %d -> %s ---", t + 1, target)
+                model_path = materialize(cfg, t, store, backend)
+                with training_scratch(store, target) as train_out:
+                    adapter = backend.train(
+                        model_path, train_file, step, cfg, train_out
+                    )
+                    _install_adapter(adapter, store.adapter_dir(target))
+                store.write_recipe(
+                    target,
+                    cfg.weights_key(t + 1),
+                    provenance={"training_sample_sha256": file_sha256(train_file)},
+                )
         # Outside the branch, and so covering the cache hit too: an adapter
         # trained by a run that was preempted before it could push is a local
         # hit here but still missing from the remote. Costs one existence
@@ -177,7 +200,9 @@ def run(cfg: TrajectoryConfig, backend_kind: Backend, dtype: str) -> Path:
     # The final checkpoint has no successor, so it is measured but never used
     # to compute action features. Nothing writes to its bundle afterwards, so
     # measure_checkpoint's own eager pushes are all it needs.
-    record.append(measure_checkpoint(cfg, len(cfg.steps), store, backend, syncer))
+    record.append(
+        measure_checkpoint(cfg, len(cfg.steps), store, backend, syncer, timer)
+    )
 
     with atomic_file(run_dir / "trajectory.json") as scratch:
         scratch.write_text(
@@ -197,6 +222,79 @@ def run(cfg: TrajectoryConfig, backend_kind: Backend, dtype: str) -> Path:
     store.evict_all_merged()
     logger.info("Trajectory complete: %s", run_dir / "trajectory.json")
     return run_dir
+
+
+def run_and_report(cfg: TrajectoryConfig, backend_kind: Backend, dtype: str) -> Path:
+    """:func:`run`, with the outcome mailed out and a watchdog kept fed.
+
+    Separate from :func:`run` so that the trajectory logic stays testable
+    without a network, and so a caller embedding it (a notebook, a test) does
+    not silently start sending mail.
+
+    The heartbeat wraps the notifier rather than the other way round: its
+    ``/fail`` ping should fire even if composing or sending the email is itself
+    what goes wrong.
+
+    Both are best-effort by construction (see :mod:`method.notify`), so nothing
+    here can turn a healthy run into a failed one -- and the re-raise at the
+    end keeps the process's exit status truthful, which is what the ``trap`` in
+    ``scripts/run_family.sh`` reads.
+    """
+    notifier = Notifier.from_env()
+    heartbeat = Heartbeat.from_env()
+    logger.info("%s; %s", notifier.describe(), heartbeat.describe())
+
+    # Recomputed rather than threaded out of run(): trajectory_run_dir is pure,
+    # and a failing run has to be reportable without having returned anything.
+    run_dir = trajectory_run_dir(
+        cfg.name, cfg.seed, cfg.model.name, mock=backend_kind is Backend.MOCK
+    )
+    started = time.monotonic()
+    with heartbeat:
+        try:
+            result = run(cfg, backend_kind, dtype)
+        except BaseException as exc:
+            elapsed = time.monotonic() - started
+            _log_outcome(cfg, backend_kind, "failed", elapsed)
+            subject, body = report.trajectory_report(
+                cfg,
+                run_dir,
+                elapsed=elapsed,
+                error=exc,
+                traceback_text=traceback.format_exc(),
+            )
+            notifier.send(subject, body)
+            raise
+        elapsed = time.monotonic() - started
+        _log_outcome(cfg, backend_kind, "ok", elapsed)
+        subject, body = report.trajectory_report(cfg, run_dir, elapsed=elapsed)
+        notifier.send(subject, body)
+        return result
+
+
+def _log_outcome(
+    cfg: TrajectoryConfig, backend_kind: Backend, status: str, elapsed: float
+) -> None:
+    timing.record_run(
+        trajectory=cfg.name,
+        group=cfg.group,
+        seed=cfg.seed,
+        status=status,
+        seconds=elapsed,
+        mock=backend_kind is Backend.MOCK,
+    )
+
+
+def _die_on_sigterm(signum: int, _frame: object) -> None:
+    """Turn a polite kill into an exception, so the failure email still goes.
+
+    A rental box being stopped, a ``kill``, and most orchestrators' shutdown
+    all arrive as SIGTERM, whose default action is to end the process outright
+    with no unwinding -- no ``finally``, no email, no ``/fail`` ping. Raising
+    instead lets the run report its own death. SIGKILL cannot be caught at all,
+    which is why the heartbeat exists.
+    """
+    raise KeyboardInterrupt(f"received signal {signum}")
 
 
 def _push_measurements(syncer: Syncer, cfg: TrajectoryConfig, t: int) -> None:
@@ -356,7 +454,8 @@ def main() -> None:
             required.append("OPENAI_API_KEY")
         check_env_vars(required)
 
-    run(cfg, backend_kind, args.dtype)
+    signal.signal(signal.SIGTERM, _die_on_sigterm)
+    run_and_report(cfg, backend_kind, args.dtype)
 
 
 if __name__ == "__main__":

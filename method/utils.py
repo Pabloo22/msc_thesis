@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 SCRIPT_DIR = Path(__file__).resolve().parent  # .../msc_thesis/method
 REPO_ROOT = SCRIPT_DIR.parent
@@ -142,6 +144,29 @@ def check_env_vars(required: Sequence[str] = REQUIRED_ENV_VARS) -> None:
             f"Set them in {DOTENV_PATH} or export them in your shell before running "
             "this script."
         )
+
+
+def read_jsonl(path: Path) -> list[dict[str, Any]]:
+    """Parse a jsonl file, tolerating a truncated final line.
+
+    Every jsonl this project writes is appended to as work completes, so the
+    one malformed line a crash can leave is the last one. Dropping it costs the
+    single record that was in flight; refusing to parse the file would cost
+    every record before it. A missing file is empty rather than an error, since
+    "nothing recorded yet" is the normal state at the start of a run.
+    """
+    if not path.exists():
+        return []
+    records = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError:
+            logger.warning("ignoring truncated record at the end of %s", path)
+            break
+    return records
 
 
 def run_step(cmd: list[str], *, cwd: Path, dry_run: bool) -> None:

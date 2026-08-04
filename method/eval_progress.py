@@ -44,6 +44,8 @@ from typing import Any
 import pandas as pd
 from tqdm import tqdm
 
+from method.utils import read_jsonl
+
 logger = logging.getLogger(__name__)
 
 GENERATIONS = "generations.jsonl"
@@ -118,7 +120,7 @@ class ProgressStore:
         return (self.dir / GENERATIONS).exists()
 
     def load_generations(self) -> list[dict[str, Any]]:
-        return _read_jsonl(self.dir / GENERATIONS)
+        return read_jsonl(self.dir / GENERATIONS)
 
     def save_generations(self, rows: Sequence[dict[str, Any]]) -> None:
         """Write every row at once, atomically.
@@ -146,7 +148,7 @@ class ProgressStore:
         """Every judgment recorded so far, later entries winning."""
         return {
             (int(rec["row"]), str(rec["metric"])): rec["score"]
-            for rec in _read_jsonl(self.dir / JUDGMENTS)
+            for rec in read_jsonl(self.dir / JUDGMENTS)
         }
 
     @contextmanager
@@ -161,26 +163,6 @@ class ProgressStore:
                 handle.flush()
 
             yield record
-
-
-def _read_jsonl(path: Path) -> list[dict[str, Any]]:
-    """Parse a jsonl file, tolerating a truncated final line.
-
-    A crash mid-append can leave a partial record. Dropping it costs one judge
-    request; refusing to parse the file would cost every request in it.
-    """
-    if not path.exists():
-        return []
-    records = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        try:
-            records.append(json.loads(line))
-        except json.JSONDecodeError:
-            logger.warning("ignoring truncated record at the end of %s", path)
-            break
-    return records
 
 
 async def _judge_with_retry(

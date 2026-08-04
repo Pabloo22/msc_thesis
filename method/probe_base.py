@@ -25,12 +25,16 @@ import argparse
 import dataclasses
 import json
 import logging
+import signal
+import time
+import traceback
 from collections.abc import Sequence
 from pathlib import Path
 
-from method import experiments, steps
+from method import experiments, report, steps
 from method.backends import get_backend
 from method.config import Backend, StepConfig, TrajectoryConfig, to_json
+from method.notify import Heartbeat, Notifier
 from method.store import Store, atomic_file, get_weights_id
 from method.sync import Syncer
 from method.utils import (
@@ -209,13 +213,57 @@ def main() -> None:
             required.append("OPENAI_API_KEY")
         check_env_vars(required)
 
-    run(
-        seeds=args.seeds,
-        traits=args.traits,
-        backend_kind=args.backend,
-        dtype=args.dtype,
-        local=args.local,
-    )
+    signal.signal(signal.SIGTERM, _die_on_sigterm)
+    _run_and_report(args)
+
+
+def _run_and_report(args: argparse.Namespace) -> None:
+    """:func:`run`, with the outcome mailed out and a watchdog kept fed.
+
+    Probing every dataset at the base model is hours of the same rented GPU a
+    trajectory uses, and just as unattended, so it gets the same treatment --
+    see :func:`method.run_trajectory.run_and_report`, which this mirrors. There
+    are no checkpoints here, so the report is the flat one.
+    """
+    notifier = Notifier.from_env()
+    heartbeat = Heartbeat.from_env()
+    logger.info("%s; %s", notifier.describe(), heartbeat.describe())
+
+    title = f"probe_base ({len(args.seeds)} seed(s) x {len(args.traits)} trait(s))"
+    detail = f"seeds: {list(args.seeds)}\ntraits: {list(args.traits)}"
+    started = time.monotonic()
+    with heartbeat:
+        try:
+            run(
+                seeds=args.seeds,
+                traits=args.traits,
+                backend_kind=args.backend,
+                dtype=args.dtype,
+                local=args.local,
+            )
+        except BaseException as exc:
+            subject, body = report.job_report(
+                title,
+                elapsed=time.monotonic() - started,
+                detail=detail,
+                error=exc,
+                traceback_text=traceback.format_exc(),
+            )
+            notifier.send(subject, body)
+            raise
+        subject, body = report.job_report(
+            title, elapsed=time.monotonic() - started, detail=detail
+        )
+        notifier.send(subject, body)
+
+
+def _die_on_sigterm(signum: int, _frame: object) -> None:
+    """Turn a polite kill into an exception, so the failure email still goes.
+
+    See :func:`method.run_trajectory._die_on_sigterm` -- SIGTERM's default
+    action ends the process with no unwinding, so nothing would report it.
+    """
+    raise KeyboardInterrupt(f"received signal {signum}")
 
 
 if __name__ == "__main__":
