@@ -27,7 +27,12 @@ from pathlib import Path
 
 from method.eval_progress import ProgressStore, make_eval_batched
 from method.utils import DOTENV_PATH, load_dotenv
-from method.vllm_patches import force_vllm_dtype, force_vllm_max_model_len
+from method.vllm_patches import (
+    VENDORED_MAX_NUM_SEQS,
+    force_vllm_cudagraph_sizes,
+    force_vllm_dtype,
+    force_vllm_max_model_len,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -180,6 +185,15 @@ def main() -> None:
         "That reserves far more KV-cache than a persona-eval request ever "
         "needs, inflating GPU memory use for no benefit.",
     )
+    parser.add_argument(
+        "--vllm_cudagraph_max_size",
+        type=int,
+        default=VENDORED_MAX_NUM_SEQS,
+        help="Largest batch size to capture a CUDA graph for. vLLM's V1 engine "
+        "captures 67 shapes regardless of max_num_seqs, which cost 2148s of "
+        "engine startup on a rental box and is paid again by every stage. 0 "
+        "restores vLLM's own list, which is only useful for measuring that.",
+    )
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument(
         "--progress_dir",
@@ -205,6 +219,8 @@ def main() -> None:
         force_vllm_dtype(args.vllm_dtype)
     if args.vllm_max_model_len:
         force_vllm_max_model_len(args.vllm_max_model_len)
+    if args.vllm_cudagraph_max_size:
+        force_vllm_cudagraph_sizes(args.vllm_cudagraph_max_size)
 
     if args.judge_backend == "stub":
         # Both judge.py and eval_persona's module-level setup_credentials()

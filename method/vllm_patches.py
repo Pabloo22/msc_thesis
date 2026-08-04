@@ -10,6 +10,55 @@ functions first, so the fix lives entirely outside persona_vectors.
 
 from __future__ import annotations
 
+#: ``max_num_seqs`` as the vendored loader hardcodes it. Restated rather than
+#: read back off the engine because the cap has to be decided before ``LLM``
+#: is constructed, which is the only thing that would know it.
+VENDORED_MAX_NUM_SEQS = 32
+
+#: The capture list vLLM's V0 engine would have built for that ``max_num_seqs``
+#: -- its ``[1, 2, 4] + [8 * i ...]`` candidates, truncated at the first size
+#: that reaches it. See :func:`force_vllm_cudagraph_sizes` for why V1 needs to
+#: be told this explicitly.
+
+_CAPTURE_SIZES = (1, 2, 4, 8, 16, 24, 32)
+
+
+def force_vllm_cudagraph_sizes(max_size: int = VENDORED_MAX_NUM_SEQS) -> None:
+    """Cap CUDA-graph capture at the batch sizes this workload can reach.
+
+    vLLM's V0 engine sized its capture list from ``max_num_seqs``: with the
+    vendored 32 it captured 7 shapes. V1 builds the list as
+    ``[1, 2, 4] + range(8, 513, 8)`` and filters it by
+    ``max_num_batched_tokens`` (8192 for the ``LLM`` class) instead, so all 67
+    shapes survive -- and it captures a warmup run per shape on top. That is
+    134 dummy forward passes where V0 did 14, and it is paid at every engine
+    construction, which for this pipeline means once per stage per subprocess.
+    Measured on a rental box: 2148s, against the 5-20s vLLM's own
+    ``capture_model`` docstring expects.
+
+    Nothing is lost by capping. Graphs are only used when the scheduled token
+    count is under the largest captured shape, and a decode batch is bounded by
+    ``max_num_seqs``; prefill already overruns any of these sizes and falls
+    back to eager regardless.
+
+    Unlike :func:`force_vllm_max_model_len` this is a ``setdefault``: the
+    vendored loader never passes ``compilation_config``, so a caller that does
+    is asking for something deliberate and should keep it. Everything V1 needs
+    for piecewise compilation (``level``, ``use_cudagraph``, ``use_inductor``,
+    the splitting ops) is re-applied to whatever config object it ends up with,
+    so overriding the sizes alone does not disturb the rest.
+    """
+    import vllm
+
+    original_init = vllm.LLM.__init__
+    sizes = [size for size in _CAPTURE_SIZES if size <= max_size]
+
+    def patched_init(self, *args, **kwargs):
+        kwargs.setdefault("compilation_config", {"cudagraph_capture_sizes": sizes})
+        return original_init(self, *args, **kwargs)
+
+    vllm.LLM.__init__ = patched_init  # type: ignore[method-assign]
+
 
 def force_vllm_dtype(dtype: str) -> None:
     """Make every ``vllm.LLM(...)`` use ``dtype``, whatever the caller asked.

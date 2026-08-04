@@ -19,7 +19,12 @@ import sys
 from pathlib import Path
 
 from method.utils import PERSONA_VECTORS_DIR, require_cuda
-from method.vllm_patches import force_vllm_dtype, force_vllm_max_model_len
+from method.vllm_patches import (
+    VENDORED_MAX_NUM_SEQS,
+    force_vllm_cudagraph_sizes,
+    force_vllm_dtype,
+    force_vllm_max_model_len,
+)
 
 
 def main() -> None:
@@ -32,6 +37,11 @@ def main() -> None:
     parser.add_argument("--vllm_dtype", default=None)
     # Mirrors config.ModelConfig.max_seq_length's default (see eval_wrapper.py).
     parser.add_argument("--vllm_max_model_len", type=int, default=2048)
+    # 0 leaves V1's 67-shape capture list alone, which is only useful for
+    # measuring what the cap saves (see vllm_patches).
+    parser.add_argument(
+        "--vllm_cudagraph_max_size", type=int, default=VENDORED_MAX_NUM_SEQS
+    )
     args = parser.parse_args()
 
     # vLLM would fail on its own, but only after ~45s of engine startup and
@@ -41,6 +51,8 @@ def main() -> None:
         force_vllm_dtype(args.vllm_dtype)
     if args.vllm_max_model_len:
         force_vllm_max_model_len(args.vllm_max_model_len)
+    if args.vllm_cudagraph_max_size:
+        force_vllm_cudagraph_sizes(args.vllm_cudagraph_max_size)
 
     # The vendored package imports itself by bare top-level names (e.g.
     # ``from config import ...``, ``from eval.model_utils import ...``), which
