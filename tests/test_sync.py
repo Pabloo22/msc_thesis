@@ -300,6 +300,69 @@ class TestPushStoreIsSweptOnce:
         ]
 
 
+class TestNestedDirsArePackedOnce:
+    """A nested artifact must not be duplicated once per level of nesting.
+
+    ``_tar_dir`` walks every descendant itself, so letting ``tar.add`` recurse
+    as well stored each file once per ancestor directory plus once for itself.
+    Measurement bundles nest as ``<kind>/<hash>/tensor.pt``, so every tensor
+    went up three times and each remote object was ~3x the bytes it needed.
+    """
+
+    def _bundle(self, store: Store, wid: str) -> None:
+        for kind in ("delta_p_target", "delta_p_predicted"):
+            _write_measurement(store, wid, f"{kind}/abc123/samples.pt", "tensor")
+        _write_measurement(store, wid, "h_neutral_base/samples.pt", "tensor")
+        _write_measurement(store, wid, "flat.json", "{}")
+
+    def test_each_file_appears_exactly_once(self, tmp_path):
+        src = _syncer(tmp_path)
+        self._bundle(src.store, "t01-deadbeef")
+
+        src.push_measurement("t01-deadbeef")
+
+        archive = tmp_path / "remote" / "store/measurements/t01-deadbeef.tar"
+        with tarfile.open(archive) as tar:
+            names = [m.name for m in tar.getmembers() if m.isfile()]
+        assert sorted(names) == sorted(set(names))
+        assert sorted(names) == [
+            "delta_p_predicted/abc123/samples.pt",
+            "delta_p_target/abc123/samples.pt",
+            "flat.json",
+            "h_neutral_base/samples.pt",
+        ]
+
+    def test_archive_is_not_inflated_beyond_its_payload(self, tmp_path):
+        src = _syncer(tmp_path)
+        self._bundle(src.store, "t01-deadbeef")
+        payload = sum(
+            p.stat().st_size
+            for p in src.store.measurement_dir("t01-deadbeef").rglob("*")
+            if p.is_file()
+        )
+
+        src.push_measurement("t01-deadbeef")
+
+        archive = tmp_path / "remote" / "store/measurements/t01-deadbeef.tar"
+        with tarfile.open(archive) as tar:
+            stored = sum(m.size for m in tar.getmembers() if m.isfile())
+        assert stored == payload
+
+    def test_nested_bundle_round_trips(self, tmp_path):
+        src = _syncer(tmp_path)
+        self._bundle(src.store, "t01-deadbeef")
+        src.push_measurement("t01-deadbeef")
+
+        dst = _syncer(tmp_path, store_name="dst")
+        dst.transport = src.transport
+        dst.pull_before_run()
+
+        pulled = dst.store.measurement_dir("t01-deadbeef")
+        assert (pulled / "delta_p_target/abc123/samples.pt").read_text() == "tensor"
+        assert (pulled / "h_neutral_base/samples.pt").read_text() == "tensor"
+        assert (pulled / "flat.json").read_text() == "{}"
+
+
 class TestSymlinkedRunInputs:
     """Run dirs symlink their inputs into the store; archives must not.
 

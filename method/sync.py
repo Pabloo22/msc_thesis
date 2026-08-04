@@ -233,6 +233,12 @@ def _tar_dir(src: Path, dest_tar: Path) -> None:
     already holds the same ids, and a plotting box has no store at all. Storing
     the pointed-at bytes instead makes each archive stand on its own, which is
     the point of shipping one object per artifact.
+
+    ``recursive=False`` because ``rglob`` already yields every descendant. Left
+    at its default, ``add`` walks each directory member's subtree *as well*, so
+    a file landed in the archive once per ancestor directory plus once for
+    itself -- tripling a measurement bundle's ``<kind>/<hash>/tensor.pt`` files
+    and inflating every upload ~3x.
     """
     with atomic_file(dest_tar) as scratch:
         with tarfile.open(scratch, "w", dereference=True) as tar:
@@ -242,7 +248,9 @@ def _tar_dir(src: Path, dest_tar: Path) -> None:
                     # dereference, and ``add`` would abort the whole push.
                     logger.warning("skipping dangling link %s", path)
                     continue
-                tar.add(path, arcname=str(path.relative_to(src)))
+                tar.add(
+                    path, arcname=str(path.relative_to(src)), recursive=False
+                )
 
 
 def _untar_dir(tar_path: Path, dest_dir: Path) -> None:
