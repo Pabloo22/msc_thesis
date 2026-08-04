@@ -148,6 +148,43 @@ The GPU is still rented until you stop it." || true
 }
 trap finish EXIT
 
+# A dead GPU is the failure mode this pipeline handles worst, so find out here
+# rather than one trajectory in. Both halves are load-bearing:
+#
+# nvidia-smi is the only thing that sees a card which has fallen off the bus,
+# and it still prints the healthy GPUs and can exit 0 while doing so -- so the
+# text is what matters, not the status.
+#
+# torch then decides whether a context can actually be created. A sibling
+# card's failure takes NVML enumeration down with it for the whole box, so
+# "GPU 0 looks idle and healthy" does not imply "GPU 0 is usable"; only trying
+# it settles that. This runs after `trap finish EXIT` so an unattended nohup
+# launch mails the failure instead of dying silently into a log.
+if [ "$MOCK" != "1" ]; then
+    echo ">>> Checking GPU health..."
+    SMI_OUT=$(nvidia-smi 2>&1) || true
+    if echo "$SMI_OUT" | grep -qiE "unable to determine|unknown error|ERR!"; then
+        echo "$SMI_OUT"
+        echo "Error: nvidia-smi cannot read every GPU on this box. The driver is" \
+             "wedged (a card has most likely fallen off the PCIe bus), and new CUDA" \
+             "processes will fail or silently fall back to the CPU. The host needs a" \
+             "reset; re-rent rather than restarting this run."
+        exit 1
+    fi
+    poetry run python -c '
+import sys
+
+import torch
+
+if not torch.cuda.is_available():
+    sys.exit("Error: torch reports no usable CUDA device on this box.")
+print(
+    f">>> CUDA ok: {torch.cuda.device_count()} visible device(s), "
+    f"running on {torch.cuda.get_device_name(0)}"
+)
+'
+fi
+
 # Iterate through the generated list and run each trajectory sequentially
 INDEX=0
 for key in $CONFIGS; do

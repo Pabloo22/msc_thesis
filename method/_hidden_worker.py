@@ -35,6 +35,8 @@ import torch
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+from method.utils import require_cuda
+
 
 def load_pairs(path: Path, tokenizer) -> tuple[list[str], list[str]]:
     """Read prompt/answer pairs from a jsonl file.
@@ -159,6 +161,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    require_cuda("_hidden_worker")
     tokenizer = AutoTokenizer.from_pretrained(args.model)
     prompts, answers = load_pairs(args.input, tokenizer)
     model = AutoModelForCausalLM.from_pretrained(

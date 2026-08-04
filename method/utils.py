@@ -146,6 +146,40 @@ def check_env_vars(required: Sequence[str] = REQUIRED_ENV_VARS) -> None:
         )
 
 
+def require_cuda(component: str) -> None:
+    """Fail fast if no CUDA device is usable.
+
+    Every GPU worker calls this before loading a model, because the failure it
+    guards against is silent rather than loud: ``device_map="auto"`` places the
+    model on the CPU when it sees zero devices, and the run then produces
+    *correct* numbers about a hundred times slower. One dead GPU on a rental box
+    took NVML down with it and cost 73 hours of CPU forward passes that way, so
+    the cheap check earns its place.
+
+    Note that a healthy GPU is not enough: a sibling card that has fallen off
+    the bus breaks NVML enumeration for the whole machine, which is why this
+    reports the driver's own message rather than assuming the device is merely
+    busy.
+    """
+    import torch  # imported here: utils is loaded by CPU-only paths too
+
+    if torch.cuda.is_available():
+        return
+    try:
+        torch.cuda.init()
+    except Exception as exc:  # noqa: BLE001 -- surfacing the driver's reason
+        detail = f" ({type(exc).__name__}: {exc})"
+    else:
+        detail = ""
+    raise RuntimeError(
+        f"{component} needs a CUDA device and torch reports none{detail}. "
+        "Refusing to fall back to the CPU, which would be ~100x slower. "
+        "Check 'nvidia-smi': if it cannot read every GPU on the box (e.g. "
+        "'Unable to determine the device handle for GPU1'), the driver is "
+        "wedged and no new CUDA process can start until the host is reset."
+    )
+
+
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
     """Parse a jsonl file, tolerating a truncated final line.
 

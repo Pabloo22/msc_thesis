@@ -18,7 +18,7 @@ import json
 import sys
 from pathlib import Path
 
-from method.utils import PERSONA_VECTORS_DIR
+from method.utils import PERSONA_VECTORS_DIR, require_cuda
 from method.vllm_patches import force_vllm_dtype, force_vllm_max_model_len
 
 
@@ -34,6 +34,9 @@ def main() -> None:
     parser.add_argument("--vllm_max_model_len", type=int, default=2048)
     args = parser.parse_args()
 
+    # vLLM would fail on its own, but only after ~45s of engine startup and
+    # with the reason buried in an EngineCore traceback.
+    require_cuda("_generate_worker")
     if args.vllm_dtype:
         force_vllm_dtype(args.vllm_dtype)
     if args.vllm_max_model_len:

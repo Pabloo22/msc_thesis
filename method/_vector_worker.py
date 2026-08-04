@@ -26,7 +26,7 @@ from pathlib import Path
 import torch
 
 from method.hf_patches import force_hf_dtype
-from method.utils import PERSONA_VECTORS_DIR
+from method.utils import PERSONA_VECTORS_DIR, require_cuda
 
 
 def main() -> None:
@@ -40,6 +40,7 @@ def main() -> None:
     parser.add_argument("--dtype", default="bfloat16")
     args = parser.parse_args()
 
+    require_cuda("_vector_worker")
     force_hf_dtype(args.dtype)
 
     # generate_vec.py is a script, not part of an importable package, so its
