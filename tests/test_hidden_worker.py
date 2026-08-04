@@ -44,9 +44,19 @@ class LinearModel:
         self.config = SimpleNamespace(num_hidden_layers=n_layers, hidden_size=hidden)
         self.device = torch.device("cpu")
 
-    def __call__(self, *, input_ids, attention_mask, output_hidden_states):
+    def __call__(
+        self, *, input_ids, attention_mask, output_hidden_states, logits_to_keep=0
+    ):
         assert output_hidden_states
         assert input_ids.shape == attention_mask.shape
+        # Accepted and ignored, as the real forward effectively does for this
+        # caller: it bounds the lm_head projection, which produces ``logits``,
+        # and this stand-in has no head and returns none. Hidden states are
+        # returned for every position either way -- slicing them here would
+        # make the fake disagree with the model about what is being averaged.
+        # Declared explicitly rather than swallowed by ``**kwargs`` so that the
+        # next unexpected argument still fails loudly, the way this one did.
+        assert logits_to_keep >= 0
         base = input_ids.unsqueeze(-1).expand(
             *input_ids.shape, self.config.hidden_size
         ).float()
