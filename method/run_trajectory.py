@@ -39,7 +39,7 @@ from method.store import (
     file_sha256,
     get_weights_id,
 )
-from method.sync import Syncer
+from method.sync import Syncer, format_unsynced
 from method.timing import StageTimer
 from method.utils import (
     DOTENV_PATH,
@@ -107,8 +107,21 @@ def measure_checkpoint(
     }
 
 
-def run(cfg: TrajectoryConfig, backend_kind: Backend, dtype: str) -> Path:
-    """Execute the trajectory end to end, returning the run directory."""
+def run(
+    cfg: TrajectoryConfig,
+    backend_kind: Backend,
+    dtype: str,
+    *,
+    syncer: Syncer | None = None,
+) -> Path:
+    """Execute the trajectory end to end, returning the run directory.
+
+    ``syncer`` is normally left to :meth:`Syncer.from_env`, which is also what
+    turns syncing off when no remote is configured. :func:`run_and_report`
+    passes one in so that it still holds a reference after this function has
+    returned *or raised*, and can report what never reached the remote --
+    which is exactly the information a failed run is least able to hand back.
+    """
     store = Store.for_backend(backend_kind)
     backend = get_backend(backend_kind, dtype=dtype)
     run_dir = trajectory_run_dir(
@@ -127,10 +140,16 @@ def run(cfg: TrajectoryConfig, backend_kind: Backend, dtype: str) -> Path:
     # No-op unless MSC_STORE_REMOTE is set (and never for a mock store). Pulling
     # first turns adapters another box already trained into local cache hits, so
     # a shared prefix is not retrained here.
-    syncer = Syncer.from_env(store)
+    if syncer is None:
+        syncer = Syncer.from_env(store)
     if syncer is not None:
         logger.info("Remote store configured; pulling reusable prefix")
         syncer.pull_before_run()
+        # A pull that could not read the remote is survivable -- every id is
+        # deterministic, so the worst case is retraining a prefix that already
+        # existed -- but it is expensive enough to be worth saying out loud
+        # while the box is still running and the choice to relaunch is open.
+        _warn_unsynced(syncer)
 
     logger.info(
         "Trajectory %r: %d step(s), model=%s, seed=%d, backend=%s",
@@ -216,12 +235,24 @@ def run(cfg: TrajectoryConfig, backend_kind: Backend, dtype: str) -> Path:
     if syncer is not None:
         logger.info("Pushing run artifacts to remote store")
         syncer.push_after_run(run_dir)
+        _warn_unsynced(syncer)
 
     # Merged weights are rebuildable from the adapter chain; do not leave a
     # full checkpoint occupying rental disk after the run.
     store.evict_all_merged()
     logger.info("Trajectory complete: %s", run_dir / "trajectory.json")
     return run_dir
+
+
+def _warn_unsynced(syncer: Syncer) -> None:
+    """Log whatever the remote did not accept, if anything.
+
+    The sweep this follows is the second attempt at every one of them, so an
+    entry surviving to here is a remote that stayed unreachable rather than one
+    that flickered.
+    """
+    if syncer.unsynced:
+        logger.warning("%s", format_unsynced(syncer.unsynced))
 
 
 def run_and_report(cfg: TrajectoryConfig, backend_kind: Backend, dtype: str) -> Path:
@@ -249,10 +280,15 @@ def run_and_report(cfg: TrajectoryConfig, backend_kind: Backend, dtype: str) -> 
     run_dir = trajectory_run_dir(
         cfg.name, cfg.seed, cfg.model.name, mock=backend_kind is Backend.MOCK
     )
+    # Built here rather than inside run() for the same reason: a run that
+    # raises still has to be able to say what never reached the remote, and
+    # that record lives on the syncer. ``Store`` is a pure holder of paths, so
+    # this instance and the one run() makes for itself address the same store.
+    syncer = Syncer.from_env(Store.for_backend(backend_kind))
     started = time.monotonic()
     with heartbeat:
         try:
-            result = run(cfg, backend_kind, dtype)
+            result = run(cfg, backend_kind, dtype, syncer=syncer)
         except BaseException as exc:
             elapsed = time.monotonic() - started
             _log_outcome(cfg, backend_kind, "failed", elapsed)
@@ -262,14 +298,22 @@ def run_and_report(cfg: TrajectoryConfig, backend_kind: Backend, dtype: str) -> 
                 elapsed=elapsed,
                 error=exc,
                 traceback_text=traceback.format_exc(),
+                unsynced=_unsynced(syncer),
             )
             notifier.send(subject, body)
             raise
         elapsed = time.monotonic() - started
         _log_outcome(cfg, backend_kind, "ok", elapsed)
-        subject, body = report.trajectory_report(cfg, run_dir, elapsed=elapsed)
+        subject, body = report.trajectory_report(
+            cfg, run_dir, elapsed=elapsed, unsynced=_unsynced(syncer)
+        )
         notifier.send(subject, body)
         return result
+
+
+def _unsynced(syncer: Syncer | None) -> dict[str, str]:
+    """What ``syncer`` could not transfer; empty when there is no remote."""
+    return {} if syncer is None else syncer.unsynced
 
 
 def _log_outcome(

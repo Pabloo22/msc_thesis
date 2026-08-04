@@ -11,19 +11,29 @@ needed. The invariants under test:
 * mutable measurements/run dirs are re-uploaded when they change and skipped
   when they do not, including after a pull;
 * a pull only fetches ids missing locally, and never a half-written directory;
-* mock stores refuse to sync.
+* mock stores refuse to sync;
+* a remote that is briefly unreachable is retried, and one that stays
+  unreachable is recorded rather than raised -- except for the CLI, which is
+  strict because transferring is all it does.
 """
 
 from __future__ import annotations
 
+import subprocess
 import tarfile
+from pathlib import Path
 
+import pytest
+
+from method import sync
 from method.store import Store
 from method.sync import (
+    _ATTEMPTS,
     REMOTE_ENV,
     LocalTransport,
     RcloneTransport,
     Syncer,
+    format_unsynced,
     make_transport,
 )
 
@@ -182,9 +192,7 @@ class TestMeasurementsAndSamples:
 
         dst = Syncer(Store(root=tmp_path / "dst"), src.transport)
         dst.pull_before_run()
-        assert (
-            dst.store.training_samples / "deadbeef.jsonl"
-        ).read_text() == "row"
+        assert (dst.store.training_samples / "deadbeef.jsonl").read_text() == "row"
 
 
 class TestUnchangedMutableArtifactsSkip:
@@ -246,7 +254,7 @@ class TestUnchangedMutableArtifactsSkip:
     def test_a_second_remote_does_not_inherit_the_first_ledger(
         self, tmp_path, monkeypatch
     ):
-        """"Already uploaded" is only ever true of one destination."""
+        """ "Already uploaded" is only ever true of one destination."""
         src = _syncer(tmp_path)
         _write_measurement(src.store, "t01-abc", "behavior.csv", "a")
         src.push_measurement("t01-abc")
@@ -272,9 +280,7 @@ class TestUnchangedMutableArtifactsSkip:
 
 
 class TestPushStoreIsSweptOnce:
-    def test_cli_push_sweeps_store_once_for_many_run_dirs(
-        self, tmp_path, monkeypatch
-    ):
+    def test_cli_push_sweeps_store_once_for_many_run_dirs(self, tmp_path, monkeypatch):
         """Regression: the store sweep used to run once per run directory.
 
         With N run dirs that re-tarred and re-uploaded every measurement bundle
@@ -429,6 +435,305 @@ class TestSymlinkedRunInputs:
 
         assert (tmp_path / "out" / "trajectory.json").exists()
         assert not (tmp_path / "out" / "train_step1.jsonl").exists()
+
+
+class _FakeRclone:
+    """Stands in for the rclone binary, returning canned exit codes.
+
+    Exit codes are the only thing :class:`RcloneTransport` reads to decide
+    between "it is not there", "try again" and "give up", and they are
+    documented rclone behaviour rather than something this project chose:
+    3/4 are not-found, 5 is rclone's own "temporary error", 1 is a usage or
+    config error.
+    """
+
+    def __init__(self, monkeypatch, exits, *, stdout: str = "") -> None:
+        self.calls: list[list[str]] = []
+        self.slept: list[float] = []
+        self._exits = list(exits)
+        self._stdout = stdout
+        monkeypatch.setattr(sync.subprocess, "run", self._run)
+        # Retries are the point; waiting through them in a unit test is not.
+        monkeypatch.setattr(sync.time, "sleep", self.slept.append)
+
+    def _run(self, cmd, **_kwargs):
+        self.calls.append(cmd)
+        code = self._exits.pop(0) if self._exits else 0
+        return subprocess.CompletedProcess(cmd, code, self._stdout, "boom")
+
+
+class TestRcloneRetries:
+    """rclone's own budget is 3 attempts with ``--retries-sleep`` at zero, so
+    all of them land within milliseconds. These are the attempts with a wait.
+    """
+
+    def test_transient_failure_is_retried_then_succeeds(self, monkeypatch):
+        fake = _FakeRclone(monkeypatch, [5, 5, 0])
+        RcloneTransport("gdrive:msc").upload(Path("/tmp/x.tar"), "store/a.tar")
+        assert len(fake.calls) == 3
+        assert fake.slept == [5.0, 10.0]  # growing, not a tight loop
+
+    def test_persistent_failure_raises_after_the_budget(self, monkeypatch):
+        fake = _FakeRclone(monkeypatch, [5] * _ATTEMPTS)
+        with pytest.raises(RuntimeError, match="exit 5"):
+            RcloneTransport("gdrive:msc").upload(Path("/tmp/x.tar"), "store/a.tar")
+        assert len(fake.calls) == _ATTEMPTS
+
+    def test_config_error_is_not_retried(self, monkeypatch):
+        """Exit 1 is a missing rclone.conf section: sleeping cannot fix it."""
+        fake = _FakeRclone(monkeypatch, [1])
+        with pytest.raises(RuntimeError, match="exit 1"):
+            RcloneTransport("gdrive:msc").upload(Path("/tmp/x.tar"), "store/a.tar")
+        assert len(fake.calls) == 1
+        assert fake.slept == []
+
+    def test_a_miss_costs_one_call_and_no_sleep(self, monkeypatch):
+        """Exit 3 is the normal answer for a skip check, not a failure.
+
+        Retrying it would put the whole backoff budget in front of every
+        artifact a push considers skipping.
+        """
+        fake = _FakeRclone(monkeypatch, [3])
+        assert RcloneTransport("gdrive:msc").exists("store/a.tar") is False
+        assert len(fake.calls) == 1
+        assert fake.slept == []
+
+
+class TestListingDistinguishesEmptyFromUnreachable:
+    """The silent failure this replaces: an unreachable remote read as empty.
+
+    ``list_names`` returning ``[]`` made ``pull_before_run`` a no-op that
+    logged nothing, so the run went on to retrain a prefix that was sitting on
+    the remote the whole time -- hours of GPU, with no error anywhere.
+    """
+
+    def test_absent_directory_is_empty(self, monkeypatch):
+        _FakeRclone(monkeypatch, [3])
+        assert RcloneTransport("gdrive:msc").list_names("store/adapters") == []
+
+    def test_unreachable_remote_raises(self, monkeypatch):
+        _FakeRclone(monkeypatch, [5] * _ATTEMPTS)
+        with pytest.raises(RuntimeError, match="exit 5"):
+            RcloneTransport("gdrive:msc").list_names("store/adapters")
+
+    def test_populated_directory_lists(self, monkeypatch):
+        _FakeRclone(monkeypatch, [0], stdout="a.tar\nb.tar\n")
+        assert RcloneTransport("gdrive:msc").list_names("store/x") == [
+            "a.tar",
+            "b.tar",
+        ]
+
+
+class TestRcloneDownloadIsAtomic:
+    """A cut-off transfer must not leave a truncated file at the destination.
+
+    ``_pull_files`` writes straight to the final path and treats presence as
+    proof of completeness, so a partial download left behind would be read as
+    a complete artifact forever after and never fetched again.
+    """
+
+    def test_partial_download_leaves_no_destination(self, tmp_path, monkeypatch):
+        transport = RcloneTransport("gdrive:msc")
+        dest = tmp_path / "probe.json"
+
+        def half_write_then_fail(cmd, **_kwargs):
+            # rclone writes to whatever path it was given, then dies.
+            Path(cmd[-1]).write_text('{"truncated"', encoding="utf-8")
+            return subprocess.CompletedProcess(cmd, 5, "", "connection reset")
+
+        monkeypatch.setattr(sync.subprocess, "run", half_write_then_fail)
+        monkeypatch.setattr(sync.time, "sleep", lambda _s: None)
+
+        with pytest.raises(RuntimeError):
+            transport.download("trajectories/base_probes/probe.json", dest)
+
+        assert not dest.exists()
+
+    def test_successful_download_lands(self, tmp_path, monkeypatch):
+        transport = RcloneTransport("gdrive:msc")
+        dest = tmp_path / "nested" / "probe.json"
+
+        def write_it(cmd, **_kwargs):
+            Path(cmd[-1]).write_text("{}", encoding="utf-8")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(sync.subprocess, "run", write_it)
+
+        transport.download("trajectories/base_probes/probe.json", dest)
+
+        assert dest.read_text() == "{}"
+
+
+class _UnreachableTransport(LocalTransport):
+    """A local transport that can be switched offline, as a remote can be.
+
+    Subclasses :class:`LocalTransport` rather than faking one outright so that
+    the *recovery* is real: switch ``down`` back off and the same object
+    genuinely transfers, which is what the self-healing tests below turn on.
+    """
+
+    def __init__(self, root, *, down: bool = True, only: str | None = None) -> None:
+        super().__init__(root)
+        self.down = down
+        #: Restrict the outage to relpaths containing this substring, for the
+        #: case that matters most: one bad object among many good ones.
+        self.only = only
+
+    def _check(self, relpath: str) -> None:
+        if self.down and (self.only is None or self.only in relpath):
+            raise RuntimeError("remote unreachable")
+
+    def exists(self, relpath):
+        self._check(relpath)
+        return super().exists(relpath)
+
+    def upload(self, local, relpath):
+        self._check(relpath)
+        super().upload(local, relpath)
+
+    def download(self, relpath, local):
+        self._check(relpath)
+        super().download(relpath, local)
+
+    def list_names(self, reldir):
+        self._check(reldir)
+        return super().list_names(reldir)
+
+
+class TestUnreachableRemoteDoesNotKillTheRun:
+    """A trajectory is hours of GPU; a push is a nice-to-have on top of it.
+
+    Everything offered to a transport is already durable on local disk, so a
+    transfer that cannot happen must cost a retry, never the run.
+    """
+
+    def _syncer(self, tmp_path, **kwargs) -> Syncer:
+        store = Store(root=tmp_path / "store")
+        transport = _UnreachableTransport(tmp_path / "remote", **kwargs)
+        return Syncer(store, transport, trajectories=tmp_path / "traj")
+
+    def test_failed_push_is_recorded_not_raised(self, tmp_path):
+        src = self._syncer(tmp_path)
+        _make_adapter(src.store, "t01-abc")
+
+        src.push_adapter("t01-abc")  # must not raise
+
+        assert list(src.unsynced) == ["push store/adapters/t01-abc.tar"]
+
+    def test_failed_pull_is_recorded_not_raised(self, tmp_path):
+        dst = self._syncer(tmp_path)
+
+        dst.pull_before_run()  # must not raise
+
+        # The listing is what failed, so that is what is named: nothing is
+        # known about the individual objects behind it.
+        assert list(dst.unsynced) == [
+            "list store/adapters",
+            "list store/training_samples",
+            "list store/measurements",
+        ]
+
+    def test_run_survives_every_push_a_trajectory_makes(self, tmp_path):
+        """The full set of entry points the runner calls, all offline."""
+        src = self._syncer(tmp_path)
+        _make_adapter(src.store, "t01-abc")
+        _write_measurement(src.store, "t01-abc", "behavior.csv", "a")
+        src.store.training_samples.mkdir(parents=True)
+        (src.store.training_samples / "deadbeef.jsonl").write_text("row")
+        run_dir = src.trajectories / "EXP1_seed0"
+        run_dir.mkdir(parents=True)
+        (run_dir / "trajectory.json").write_text("{}", encoding="utf-8")
+
+        src.push_adapter("t01-abc")
+        src.push_measurement("t01-abc")
+        src.push_training_sample("deadbeef")
+        src.push_after_run(run_dir)  # none of these may raise
+
+        assert len(src.unsynced) == 4
+
+    def test_one_bad_object_does_not_strand_the_others(self, tmp_path):
+        src = self._syncer(tmp_path, only="t02-bad")
+        _make_adapter(src.store, "t01-good")
+        _make_adapter(src.store, "t02-bad")
+
+        src.push_store()
+
+        assert list(src.unsynced) == ["push store/adapters/t02-bad.tar"]
+        assert src.transport.list_names("store/adapters") == ["t01-good.tar"]
+
+
+class TestRecoveryClearsTheRecord:
+    """``unsynced`` is the state of the remote, not a log of every hiccup."""
+
+    def test_later_success_drops_the_earlier_failure(self, tmp_path):
+        store = Store(root=tmp_path / "store")
+        transport = _UnreachableTransport(tmp_path / "remote")
+        src = Syncer(store, transport, trajectories=tmp_path / "traj")
+        _make_adapter(store, "t01-abc")
+        src.push_adapter("t01-abc")
+        assert src.unsynced
+
+        # What the end-of-run sweep does, once the remote is back.
+        transport.down = False
+        src.push_store()
+
+        assert src.unsynced == {}
+        assert transport.list_names("store/adapters") == ["t01-abc.tar"]
+
+    def test_the_next_run_on_this_box_ships_what_the_last_one_could_not(self, tmp_path):
+        """Answering the question the report has to answer: is this recoverable?
+
+        A push that failed left the artifact on local disk, and every run sweeps
+        the whole store -- so a fresh syncer with no memory of the failure still
+        finds and ships it.
+        """
+        store = Store(root=tmp_path / "store")
+        _make_adapter(store, "t01-abc")
+        first = Syncer(
+            store, _UnreachableTransport(tmp_path / "remote"), trajectories=tmp_path
+        )
+        first.push_adapter("t01-abc")
+        assert first.unsynced
+
+        second = Syncer(
+            store, LocalTransport(tmp_path / "remote"), trajectories=tmp_path
+        )
+        second.push_store()
+
+        assert second.unsynced == {}
+        assert (tmp_path / "remote" / "store/adapters/t01-abc.tar").is_file()
+
+
+class TestStrictMode:
+    """The CLI's whole job is the transfer, so it must not exit 0 without one."""
+
+    def test_strict_syncer_raises(self, tmp_path):
+        store = Store(root=tmp_path / "store")
+        transport = _UnreachableTransport(tmp_path / "remote")
+        src = Syncer(store, transport, trajectories=tmp_path, strict=True)
+        _make_adapter(store, "t01-abc")
+
+        with pytest.raises(RuntimeError, match="unreachable"):
+            src.push_adapter("t01-abc")
+
+    def test_from_env_passes_strict_through(self, tmp_path, monkeypatch):
+        monkeypatch.setenv(REMOTE_ENV, str(tmp_path / "remote"))
+        assert Syncer.from_env(Store(root=tmp_path / "store"), strict=True).strict
+
+
+class TestFormatUnsynced:
+    def test_empty_renders_nothing(self):
+        assert format_unsynced({}) == ""
+
+    def test_names_the_artifact_and_the_recovery(self):
+        text = format_unsynced({"push store/adapters/t01-abc.tar": "RuntimeError: x"})
+        assert "store/adapters/t01-abc.tar" in text
+        # The actionable half: the artifact is safe only while the box is.
+        assert "do not release the box" in text.casefold()
+
+    def test_long_lists_are_truncated(self):
+        text = format_unsynced({f"push a/{i}.tar": "boom" for i in range(20)}, limit=3)
+        assert "and 17 more" in text
 
 
 class TestPlottingPull:

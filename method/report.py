@@ -19,12 +19,14 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
 from method import timing
 from method.config import TrajectoryConfig
 from method.notify import Notifier
+from method.sync import format_unsynced
 from method.timing import (
     format_cost,
     format_duration,
@@ -91,16 +93,24 @@ def trajectory_report(
     elapsed: float,
     error: BaseException | None = None,
     traceback_text: str = "",
+    unsynced: Mapping[str, str] | None = None,
 ) -> tuple[str, str]:
     """Subject and body for one finished or failed trajectory.
 
     The failure case leads with the traceback rather than the tables: the
     decision it exists to support is "stop the box or not", and nobody should
     have to scroll past a timing breakdown to make it.
+
+    ``unsynced`` is :attr:`method.sync.Syncer.unsynced` -- what never reached
+    the remote. It rides in the subject as well as the body because it changes
+    the same decision the traceback does, in the opposite direction: an
+    otherwise perfect run whose artifacts are still only on the box is the one
+    case where stopping the box loses work.
     """
     records = timing.read_stages(timing.stage_log_path(run_dir))
     family = FamilyContext.from_env()
     failed = error is not None
+    unsynced = unsynced or {}
 
     # "FAILED" leads the subject rather than sitting mid-sentence, so the one
     # thing worth acting on is legible in a phone's notification preview.
@@ -111,6 +121,8 @@ def trajectory_report(
     )
     if family is not None:
         subject += f" ({family.index}/{family.total})"
+    if unsynced:
+        subject += f" +{len(unsynced)} unsynced"
 
     parts: list[str] = []
 
@@ -121,6 +133,12 @@ def trajectory_report(
         parts.append(f"{type(error).__name__}: {error}")
         if traceback_text:
             parts.append(traceback_text.rstrip())
+
+    # Above the timing tables: this is the other thing that makes stopping the
+    # box the wrong move, and it should not need scrolling to either.
+    unsynced_text = format_unsynced(unsynced)
+    if unsynced_text:
+        parts.append(unsynced_text)
 
     parts.append(
         "\n".join(

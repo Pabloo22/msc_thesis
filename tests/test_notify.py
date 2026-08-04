@@ -15,6 +15,22 @@ from method import notify
 from method.notify import Heartbeat, Notifier
 
 
+class _FakeResponse:
+    """Stands in for the context manager ``urlopen`` returns."""
+
+    def __init__(self, _ignored=None) -> None:
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return b"OK"
+
+
 @pytest.fixture(autouse=True)
 def no_notify_env(monkeypatch):
     """Start every test from an unconfigured environment.
@@ -87,6 +103,37 @@ class TestNotifierSending:
         assert captured["payload"]["subject"] == "it broke"
         assert captured["payload"]["text"] == "traceback here"
         assert captured["headers"]["Authorization"] == "Bearer re_test"
+
+    def test_sends_an_explicit_user_agent(self, monkeypatch):
+        """Cloudflare fronts the Resend API and bans urllib's default agent,
+        answering 403 / error 1010 in a way that reads like a bad API key.
+        Without an explicit User-Agent, nothing is ever delivered."""
+        captured = {}
+        monkeypatch.setattr(
+            notify.urllib.request,
+            "urlopen",
+            lambda request, timeout: _FakeResponse(captured.update(request.headers)),
+        )
+
+        Notifier(api_key="k", recipients=["me@example.com"]).send("s", "b")
+
+        agent = {key.lower(): value for key, value in captured.items()}["user-agent"]
+        assert agent == notify._USER_AGENT
+        assert not agent.startswith("Python-urllib")
+
+    def test_heartbeat_ping_also_sets_the_user_agent(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(
+            notify.urllib.request,
+            "urlopen",
+            lambda request, timeout: _FakeResponse(captured.update(request.headers)),
+        )
+
+        Heartbeat("https://hc.example/uuid").ping()
+
+        assert {k.lower(): v for k, v in captured.items()}["user-agent"] == (
+            notify._USER_AGENT
+        )
 
     def test_tag_prefixes_the_subject(self, monkeypatch):
         """Two boxes working one family otherwise send indistinguishable mail."""

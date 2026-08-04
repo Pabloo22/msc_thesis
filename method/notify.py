@@ -34,6 +34,7 @@ the heartbeat is what still works when the box is gone.
 
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import os
@@ -44,6 +45,8 @@ import urllib.request
 from collections.abc import Sequence
 from contextlib import AbstractContextManager
 from types import TracebackType
+
+from method.utils import DOTENV_PATH, load_dotenv
 
 logger = logging.getLogger(__name__)
 
@@ -72,13 +75,24 @@ _TIMEOUT_SECONDS = 15.0
 _ATTEMPTS = 3
 _RETRY_DELAY_SECONDS = 2.0
 
+#: Load-bearing, not cosmetic. Cloudflare fronts the Resend API and bans
+#: urllib's default ``Python-urllib/3.12`` agent on sight: every request comes
+#: back ``403`` with Cloudflare error 1010 ("browser signature banned"), which
+#: names neither the header nor Cloudflare and reads exactly like a rejected
+#: API key. Any agent string that is not urllib's default gets through.
+_USER_AGENT = "msc-thesis-notifier/1.0"
+
 
 def _post_json(url: str, payload: dict, headers: dict[str, str]) -> None:
     """POST ``payload`` as JSON, raising on any non-2xx response."""
     request = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json", **headers},
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": _USER_AGENT,
+            **headers,
+        },
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=_TIMEOUT_SECONDS) as response:
@@ -253,9 +267,13 @@ class Heartbeat(AbstractContextManager["Heartbeat"]):
         if self.url is None:
             return
         try:
-            with urllib.request.urlopen(
-                self.url + suffix, timeout=_TIMEOUT_SECONDS
-            ) as response:
+            # Same explicit agent as the mail path: healthchecks.io does not
+            # filter on it today, but a watchdog that silently stops being
+            # pinged is the one failure this class cannot report.
+            request = urllib.request.Request(
+                self.url + suffix, headers={"User-Agent": _USER_AGENT}
+            )
+            with urllib.request.urlopen(request, timeout=_TIMEOUT_SECONDS) as response:
                 response.read()
         except Exception as exc:  # noqa: BLE001 -- best-effort by design
             logger.debug("heartbeat ping%s failed: %s", suffix, exc)
@@ -288,3 +306,74 @@ class Heartbeat(AbstractContextManager["Heartbeat"]):
         if self._thread is not None:
             self._thread.join(timeout=_TIMEOUT_SECONDS)
         self.ping("/fail" if exc_type is not None else "")
+
+
+def main() -> None:
+    """Send a test notification, to check the wiring before spending GPU time.
+
+    Everything here is best-effort at run time -- a notifier that cannot reach
+    the network logs a warning and lets the trajectory carry on -- which is the
+    right behaviour during a run and the wrong one for a setup check, where a
+    silent failure means finding out only once something has already broken
+    unnoticed. So this reports the outcome and exits non-zero, in the spirit of
+    ``scripts/box_setup.sh``.
+
+    Kept out of ``box_setup.sh`` itself because that script is meant to be
+    re-run freely, and each invocation of this one costs an email.
+    """
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--heartbeat-only",
+        action="store_true",
+        help="ping the watchdog but send no mail",
+    )
+    args = parser.parse_args()
+
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    load_dotenv(DOTENV_PATH)
+
+    notifier = Notifier.from_env()
+    heartbeat = Heartbeat.from_env()
+    print(notifier.describe())
+    print(heartbeat.describe())
+
+    problems = []
+
+    if heartbeat.enabled:
+        # /start then /fail then a success ping: this exercises all three
+        # endpoints and leaves the check in a passing state, so a test cannot
+        # leave a watchdog that will alarm an hour later.
+        heartbeat.ping("/start")
+        heartbeat.ping("/fail")
+        heartbeat.ping()
+        print("pinged the watchdog (start, fail, then success -- check its log)")
+    else:
+        problems.append(
+            f"{HEARTBEAT_URL_ENV} is unset: a box that is killed "
+            "outright or loses its network cannot report itself"
+        )
+
+    if args.heartbeat_only:
+        pass
+    elif not notifier.enabled:
+        problems.append(
+            f"set {RESEND_API_KEY_ENV} and {NOTIFY_EMAIL_ENV} in {DOTENV_PATH}"
+        )
+    elif notifier.send(
+        "test notification",
+        "If this arrived, failure and progress emails will reach you.\n\n"
+        f"Sender    {notifier.sender}\n"
+        f"Recipients{' ' * 6}{', '.join(notifier.recipients)}\n\n"
+        "Sent by `python -m method.notify`.\n",
+    ):
+        print(f"sent a test email to {', '.join(notifier.recipients)}")
+    else:
+        problems.append("the send failed; the warning above says why")
+
+    for problem in problems:
+        print(f"  problem: {problem}")
+    raise SystemExit(1 if problems else 0)
+
+
+if __name__ == "__main__":
+    main()

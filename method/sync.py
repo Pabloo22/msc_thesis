@@ -37,6 +37,14 @@ Design constraints inherited from :mod:`method.store`:
 * **Mock artifacts never sync.** ``store-mock`` deliberately shares ids with the
   real store; syncing it would let synthetic adapters poison real boxes.
   :func:`Syncer.from_env` refuses any root whose name ends in ``-mock``.
+* **A remote that blinks must not kill a run.** The network between a rental box
+  and a bucket is the least reliable part of this system and the least important
+  one: every artifact is already durable on local disk before it is offered to a
+  transport. Failures are therefore absorbed twice over -- retried inside
+  :class:`RcloneTransport`, then recorded rather than raised by
+  :class:`Syncer` -- so a blip costs a retry instead of a trajectory's GPU
+  hours. What could not be shipped is left in :attr:`Syncer.unsynced` for the
+  caller to report; see :func:`format_unsynced`.
 """
 
 from __future__ import annotations
@@ -48,7 +56,8 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
-from collections.abc import Generator, Iterable
+import time
+from collections.abc import Generator, Iterable, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -61,6 +70,33 @@ logger = logging.getLogger(__name__)
 #: rclone remote or ``/mnt/shared/msc-thesis`` for a mounted path. Unset means
 #: "no remote"; every entry point then runs purely against local disk.
 REMOTE_ENV = "MSC_STORE_REMOTE"
+
+#: How many times one rclone invocation is attempted, and the first gap between
+#: attempts (doubling thereafter: 5s, 10s, 20s -- ~35s of patience in total).
+#:
+#: rclone has a retry budget of its own, but a shallower one than it looks:
+#: ``--retries`` defaults to 3 while ``--retries-sleep`` defaults to *zero*, so
+#: all three attempts fire within milliseconds of each other. That absorbs a
+#: dropped packet and nothing slower. These attempts sit outside the process
+#: with a real, growing sleep between them, so a remote that is briefly away --
+#: a box's network settling after boot, a provider blip, an expired token being
+#: refreshed -- is waited out instead of reported as a failure.
+_ATTEMPTS = 4
+_BACKOFF_SECONDS = 5.0
+
+#: rclone exit codes meaning "it is not there". A legitimate answer to
+#: :meth:`RcloneTransport.exists` and to listing a directory nothing has been
+#: pushed to yet, so never an error and never worth a retry -- retrying every
+#: miss would put the whole backoff budget in front of each skip check.
+_ABSENT_EXITS = frozenset({3, 4})
+
+#: Exit codes worth another attempt: 5 is rclone's own "temporary error, one
+#: that more retries might fix", and 2 is the uncategorised bucket that
+#: connection resets and truncated transfers land in. Everything else fails the
+#: same way however often it is tried -- 1 is a usage or config error (a
+#: missing ``rclone.conf`` section reports 1), 6 is explicitly no-retry, 7 is
+#: fatal -- so those are raised on the first attempt rather than slept over.
+_RETRYABLE_EXITS = frozenset({2, 5})
 
 
 # --------------------------------------------------------------------------- #
@@ -121,13 +157,39 @@ class RcloneTransport(Transport):
         return f"{self.root}/{relpath.lstrip('/')}"
 
     def _run(
-        self, args: list[str], *, check: bool = True
+        self, args: list[str], *, absent_ok: bool = False
     ) -> subprocess.CompletedProcess:
-        logger.debug("rclone %s", " ".join(args))
-        result = subprocess.run(
-            [self.binary, *args], check=False, capture_output=True, text=True
-        )
-        if check and result.returncode != 0:
+        """Run one rclone command, retrying while the failure looks transient.
+
+        ``absent_ok`` admits the "not found" exits as an ordinary result for
+        the caller to interpret, rather than an error. Only the two read
+        operations pass it, and only they can afford to: a miss is their normal
+        answer, so treating it as a failure would spend the entire backoff
+        budget on every skip check a push makes.
+        """
+        for attempt in range(1, _ATTEMPTS + 1):
+            logger.debug(
+                "rclone %s (attempt %d/%d)", " ".join(args), attempt, _ATTEMPTS
+            )
+            result = subprocess.run(
+                [self.binary, *args], check=False, capture_output=True, text=True
+            )
+            if result.returncode == 0:
+                return result
+            if absent_ok and result.returncode in _ABSENT_EXITS:
+                return result
+            if result.returncode in _RETRYABLE_EXITS and attempt < _ATTEMPTS:
+                delay = _BACKOFF_SECONDS * 2 ** (attempt - 1)
+                logger.warning(
+                    "rclone %s failed (exit %d); retrying in %.0fs [%d/%d]",
+                    args[0],
+                    result.returncode,
+                    delay,
+                    attempt,
+                    _ATTEMPTS - 1,
+                )
+                time.sleep(delay)
+                continue
             # rclone's own stderr ("didn't find section in config file",
             # "couldn't connect", a quota message) is the only thing that makes
             # a failure diagnosable, and ``capture_output`` means nobody else
@@ -136,12 +198,18 @@ class RcloneTransport(Transport):
                 f"rclone {' '.join(args)} failed (exit {result.returncode}): "
                 f"{result.stderr.strip() or '<no stderr>'}"
             )
-        return result
+        raise AssertionError("unreachable")  # pragma: no cover
 
     def exists(self, relpath: str) -> bool:
+        """Whether the object is on the remote.
+
+        Distinguishes "absent" from "could not tell": an unreachable remote
+        raises rather than answering ``False``, because ``False`` here means
+        "upload it", and an upload to a remote nothing can reach is not a fix.
+        """
         # ``lsf`` on the exact path lists just that object if present, nothing
         # otherwise -- one request, no directory walk.
-        result = self._run(["lsf", self._target(relpath)], check=False)
+        result = self._run(["lsf", self._target(relpath)], absent_ok=True)
         return result.returncode == 0 and bool(result.stdout.strip())
 
     def upload(self, local: Path, relpath: str) -> None:
@@ -150,10 +218,26 @@ class RcloneTransport(Transport):
         self._run(["copyto", str(local), self._target(relpath)])
 
     def download(self, relpath: str, local: Path) -> None:
-        self._run(["copyto", self._target(relpath), str(local)])
+        # Staged through ``atomic_file`` exactly as :class:`LocalTransport`
+        # does. A transfer cut off part-way must not leave a truncated file at
+        # the destination: :meth:`Syncer._pull_files` writes straight to the
+        # final path and treats presence as proof of completeness, so a partial
+        # download that stayed there would never be fetched again.
+        local.parent.mkdir(parents=True, exist_ok=True)
+        with atomic_file(local) as scratch:
+            self._run(["copyto", self._target(relpath), str(scratch)])
 
     def list_names(self, reldir: str) -> list[str]:
-        result = self._run(["lsf", "--files-only", self._target(reldir)], check=False)
+        # An absent directory is empty -- the normal state of a remote nothing
+        # has been pushed to yet. Any *other* failure raises, because the two
+        # are otherwise the same empty list, and a pull that mistook an
+        # unreachable remote for an empty one would silently skip every
+        # artifact it exists to fetch and retrain a prefix that was already up
+        # there. That is the expensive failure this whole module exists to
+        # prevent, and it is the one that used to be invisible.
+        result = self._run(
+            ["lsf", "--files-only", self._target(reldir)], absent_ok=True
+        )
         if result.returncode != 0:
             return []
         return [line.strip() for line in result.stdout.splitlines() if line.strip()]
@@ -248,9 +332,7 @@ def _tar_dir(src: Path, dest_tar: Path) -> None:
                     # dereference, and ``add`` would abort the whole push.
                     logger.warning("skipping dangling link %s", path)
                     continue
-                tar.add(
-                    path, arcname=str(path.relative_to(src)), recursive=False
-                )
+                tar.add(path, arcname=str(path.relative_to(src)), recursive=False)
 
 
 def _untar_dir(tar_path: Path, dest_dir: Path) -> None:
@@ -415,6 +497,7 @@ class Syncer:
         trajectories: Path | None = None,
         *,
         force: bool = False,
+        strict: bool = False,
     ) -> None:
         self.store = store
         self.transport = transport
@@ -426,9 +509,18 @@ class Syncer:
         )
         self.ledger = PushLedger.for_transport(store.root, transport)
         self.force = force
+        #: Whether a transfer failure propagates instead of being recorded.
+        #: False for a trajectory, whose GPU hours must not be thrown away
+        #: because a remote blinked; True for the CLI at the bottom of this
+        #: module, whose only job *is* the transfer, so its exit status has to
+        #: tell the truth about whether one happened.
+        self.strict = strict
+        self._unsynced: dict[str, str] = {}
 
     @classmethod
-    def from_env(cls, store: Store, *, force: bool = False) -> Syncer | None:
+    def from_env(
+        cls, store: Store, *, force: bool = False, strict: bool = False
+    ) -> Syncer | None:
         """A syncer if ``MSC_STORE_REMOTE`` is set and ``store`` is real.
 
         Returns ``None`` (a no-op signal for callers) when no remote is
@@ -442,7 +534,62 @@ class Syncer:
         if store.root.name.endswith("-mock"):
             logger.info("Refusing to sync mock store %s", store.root)
             return None
-        return cls(store, make_transport(remote), force=force)
+        return cls(store, make_transport(remote), force=force, strict=strict)
+
+    # --- surviving an unreachable remote --------------------------------- #
+
+    @property
+    def unsynced(self) -> dict[str, str]:
+        """Transfers that did not happen, mapped to the error that stopped them.
+
+        Empty when everything landed. Keys read ``push <relpath>``,
+        ``pull <relpath>`` or ``list <reldir>``, since "the remote is missing
+        this" and "this box is missing this" call for different reactions.
+
+        An entry is dropped as soon as a later attempt on the same operation
+        succeeds, so this describes the state at the end of a run rather than
+        logging everything that ever went wrong: an eager push that failed and
+        was then picked up by :meth:`push_after_run` leaves nothing behind.
+        """
+        return dict(self._unsynced)
+
+    @contextmanager
+    def _attempt(self, what: str) -> Generator[None]:
+        """Carry out one transfer, surviving a remote that is not there.
+
+        Every artifact offered to a transport is already durable on local disk,
+        so a failed transfer costs a later retry while a raised exception costs
+        the whole trajectory -- hours of rented GPU thrown away for the one
+        thing here that was never the point. The failure is recorded instead,
+        and the backstops take it from there: :meth:`push_after_run` sweeps at
+        the end of the run, and the next run on this box sweeps the store
+        again from scratch.
+
+        That recovery holds only as long as the box does, which is why the
+        record exists rather than just a log line -- see
+        :func:`format_unsynced`.
+        """
+        try:
+            yield
+        except Exception as exc:  # noqa: BLE001 -- any transfer failure is survivable
+            if self.strict:
+                raise
+            self._unsynced[what] = f"{type(exc).__name__}: {exc}"
+            logger.warning("could not sync (%s): %s", what, exc)
+        else:
+            self._unsynced.pop(what, None)
+
+    def _list(self, reldir: str) -> list[str]:
+        """Remote names under ``reldir``; empty if the remote cannot be read.
+
+        The emptiness is *recorded* rather than silent, which is the whole
+        point: a listing that failed and one that genuinely found nothing are
+        the same value here, and only :attr:`unsynced` tells them apart.
+        """
+        names: list[str] = []
+        with self._attempt(f"list {reldir}"):
+            names = self.transport.list_names(reldir)
+        return names
 
     # --- push: one artifact (local -> remote) ---------------------------- #
     #
@@ -548,9 +695,7 @@ class Syncer:
         touches a GPU.
         """
         self._pull_dirs(_RUNS, self.trajectories, mutable=True)
-        self._pull_files(
-            _BASE_PROBES, self.trajectories / "base_probes", mutable=True
-        )
+        self._pull_files(_BASE_PROBES, self.trajectories / "base_probes", mutable=True)
 
     # --- shared machinery ----------------------------------------------- #
 
@@ -569,32 +714,35 @@ class Syncer:
     def _push_dir(self, src: Path, relpath: str, *, mutable: bool) -> None:
         if not src.is_dir():
             return
-        # Signed before tarring, never after: a concurrent write landing in
-        # between then makes the recorded signature older than what was
-        # uploaded, costing one redundant push later. Signing after would make
-        # it *newer*, and the ledger would skip content that never went up.
-        signature = _dir_signature(src) if mutable else None
-        if self._already_pushed(relpath, signature):
-            logger.debug("skip push: %s", relpath)
-            return
-        with _scratch_file(suffix=".tar") as tmp:
-            _tar_dir(src, tmp)
-            self.transport.upload(tmp, relpath)
-        if signature is not None:
-            self.ledger.record(relpath, signature)
-        logger.info("pushed %s", relpath)
+        with self._attempt(f"push {relpath}"):
+            # Signed before tarring, never after: a concurrent write landing in
+            # between then makes the recorded signature older than what was
+            # uploaded, costing one redundant push later. Signing after would
+            # make it *newer*, and the ledger would skip content that never
+            # went up.
+            signature = _dir_signature(src) if mutable else None
+            if self._already_pushed(relpath, signature):
+                logger.debug("skip push: %s", relpath)
+                return
+            with _scratch_file(suffix=".tar") as tmp:
+                _tar_dir(src, tmp)
+                self.transport.upload(tmp, relpath)
+            if signature is not None:
+                self.ledger.record(relpath, signature)
+            logger.info("pushed %s", relpath)
 
     def _push_file(self, src: Path, relpath: str, *, mutable: bool) -> None:
         if not src.is_file():
             return
-        signature = _file_signature(src) if mutable else None
-        if self._already_pushed(relpath, signature):
-            logger.debug("skip push: %s", relpath)
-            return
-        self.transport.upload(src, relpath)
-        if signature is not None:
-            self.ledger.record(relpath, signature)
-        logger.info("pushed %s", relpath)
+        with self._attempt(f"push {relpath}"):
+            signature = _file_signature(src) if mutable else None
+            if self._already_pushed(relpath, signature):
+                logger.debug("skip push: %s", relpath)
+                return
+            self.transport.upload(src, relpath)
+            if signature is not None:
+                self.ledger.record(relpath, signature)
+            logger.info("pushed %s", relpath)
 
     def _pull_dirs(
         self, reldir: str, local_parent: Path, *, mutable: bool, present=None
@@ -604,8 +752,13 @@ class Syncer:
         ``present`` decides "already have it": adapters use
         :meth:`Store.has_adapter` (checks completeness, not mere directory
         existence); others fall back to a plain directory check.
+
+        Guarded per artifact rather than per sweep, so one object that cannot
+        be fetched costs only itself: the rest of the prefix still lands, and
+        the run still starts from as much cached work as the remote would give
+        up.
         """
-        for name in self.transport.list_names(reldir):
+        for name in self._list(reldir):
             if not name.endswith(".tar"):
                 continue
             wid = name[: -len(".tar")]
@@ -613,26 +766,72 @@ class Syncer:
             if have:
                 continue
             relpath = f"{reldir}/{name}"
-            with _scratch_file(suffix=".tar") as tmp:
-                self.transport.download(relpath, tmp)
-                _untar_dir(tmp, local_parent / wid)
-            if mutable:
-                # What was just written locally *is* the remote object, so
-                # record it as pushed; otherwise the next push would ship every
-                # bundle this box pulled straight back up unchanged.
-                self.ledger.record(relpath, _dir_signature(local_parent / wid))
-            logger.info("pulled %s", relpath)
+            with self._attempt(f"pull {relpath}"):
+                with _scratch_file(suffix=".tar") as tmp:
+                    self.transport.download(relpath, tmp)
+                    _untar_dir(tmp, local_parent / wid)
+                if mutable:
+                    # What was just written locally *is* the remote object, so
+                    # record it as pushed; otherwise the next push would ship
+                    # every bundle this box pulled straight back up unchanged.
+                    self.ledger.record(relpath, _dir_signature(local_parent / wid))
+                logger.info("pulled %s", relpath)
 
     def _pull_files(self, reldir: str, local_parent: Path, *, mutable: bool) -> None:
-        for name in self.transport.list_names(reldir):
+        for name in self._list(reldir):
             dest = local_parent / name
             if dest.exists():
                 continue
             relpath = f"{reldir}/{name}"
-            self.transport.download(relpath, dest)
-            if mutable:
-                self.ledger.record(relpath, _file_signature(dest))
-            logger.info("pulled %s", relpath)
+            with self._attempt(f"pull {relpath}"):
+                self.transport.download(relpath, dest)
+                if mutable:
+                    self.ledger.record(relpath, _file_signature(dest))
+                logger.info("pulled %s", relpath)
+
+
+# --------------------------------------------------------------------------- #
+# Reporting what did not make it.
+# --------------------------------------------------------------------------- #
+
+
+#: Enough entries to see the shape of the failure without turning an email into
+#: a listing of the store.
+_UNSYNCED_SHOWN = 8
+
+
+def format_unsynced(
+    unsynced: Mapping[str, str], *, limit: int = _UNSYNCED_SHOWN
+) -> str:
+    """Describe :attr:`Syncer.unsynced`, or ``""`` when there is nothing to say.
+
+    Lives here rather than in :mod:`method.report` so that the run's log line
+    and the emailed summary cannot end up describing the same state
+    differently, and so :mod:`method.probe_base` -- which sends no mail -- can
+    still say the one thing that matters about it.
+
+    That one thing is the closing sentence. A failed push is self-healing:
+    the artifact never left local disk, :meth:`Syncer.push_after_run` sweeps
+    the whole store at the end of the run, and the next run on the box sweeps
+    it again, so an ordinary blip resolves itself with nobody watching. What is
+    *not* self-healing is releasing the box first -- the recovery and the
+    artifacts both live on the same disposable disk.
+    """
+    if not unsynced:
+        return ""
+    lines = [f"{len(unsynced)} transfer(s) did not happen:"]
+    for what, reason in list(unsynced.items())[:limit]:
+        lines.append(f"  {what}  ({reason})")
+    if len(unsynced) > limit:
+        lines.append(f"  ... and {len(unsynced) - limit} more")
+    lines.append(
+        "Anything listed as 'push' is still on this box's disk and goes up on "
+        "the next run here, which sweeps the whole store -- so do not release "
+        "the box until a sync has succeeded. Anything listed as 'pull' or "
+        "'list' means this run could not read the remote, and may have redone "
+        "work another box had already finished."
+    )
+    return "\n".join(lines)
 
 
 # --------------------------------------------------------------------------- #
@@ -704,7 +903,11 @@ def main() -> None:
     load_dotenv(DOTENV_PATH)
 
     store = Store()  # real store; mock never syncs
-    syncer = Syncer.from_env(store, force=args.force)
+    # ``strict``: a trajectory swallows transfer failures because its real work
+    # is on the GPU, but this command's entire job is the transfer. Swallowing
+    # here would exit 0 having moved nothing, and the shell that invoked it
+    # would believe the store was safe.
+    syncer = Syncer.from_env(store, force=args.force, strict=True)
     if syncer is None:
         raise SystemExit(f"{REMOTE_ENV} is not set; nothing to sync to.")
 

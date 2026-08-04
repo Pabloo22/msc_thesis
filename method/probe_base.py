@@ -36,7 +36,7 @@ from method.backends import get_backend
 from method.config import Backend, StepConfig, TrajectoryConfig, to_json
 from method.notify import Heartbeat, Notifier
 from method.store import Store, atomic_file, get_weights_id
-from method.sync import Syncer
+from method.sync import Syncer, format_unsynced
 from method.utils import (
     DOTENV_PATH,
     base_probes_path,
@@ -163,6 +163,13 @@ def run(
             # goes); only the trajectories-side summary is new here.
             if syncer is not None:
                 syncer.push_base_probe(summary)
+
+    # A transfer failure never stopped the probing (see
+    # :meth:`method.sync.Syncer._attempt`), so this is the only place it gets
+    # said. This script sends no mail, so the log line is the whole warning --
+    # and the thing it warns against, releasing the box, is not undoable.
+    if syncer is not None and syncer.unsynced:
+        logger.warning("%s", format_unsynced(syncer.unsynced))
 
     # Nothing here needs full weights afterwards, and the base checkpoint is
     # the largest thing this script materialises.
