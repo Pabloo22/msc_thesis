@@ -121,6 +121,14 @@ def response_avg_hidden(
             input_ids=input_ids.to(model.device),
             attention_mask=attention_mask.to(model.device),
             output_hidden_states=True,
+            # Only ``out.hidden_states`` is read below, but a causal-LM head
+            # otherwise projects *every* position to the 152k-token vocabulary
+            # on the way there: batch 8 x ~1.8k tokens x 152064 x 2 bytes is
+            # ~4GiB per forward, allocated and discarded unread. That is what
+            # pushes a 7B bf16 model past 24GB on the longer datasets, since it
+            # lands on top of the ~2.8GiB of hidden states actually wanted.
+            # Keeping one position is the smallest slice the forward accepts.
+            logits_to_keep=1,
         )
         for j, ids in enumerate(chunk):
             lo, hi = prompt_lens[start + j], len(ids)
