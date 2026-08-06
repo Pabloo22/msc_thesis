@@ -30,6 +30,11 @@ Two channels, because one of them cannot cover the case that matters most:
 
 They are complementary, not alternatives: the email says what went wrong, and
 the heartbeat is what still works when the box is gone.
+
+:class:`Throttle` sits in front of the email channel because the mail provider
+has a daily quota: a family is dozens of trajectories, each its own process,
+each mailing on the way out, and a quota reached at noon means the failure at
+three in the afternoon is the one that does not arrive.
 """
 
 from __future__ import annotations
@@ -44,9 +49,11 @@ import urllib.error
 import urllib.request
 from collections.abc import Sequence
 from contextlib import AbstractContextManager
+from dataclasses import dataclass
+from pathlib import Path
 from types import TracebackType
 
-from method.utils import DOTENV_PATH, load_dotenv
+from method.utils import DOTENV_PATH, REPO_ROOT, load_dotenv
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +61,7 @@ RESEND_API_KEY_ENV = "MSC_RESEND_API_KEY"
 NOTIFY_EMAIL_ENV = "MSC_NOTIFY_EMAIL"
 NOTIFY_FROM_ENV = "MSC_NOTIFY_FROM"
 NOTIFY_TAG_ENV = "MSC_NOTIFY_TAG"
+NOTIFY_INTERVAL_ENV = "MSC_NOTIFY_MIN_INTERVAL_MINUTES"
 HEARTBEAT_URL_ENV = "MSC_HEARTBEAT_URL"
 
 #: Resend's shared sender. It needs no verified domain, but can only deliver to
@@ -82,6 +90,18 @@ _RETRY_DELAY_SECONDS = 2.0
 #: API key. Any agent string that is not urllib's default gets through.
 _USER_AGENT = "msc-thesis-notifier/1.0"
 
+#: One mail per hour per key. A family runs dozens of trajectories back to
+#: back, and the provider's free tier allows 100 mails a day: unthrottled, a
+#: single busy day exhausts the quota and every later mail -- including the
+#: failure ones this exists for -- is rejected. Hourly keeps a full day of
+#: running under the quota with room for the other keys.
+DEFAULT_MIN_INTERVAL_MINUTES = 60.0
+
+#: Lives at the repo root rather than in a run directory because the whole
+#: point is to be shared: each trajectory is a separate process, and a limit
+#: that reset per process would not limit anything. Gitignored.
+THROTTLE_STATE_PATH = REPO_ROOT / ".notify-state.json"
+
 
 def _post_json(url: str, payload: dict, headers: dict[str, str]) -> None:
     """POST ``payload`` as JSON, raising on any non-2xx response."""
@@ -97,6 +117,155 @@ def _post_json(url: str, payload: dict, headers: dict[str, str]) -> None:
     )
     with urllib.request.urlopen(request, timeout=_TIMEOUT_SECONDS) as response:
         response.read()
+
+
+@dataclass(frozen=True)
+class Permit:
+    """A throttle's answer about one send: may it go, and what it stands for.
+
+    ``suppressed`` is how many sends under the same key were dropped since the
+    last one that went out. It rides along so the mail that *does* go can say
+    what it is standing in for -- a silently swallowed report is indistinguish-
+    able from a run that never got that far, which is the failure mode this
+    whole module exists to avoid.
+    """
+
+    allowed: bool
+    suppressed: int = 0
+
+    def annotate(self, body: str) -> str:
+        """Append the note about dropped siblings, if there were any."""
+        if not self.suppressed:
+            return body
+        return (
+            f"{body.rstrip()}\n\n"
+            f"({self.suppressed} earlier report(s) were not mailed: at most one "
+            f"per key per interval, to stay under the daily send quota. "
+            f"Set {NOTIFY_INTERVAL_ENV}=0 to mail every one of them.)\n"
+        )
+
+
+class Throttle:
+    """At most one mail per key per interval, shared across processes.
+
+    The state is a small JSON file rather than anything in memory: a family is
+    a sequence of separate ``run_trajectory`` processes, so a counter living in
+    one of them would be reset by the very thing it is meant to count.
+
+    Keys are the caller's business. They exist so that one chatty category
+    cannot starve another -- a run's routine "done" mails and its failure mails
+    are throttled apart, and a failure is never suppressed because a success
+    happened to go out ten minutes earlier.
+
+    Two boxes working the same family each keep their own file and so each get
+    their own allowance, which is the intended reading of "one per hour": the
+    thing being rate-limited is a box's reporting, and ``MSC_NOTIFY_TAG`` is
+    already what tells the two apart in the inbox.
+
+    Like everything else here, it never raises: an unreadable or corrupt state
+    file means the limit is not applied, which errs towards mail being sent.
+    """
+
+    def __init__(
+        self,
+        path: Path = THROTTLE_STATE_PATH,
+        *,
+        interval: float = DEFAULT_MIN_INTERVAL_MINUTES * 60.0,
+    ) -> None:
+        self.path = path
+        self.interval = max(0.0, interval)
+
+    @classmethod
+    def from_env(cls) -> Throttle:
+        """Build from ``MSC_NOTIFY_MIN_INTERVAL_MINUTES``; 0 disables it."""
+        raw = os.environ.get(NOTIFY_INTERVAL_ENV, "").strip()
+        try:
+            minutes = float(raw) if raw else DEFAULT_MIN_INTERVAL_MINUTES
+        except ValueError:
+            logger.warning(
+                "ignoring unparseable %s=%r; using %g minutes",
+                NOTIFY_INTERVAL_ENV,
+                raw,
+                DEFAULT_MIN_INTERVAL_MINUTES,
+            )
+            minutes = DEFAULT_MIN_INTERVAL_MINUTES
+        # The path is passed rather than defaulted so that it is looked up when
+        # a notifier is built, not when this module is imported: tests point it
+        # somewhere disposable, and a default argument would have frozen it.
+        return cls(THROTTLE_STATE_PATH, interval=minutes * 60.0)
+
+    @property
+    def enabled(self) -> bool:
+        return self.interval > 0
+
+    def describe(self) -> str:
+        if not self.enabled:
+            return "no send limit"
+        return f"at most one mail per key every {self.interval / 60:.0f} min"
+
+    def claim(self, key: str) -> Permit:
+        """Decide whether a mail tagged ``key`` may be sent now.
+
+        Denying is itself recorded, so the next mail that gets through can
+        report how many it is standing in for. An unkeyed or disabled call is
+        always permitted, which is what lets :class:`Notifier` route every send
+        through here without branching.
+        """
+        if not key or not self.enabled:
+            return Permit(allowed=True)
+
+        state = self._read()
+        entry = state.get(key, {})
+        last_sent = float(entry.get("last_sent", 0.0))
+        suppressed = int(entry.get("suppressed", 0))
+        if time.time() - last_sent < self.interval:
+            state[key] = {"last_sent": last_sent, "suppressed": suppressed + 1}
+            self._write(state)
+            logger.info(
+                "not mailing %r: one was sent %.0f min ago (%d suppressed since)",
+                key,
+                (time.time() - last_sent) / 60,
+                suppressed + 1,
+            )
+            return Permit(allowed=False)
+        return Permit(allowed=True, suppressed=suppressed)
+
+    def record_sent(self, key: str) -> None:
+        """Start a fresh interval for ``key``.
+
+        Called only after a send is *accepted*, so a provider outage does not
+        cost the window: a mail that never arrived should not silence the next
+        hour's worth of reports.
+        """
+        if not key or not self.enabled:
+            return
+        state = self._read()
+        state[key] = {"last_sent": time.time(), "suppressed": 0}
+        self._write(state)
+
+    def _read(self) -> dict[str, dict]:
+        try:
+            state = json.loads(self.path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return {}
+        except (OSError, ValueError) as exc:
+            logger.warning("ignoring unreadable %s (%s)", self.path, exc)
+            return {}
+        return state if isinstance(state, dict) else {}
+
+    def _write(self, state: dict[str, dict]) -> None:
+        # Written whole through a temporary file: two boxes' worth of
+        # trajectories can share a repo checkout, and a half-written state file
+        # would disable the limit for everyone afterwards. Concurrent claims
+        # can still race and cost one extra mail, which is the harmless
+        # direction to lose in.
+        tmp = self.path.with_suffix(f".{os.getpid()}.tmp")
+        try:
+            tmp.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+            tmp.replace(self.path)
+        except OSError as exc:
+            logger.warning("could not update %s (%s)", self.path, exc)
+            tmp.unlink(missing_ok=True)
 
 
 class Notifier:
@@ -116,6 +285,7 @@ class Notifier:
         recipients: Sequence[str],
         sender: str = DEFAULT_SENDER,
         tag: str = "",
+        throttle: Throttle | None = None,
     ) -> None:
         self.api_key = api_key
         self.recipients = list(recipients)
@@ -124,6 +294,10 @@ class Notifier:
         #: rentals working the same family otherwise send indistinguishable
         #: mail.
         self.tag = tag
+        #: Defaults to an unlimited one so that constructing a notifier by hand
+        #: -- a test, a notebook -- does not silently start writing state to
+        #: the repo root or dropping the mail it was asked to send.
+        self.throttle = throttle or Throttle(interval=0.0)
 
     @classmethod
     def from_env(cls) -> Notifier:
@@ -143,6 +317,7 @@ class Notifier:
             recipients=recipients,
             sender=os.environ.get(NOTIFY_FROM_ENV) or DEFAULT_SENDER,
             tag=os.environ.get(NOTIFY_TAG_ENV, ""),
+            throttle=Throttle.from_env(),
         )
 
     @property
@@ -158,30 +333,46 @@ class Notifier:
             if not self.recipients:
                 missing.append(NOTIFY_EMAIL_ENV)
             return f"email notifications off (unset: {', '.join(missing)})"
-        return f"email notifications on -> {', '.join(self.recipients)}"
+        return (
+            f"email notifications on -> {', '.join(self.recipients)}"
+            f" ({self.throttle.describe()})"
+        )
 
-    def send(self, subject: str, body: str) -> bool:
+    def send(self, subject: str, body: str, *, throttle_key: str = "") -> bool:
         """Mail ``body``, returning whether it was accepted.
+
+        ``throttle_key`` names the bucket this mail counts against, and an
+        empty one opts out of rate limiting entirely -- for the mails that are
+        rare by construction and would be actively harmful to drop, such as the
+        one-per-family summary. Callers pass separate keys for outcomes they
+        would not want to hide behind each other (a failure behind a success).
 
         Never raises: the return value is for tests and for the heartbeat to
         decide whether the email channel is carrying anything, not something a
-        run is expected to handle.
+        run is expected to handle. Note that ``False`` now means "not sent" for
+        two reasons -- unreachable, or deliberately throttled -- which the log
+        distinguishes and no caller needs to.
         """
         if not self.enabled:
             logger.debug("notifications disabled; dropping %r", subject)
+            return False
+
+        permit = self.throttle.claim(throttle_key)
+        if not permit.allowed:
             return False
 
         payload = {
             "from": self.sender,
             "to": self.recipients,
             "subject": f"[{self.tag}] {subject}" if self.tag else subject,
-            "text": body,
+            "text": permit.annotate(body),
         }
         headers = {"Authorization": f"Bearer {self.api_key}"}
         for attempt in range(1, _ATTEMPTS + 1):
             try:
                 _post_json(_RESEND_ENDPOINT, payload, headers)
                 logger.info("sent notification: %s", subject)
+                self.throttle.record_sent(throttle_key)
                 return True
             except Exception as exc:  # noqa: BLE001 -- delivery is best-effort
                 detail = _describe_http_error(exc)

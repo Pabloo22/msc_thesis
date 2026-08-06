@@ -3,6 +3,7 @@ trajectories/
 trajectories-mock/
 store/
 store-mock/
+.notify-state.json
 unsloth_compiled_cache/
 plots/mock*/
 plots/real/

@@ -230,7 +230,8 @@ def _run_and_report(args: argparse.Namespace) -> None:
     Probing every dataset at the base model is hours of the same rented GPU a
     trajectory uses, and just as unattended, so it gets the same treatment --
     see :func:`method.run_trajectory.run_and_report`, which this mirrors. There
-    are no checkpoints here, so the report is the flat one.
+    are no checkpoints here, so the report is the flat one, and the send-rate
+    keys are constants because there is only ever one such job at a time.
     """
     notifier = Notifier.from_env()
     heartbeat = Heartbeat.from_env()
@@ -256,12 +257,12 @@ def _run_and_report(args: argparse.Namespace) -> None:
                 error=exc,
                 traceback_text=traceback.format_exc(),
             )
-            notifier.send(subject, body)
+            notifier.send(subject, body, throttle_key="probe_base:failed")
             raise
         subject, body = report.job_report(
             title, elapsed=time.monotonic() - started, detail=detail
         )
-        notifier.send(subject, body)
+        notifier.send(subject, body, throttle_key="probe_base:ok")
 
 
 def _die_on_sigterm(signum: int, _frame: object) -> None:

@@ -270,6 +270,12 @@ def run_and_report(cfg: TrajectoryConfig, backend_kind: Backend, dtype: str) -> 
     here can turn a healthy run into a failed one -- and the re-raise at the
     end keeps the process's exit status truthful, which is what the ``trap`` in
     ``scripts/run_family.sh`` reads.
+
+    Mail is rate-limited per family (see :class:`method.notify.Throttle`), since
+    a family is dozens of these processes and the provider's daily quota is not.
+    Successes and failures are throttled under separate keys: a family whose
+    trajectories are all completing should not be able to hide the first one
+    that dies.
     """
     notifier = Notifier.from_env()
     heartbeat = Heartbeat.from_env()
@@ -300,15 +306,27 @@ def run_and_report(cfg: TrajectoryConfig, backend_kind: Backend, dtype: str) -> 
                 traceback_text=traceback.format_exc(),
                 unsynced=_unsynced(syncer),
             )
-            notifier.send(subject, body)
+            notifier.send(subject, body, throttle_key=_throttle_key(cfg, "failed"))
             raise
         elapsed = time.monotonic() - started
         _log_outcome(cfg, backend_kind, "ok", elapsed)
         subject, body = report.trajectory_report(
             cfg, run_dir, elapsed=elapsed, unsynced=_unsynced(syncer)
         )
-        notifier.send(subject, body)
+        notifier.send(subject, body, throttle_key=_throttle_key(cfg, "ok"))
         return result
+
+
+def _throttle_key(cfg: TrajectoryConfig, outcome: str) -> str:
+    """Which send-rate bucket a trajectory's report counts against.
+
+    The family rather than the trajectory: seeds and conditions of one
+    experiment are exactly the mails there are too many of, and one report an
+    hour from a family is enough to see that it is still moving. A config with
+    no family falls back to its own name, so a one-off run is not silenced by
+    an unrelated one.
+    """
+    return f"{cfg.group or cfg.name}:{outcome}"
 
 
 def _unsynced(syncer: Syncer | None) -> dict[str, str]:

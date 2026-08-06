@@ -76,9 +76,14 @@ MSC_RESEND_API_KEY=re_...        # a send-only key
 MSC_NOTIFY_EMAIL=you@example.com
 MSC_GPU_HOURLY_USD=1.80          # what this box costs; omit and reports show times but no money
 MSC_NOTIFY_TAG=vast-4090         # optional; prefixes the subject so two boxes are distinguishable
+MSC_NOTIFY_MIN_INTERVAL_MINUTES=60  # optional; the default. 0 mails every report
 ```
 
 On the free tier you can send from `onboarding@resend.dev` to the address you registered with, so no domain verification is needed. Set `MSC_NOTIFY_FROM` once you have a verified domain.
+
+> **Mail is rate-limited, because the free tier allows 100 sends a day.** A family is dozens of trajectories, each its own process, each mailing on the way out — enough to exhaust the quota in a single busy day, after which *every* later mail is rejected, including the failure one the whole channel exists for. So at most one mail goes out per hour per bucket, where the buckets are `<family>:ok`, `<family>:failed` and `probe_base:{ok,failed}`. Successes and failures are counted apart, so a family that is mostly completing can never hide the first trajectory that dies. Whatever was dropped is counted, and the next mail that does go out says how many reports it stands for.
+>
+> The counter lives in `.notify-state.json` at the repo root (gitignored) rather than in memory, since each trajectory is a separate process. Two boxes each keep their own file and so each get their own allowance — `MSC_NOTIFY_TAG` is what tells them apart in the inbox. The end-of-family summary from `run_family.sh` is never throttled: there is only one per run, and it is the backstop for a family killed outright.
 
 > **On credentials and rental boxes:** the host operator can read every file on the instance, so use a **send-only API key**, revocable in one click. Do *not* use a personal Gmail app password — those grant IMAP as well as SMTP, so a leak means your whole mailbox, not just the ability to send. Unset either variable and notifications are silently off; the run is unaffected.
 

@@ -378,6 +378,9 @@ def main() -> None:
         print(body)
         notifier = Notifier.from_env()
         logger.info(notifier.describe())
+        # Deliberately not rate-limited: this is at most one mail per
+        # invocation of run_family.sh, and it is the backstop that reports a
+        # family killed outright -- the one mail whose absence is unrecoverable.
         notifier.send(subject, body)
         return
 
