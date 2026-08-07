@@ -19,6 +19,7 @@ needed. The invariants under test:
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import subprocess
 import tarfile
@@ -26,8 +27,8 @@ from pathlib import Path
 
 import pytest
 
-from method import sync
-from method.store import Store
+from method import experiments as E, steps, sync
+from method.store import Store, StoreSelection, get_weights_id
 from method.sync import (
     _ATTEMPTS,
     REMOTE_ENV,
@@ -1109,3 +1110,122 @@ class TestPlottingPull:
         assert (dst.trajectories / "base_probes" / "t00-x_evil.json").exists()
         # No adapters pulled.
         assert not dst.store.has_adapter("t01-abc")
+
+
+class TestStoreSelection:
+    """The closure a scoped pull is filtered against.
+
+    It has to be exact in both directions: an id left out is an artifact the
+    run silently retrains or recomputes, and one wrongly included is bytes the
+    filter exists to avoid.
+    """
+
+    def test_covers_every_checkpoint_including_the_base(self):
+        cfg = E.SMOKE_MOCK
+        selection = StoreSelection.for_config(cfg)
+        assert selection.weights_ids == {
+            get_weights_id(cfg, t) for t in range(len(cfg.steps) + 1)
+        }
+        # t=0 is load-bearing: persona vectors and h_neutral are read from the
+        # base bundle at every checkpoint, not just the first.
+        assert get_weights_id(cfg, 0) in selection.weights_ids
+
+    def test_covers_probe_samples_the_config_never_trains_on(self):
+        """A trunk measures DeltaP against probes absent from ``steps``."""
+        probe = E.EXP2_PROBES[0]
+        cfg = dataclasses.replace(E.SMOKE_MOCK, probes=(probe,))
+        selection = StoreSelection.for_config(cfg)
+
+        assert steps.training_sample_id(probe, cfg.seed) in (
+            selection.training_sample_ids
+        )
+        for step in cfg.steps:
+            assert steps.training_sample_id(step, cfg.seed) in (
+                selection.training_sample_ids
+            )
+
+
+class TestScopedPull:
+    """A run pulls its own prefix, not the whole store.
+
+    The store holds every experiment's artifacts and the hidden-state bundles
+    among them run to ~1GB each, so an unfiltered pull spends a rental box's
+    disk -- and the wait before step 1 -- on checkpoints the trajectory will
+    never open.
+    """
+
+    def _remote_with_two_checkpoints(self, tmp_path) -> Syncer:
+        src = _syncer(tmp_path, store_name="src")
+        for wid in ("t01-mine", "t01-theirs"):
+            _make_adapter(src.store, wid, marker=wid)
+            src.push_adapter(wid)
+            _write_measurement(src.store, wid, "behavior.csv", wid)
+            src.push_measurement(wid)
+        src.store.training_samples.mkdir(parents=True, exist_ok=True)
+        for sample_id in ("mine", "theirs"):
+            (src.store.training_samples / f"{sample_id}.jsonl").write_text(
+                sample_id, encoding="utf-8"
+            )
+            src.push_training_sample(sample_id)
+        return src
+
+    def test_fetches_only_the_selected_ids(self, tmp_path):
+        self._remote_with_two_checkpoints(tmp_path)
+        dst = _syncer(tmp_path, store_name="dst")
+
+        dst.pull_before_run(
+            StoreSelection(
+                weights_ids=frozenset({"t01-mine"}),
+                training_sample_ids=frozenset({"mine"}),
+            )
+        )
+
+        assert dst.store.has_adapter("t01-mine")
+        assert (dst.store.measurement_dir("t01-mine") / "behavior.csv").exists()
+        assert (dst.store.training_samples / "mine.jsonl").read_text() == "mine"
+        # The other checkpoint is on the remote and stays there.
+        assert not dst.store.has_adapter("t01-theirs")
+        assert not dst.store.measurement_dir("t01-theirs").exists()
+        assert not (dst.store.training_samples / "theirs.jsonl").exists()
+
+    def test_unselected_ids_cost_no_request_at_all(self, tmp_path, monkeypatch):
+        """Not even the index round trip a mutable artifact would make.
+
+        Filtering after the per-artifact requests would keep the disk saving
+        but not the time one: a store of N bundles would still pay N sidecar
+        downloads before every trajectory.
+        """
+        self._remote_with_two_checkpoints(tmp_path)
+        dst = _syncer(tmp_path, store_name="dst")
+
+        fetched: list[str] = []
+        real_download = dst.transport.download
+        monkeypatch.setattr(
+            dst.transport,
+            "download",
+            lambda rel, local: (fetched.append(rel), real_download(rel, local))[1],
+        )
+        dst.pull_before_run(
+            StoreSelection(
+                weights_ids=frozenset({"t01-mine"}),
+                training_sample_ids=frozenset({"mine"}),
+            )
+        )
+
+        assert not [rel for rel in fetched if "theirs" in rel]
+        # Exactly the three selected artifacts: adapter, sample, bundle. No
+        # sidecar among them, which is what pins the claim above -- an index
+        # download is the cheapest request an unselected bundle could have
+        # provoked, so zero of them means the filter ran before any of it.
+        assert len(fetched) == 3
+
+    def test_no_selection_still_pulls_everything(self, tmp_path):
+        """What ``python -m method.sync pull`` relies on: warm the whole box."""
+        self._remote_with_two_checkpoints(tmp_path)
+        dst = _syncer(tmp_path, store_name="dst")
+
+        dst.pull_before_run()
+
+        assert dst.store.has_adapter("t01-mine")
+        assert dst.store.has_adapter("t01-theirs")
+        assert (dst.store.training_samples / "theirs.jsonl").exists()

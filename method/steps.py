@@ -30,8 +30,8 @@ from method.store import (
     atomic_dir,
     atomic_file,
     atomic_symlink,
-    get_training_sample_id,
     get_weights_id,
+    training_sample_id,
 )
 from method.utils import DATASET_DIR, NEUTRAL_DIR
 
@@ -79,17 +79,6 @@ def dataset_path(step: StepConfig) -> Path:
     if not path.exists():
         raise FileNotFoundError(f"no dataset at {path}")
     return path
-
-
-def training_sample_id(step: StepConfig, seed: int) -> str:
-    """Identity of the exact examples ``step`` trains on under ``seed``.
-
-    Doubles as the key for every DeltaP artifact, which describes an upcoming
-    update rather than the checkpoint it is measured at.
-    """
-    return get_training_sample_id(
-        step.dataset, step.version.value, step.n_examples, seed
-    )
 
 
 def cached_training_sample(step: StepConfig, seed: int, store: Store) -> Path:
@@ -185,9 +174,7 @@ def measure_behavior(
     return out_csv
 
 
-def behavior_record(
-    cfg: TrajectoryConfig, t: int, store: Store
-) -> dict[str, float]:
+def behavior_record(cfg: TrajectoryConfig, t: int, store: Store) -> dict[str, float]:
     """The behaviour summary for checkpoint ``t``, derived from the scored rows.
 
     Read from ``behavior.csv`` rather than the ``behavior.json`` written beside

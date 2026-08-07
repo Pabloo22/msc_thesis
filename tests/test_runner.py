@@ -31,7 +31,7 @@ from method.backends import get_backend
 from method.config import Backend, HNeutralSource
 from method.run_trajectory import _install_adapter, _verify_cached_adapter
 from method.store import Store, _process_alive, file_sha256, get_weights_id
-from method.sync import REMOTE_ENV, LocalTransport
+from method.sync import REMOTE_ENV, LocalTransport, Syncer
 from method.utils import trajectory_run_dir
 
 
@@ -472,3 +472,50 @@ class TestBranchesMeasureOnlyTheirEndpoint:
 
         after = {p.name for p in store.adapters.iterdir()}
         assert after - before == {get_weights_id(branch, len(branch.steps))}
+
+
+class TestRunPullsOnlyItsOwnPrefix:
+    """A run must not drag the whole remote store onto the box.
+
+    The store accumulates every experiment's artifacts, and the hidden-state
+    bundles among them are ~1GB each, so pulling all of it to run one
+    trajectory buys rental disk -- for the life of the box, not just the
+    transfer -- that the run never reads. Nothing is lost by scoping: ids are
+    content-addressed, so a later family fetches its own prefix when it runs.
+    """
+
+    def test_foreign_checkpoints_on_the_remote_are_left_there(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("method.utils.TRAJECTORIES_DIR", tmp_path / "trajectories")
+        store = Store(tmp_path / "store")
+        monkeypatch.setattr(
+            Store, "for_backend", classmethod(lambda cls, backend: store)
+        )
+        monkeypatch.setenv(REMOTE_ENV, str(tmp_path / "remote"))
+        cfg = E.SMOKE_MOCK
+
+        # Another experiment's output, already on the shared remote. Pushed
+        # from a separate store so it is only ever reachable via the remote.
+        other = Store(tmp_path / "other-store")
+        foreign = "t01-someoneelse"
+        adapter = other.adapter_dir(foreign)
+        adapter.mkdir(parents=True)
+        (adapter / "adapter_config.json").write_text("{}", encoding="utf-8")
+        (adapter / "adapter_model.safetensors").write_text("w", encoding="utf-8")
+        measurement = other.measurement_dir(foreign)
+        measurement.mkdir(parents=True)
+        (measurement / "behavior.csv").write_text("rows", encoding="utf-8")
+        syncer = Syncer(
+            other, LocalTransport(tmp_path / "remote"), trajectories=tmp_path / "t"
+        )
+        syncer.push_adapter(foreign)
+        syncer.push_measurement(foreign)
+
+        run_trajectory.run(cfg, Backend.MOCK, "float16")
+
+        assert not store.has_adapter(foreign)
+        assert not store.measurement_dir(foreign).exists()
+        # The run's own checkpoints did land, so this is scoping and not a
+        # pull that silently stopped working.
+        assert store.has_adapter(get_weights_id(cfg, 1))

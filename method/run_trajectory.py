@@ -40,6 +40,7 @@ from method.config import (
 from method.notify import Heartbeat, Notifier
 from method.store import (
     Store,
+    StoreSelection,
     atomic_dir,
     atomic_file,
     file_sha256,
@@ -185,7 +186,13 @@ def run(
         syncer = Syncer.from_env(store)
     if syncer is not None:
         logger.info("Remote store configured; pulling reusable prefix")
-        syncer.pull_before_run()
+        # Scoped to this config's own ids rather than sweeping the remote: the
+        # store holds every experiment's artifacts, and the hidden-state bundles
+        # among them run to ~1GB each, so an unscoped pull spends a box's disk
+        # (and the wait before step 1) on checkpoints this trajectory will never
+        # open. Nothing is lost by it -- ids are content-addressed, so whatever
+        # another family needs it pulls when it runs.
+        syncer.pull_before_run(StoreSelection.for_config(cfg))
         # A pull that could not read the remote is survivable -- every id is
         # deterministic, so the worst case is retraining a prefix that already
         # existed -- but it is expensive enough to be worth saying out loud

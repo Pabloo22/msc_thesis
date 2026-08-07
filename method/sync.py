@@ -84,7 +84,7 @@ from collections.abc import Callable, Generator, Iterable, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 
-from method.store import Store, atomic_dir, atomic_file, file_sha256
+from method.store import Store, StoreSelection, atomic_dir, atomic_file, file_sha256
 from method.timing import STAGE_LOG
 from method.utils import DOTENV_PATH, load_dotenv, trajectories_root
 
@@ -853,26 +853,55 @@ class Syncer:
 
     # --- pull (remote -> local) ----------------------------------------- #
 
-    def pull_before_run(self) -> None:
+    def pull_before_run(self, selection: StoreSelection | None = None) -> None:
         """Fetch the reusable prefix so ``has_adapter`` hits work locally.
 
-        Pulls every adapter, training sample and measurement bundle present on
-        the remote but missing locally. Cheap (adapters and samples are small),
-        and it is what turns "another box already trained this prefix" into an
-        ordinary local cache hit inside :func:`method.run_trajectory.run`.
+        Pulls the adapters, training samples and measurement bundles present on
+        the remote but missing locally. This is what turns "another box already
+        trained this prefix" into an ordinary local cache hit inside
+        :func:`method.run_trajectory.run`.
+
+        ``selection`` restricts that to the ids one trajectory can actually
+        read (:meth:`method.store.StoreSelection.for_config`), and callers that
+        have a config should always pass one. Unfiltered, this fetches the
+        entire remote store -- every adapter and every hidden-state bundle any
+        experiment ever produced -- before the first trajectory starts. That is
+        tens of gigabytes to run a family whose closure is a handful, and the
+        bytes cost rental *disk* for the life of the box, not just bandwidth
+        once. Deferring them is free: the ids are content-addressed, so a later
+        family pulling its own prefix gets exactly what this would have
+        prefetched.
+
+        ``None`` keeps the unfiltered sweep, for the CLI at the bottom of this
+        module, which is asked to warm a box without knowing what will run on
+        it.
         """
+        sample_names = (
+            None
+            if selection is None
+            else frozenset(
+                # Via the store, so the ``.jsonl`` naming stays in one place.
+                self.store.training_sample_path(sample_id).name
+                for sample_id in selection.training_sample_ids
+            )
+        )
+        weights_ids = None if selection is None else selection.weights_ids
         self._pull_dirs(
             _ADAPTERS,
             self.store.adapters,
             sign=None,
             present=self.store.has_adapter,
+            wanted=weights_ids,
         )
-        self._pull_files(_SAMPLES, self.store.training_samples, sign=None)
+        self._pull_files(
+            _SAMPLES, self.store.training_samples, sign=None, wanted=sample_names
+        )
         self._pull_dirs(
             _MEASUREMENTS,
             self.store.measurements,
             sign=_dir_signature,
             index=_paths_index,
+            wanted=weights_ids,
         )
 
     def pull_for_plotting(self) -> None:
@@ -1041,11 +1070,17 @@ class Syncer:
         sign: Callable[[Path], str] | None,
         present=None,
         index: Callable[[Path], str] | None = None,
+        wanted: frozenset[str] | None = None,
     ) -> None:
         """Fetch what the remote holds under ``reldir`` and this box does not.
 
-        Three cases, because the artifacts differ in what "already have it"
-        can mean:
+        ``wanted`` restricts the sweep to those artifact ids (a tar's name
+        minus its suffix); ``None`` takes everything the remote lists. Applied
+        before any per-artifact request, so a skipped id costs nothing at all
+        -- not even the index round trip a present-but-mutable artifact makes.
+
+        Three cases among the ids that survive that filter, because the
+        artifacts differ in what "already have it" can mean:
 
         *Absent locally.* Downloaded whole, whatever the kind.
 
@@ -1077,6 +1112,8 @@ class Syncer:
             if not name.endswith(".tar"):
                 continue
             wid = name[: -len(".tar")]
+            if wanted is not None and wid not in wanted:
+                continue
             local = local_parent / wid
             relpath = f"{reldir}/{name}"
             have = present(wid) if present else local.is_dir()
@@ -1145,9 +1182,24 @@ class Syncer:
             self.ledger.record(relpath, sign(local))
 
     def _pull_files(
-        self, reldir: str, local_parent: Path, *, sign: Callable[[Path], str] | None
+        self,
+        reldir: str,
+        local_parent: Path,
+        *,
+        sign: Callable[[Path], str] | None,
+        wanted: frozenset[str] | None = None,
     ) -> None:
+        """Fetch the files under ``reldir`` this box lacks.
+
+        ``wanted`` holds whole file *names* rather than the ids
+        :meth:`_pull_dirs` filters on, because these artifacts are not all
+        named alike: a training sample is ``<id>.jsonl`` while a base probe is
+        named for the run that wrote it. Letting the caller name the files
+        keeps that knowledge with whoever owns the naming.
+        """
         for name in self._list(reldir):
+            if wanted is not None and name not in wanted:
+                continue
             dest = local_parent / name
             if dest.exists():
                 continue
@@ -1247,7 +1299,9 @@ def main() -> None:
         help=(
             "push: upload the whole local store + trajectories; "
             "push-runs: upload only run dirs + base probes; "
-            "pull: fetch the reusable store prefix; "
+            "pull: fetch the *entire* remote store, warming a box for any "
+            "trajectory (a run pulls only what its own config reads, so this "
+            "is only worth it to prefetch off the clock); "
             "pull-plots: fetch only run dirs + base probes (plotting box)"
         ),
     )

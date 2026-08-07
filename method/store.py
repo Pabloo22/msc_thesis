@@ -18,6 +18,7 @@ rename.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import logging
@@ -29,7 +30,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from method.config import Backend, TrajectoryConfig
+from method.config import Backend, StepConfig, TrajectoryConfig
 from method.utils import REPO_ROOT
 
 logger = logging.getLogger(__name__)
@@ -94,6 +95,64 @@ def get_training_sample_id(
         payload["seed"] = seed
     digest = hashlib.sha256(canonical_json(payload).encode()).hexdigest()
     return digest[:_HASH_LEN]
+
+
+def training_sample_id(step: StepConfig, seed: int) -> str:
+    """Identity of the exact examples ``step`` trains on under ``seed``.
+
+    Doubles as the key for every DeltaP artifact, which describes an upcoming
+    update rather than the checkpoint it is measured at.
+    """
+    return get_training_sample_id(
+        step.dataset, step.version.value, step.n_examples, seed
+    )
+
+
+@dataclasses.dataclass(frozen=True)
+class StoreSelection:
+    """Every store id one trajectory can touch, known before it runs.
+
+    Both id functions above are pure functions of the config -- ``weights_key``
+    is ``{model, seed, steps[:t]}`` and a sample id is
+    ``{dataset, version, n_examples[, seed]}`` -- so the set of artifacts a run
+    can possibly read is computable up front, without a disk or network round
+    trip and without having trained anything. That is what lets
+    :meth:`method.sync.Syncer.pull_before_run` fetch a trajectory's prefix
+    instead of the whole remote store: a box running one family then pays for
+    the artifacts that family reads rather than for every artifact any
+    experiment ever produced, which on a full store is the difference between
+    a few gigabytes and all of it -- in rental disk as much as in bandwidth.
+
+    The closure is exact rather than conservative. ``materialize`` merges
+    ``adapter_chain(cfg, t)``, i.e. steps ``1..t``; every measurement writes
+    under ``get_weights_id(cfg, t)`` or the base id ``get_weights_id(cfg, 0)``;
+    and DeltaP artifacts are keyed by a sample id but live *inside* one of those
+    checkpoints' bundles. So ``range(len(steps) + 1)`` covers every weights id
+    reachable from ``cfg``, and nothing outside these sets is ever read.
+    """
+
+    #: Checkpoints this trajectory merges, measures, or measures relative to.
+    weights_ids: frozenset[str]
+    #: Training subsamples it trains on or probes with.
+    training_sample_ids: frozenset[str]
+
+    @classmethod
+    def for_config(cls, cfg: TrajectoryConfig) -> StoreSelection:
+        """The ids ``cfg`` can reach, including the base checkpoint at ``t=0``.
+
+        ``cfg.probes`` is folded in because a trunk measures DeltaP against
+        probe datasets it never trains on (see
+        :func:`method.steps.measure_probes`), so their samples are read despite
+        appearing nowhere in ``cfg.steps``.
+        """
+        return cls(
+            weights_ids=frozenset(
+                get_weights_id(cfg, t) for t in range(len(cfg.steps) + 1)
+            ),
+            training_sample_ids=frozenset(
+                training_sample_id(step, cfg.seed) for step in (*cfg.steps, *cfg.probes)
+            ),
+        )
 
 
 def _process_alive(pid: int) -> bool:
