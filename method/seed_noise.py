@@ -61,9 +61,8 @@ def coverage(collection: Collection) -> pd.DataFrame:
         return pd.DataFrame(columns=["name", "trait", "n_seeds"])
     return (
         pd.DataFrame(rows)
-        .groupby(["name", "trait"], as_index=False)["seed"]
-        .nunique()
-        .rename(columns={"seed": "n_seeds"})
+        .groupby(["name", "trait"], as_index=False)
+        .agg(n_seeds=("seed", "nunique"))
     )
 
 
