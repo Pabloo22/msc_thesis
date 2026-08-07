@@ -35,6 +35,22 @@ D3 = StepConfig(dataset="mistake_gsm8k", version=DatasetVersion.MISALIGNED_2)
 POOL = (D1, D2, D3)
 
 
+def decay_trunks(*, seeds=(0,)) -> list[TrajectoryConfig]:
+    """Trunk A alone, one config per seed: a multi-step trajectory to collect.
+
+    An empty probe set is what suppresses the branches: a branch exists per
+    (checkpoint, probe), so with no probes the builder emits trunks only. These
+    tests are about multi-checkpoint collection, and a branch records a single
+    checkpoint by design (``measure=ENDPOINT_BEHAVIOR``).
+    """
+    return E.build_exp2_decay_configs(
+        seeds=seeds,
+        measure_traits=("evil",),
+        trunks={"a": E.EXP2_TRUNKS["a"]},
+        probes=(),
+    )
+
+
 @pytest.fixture(autouse=True)
 def temp_trajectories(tmp_path, monkeypatch):
     """Point ``trajectory_run_dir`` at a scratch root for every test here."""
@@ -128,7 +144,7 @@ class TestConfigMetadata:
     """``group``/``labels`` are bookkeeping and must not touch the store."""
 
     def test_group_and_labels_do_not_change_weights_id(self):
-        base = E.build_exp2_configs(seeds=(0,), measure_traits=("evil",))[0]
+        base = decay_trunks()[0]
         tagged = dataclasses.replace(
             base, group="something-else", labels=(("condition", "made-up"),)
         )
@@ -149,13 +165,9 @@ class TestConfigMetadata:
         assert D3.dataset_id == "mistake_gsm8k/misaligned_2"
 
     def test_every_generated_config_carries_a_group(self):
-        for build in (
-            E.build_exp2_configs,
-            E.build_hysteresis_configs,
-            E.build_diversity_configs,
-        ):
-            for cfg in build(seeds=(0,), measure_traits=("evil",)):
-                assert cfg.group in {E.EXP2, E.EXP3, E.EXP4}
+        for group, build in E.GROUP_BUILDERS.items():
+            for cfg in build(measure_traits=("evil",)):
+                assert cfg.group == group
 
     def test_exp3_and_exp4_label_every_run_with_a_condition(self):
         for cfg in hysteresis_configs():
@@ -402,23 +414,24 @@ class TestDeltaP0:
         assert "evil/normal" in lookup[("evil", 0)]
 
     def test_missing_delta_p_0_names_datasets_no_run_measured_at_t0(self):
-        """The exp2 gap: a dataset only ever trained on mid-trajectory has no
+        """The trunk gap: a dataset only ever trained on mid-trajectory has no
         base-model measurement, and is dropped from the scatter."""
-        exp2 = E.build_exp2_configs(seeds=(0,), measure_traits=("evil",))
-        for cfg in exp2:
+        trunks = decay_trunks()
+        for cfg in trunks:
             write_run(cfg)
-        collection = collect(exp2, group=E.EXP2)
+        collection = collect(trunks, group=E.EXP2_DECAY)
         absent = missing_delta_p_0(collection, delta_p_0_lookup(collection.runs))
-        # Only the first dataset of the 8-step trajectory gets a t=0 measurement.
-        assert len(absent) == 7
-        assert E._EXP2_STEPS[0].dataset_id not in absent
-        assert E._EXP2_STEPS[3].dataset_id in absent
+        drivers = E.EXP2_TRUNKS["a"]
+        # Only the driver the trunk trains on first gets a t=0 measurement.
+        assert len(absent) == len(drivers) - 1
+        assert drivers[0].dataset_id not in absent
+        assert drivers[3].dataset_id in absent
 
     def test_projection_frame_pairs_each_seed_against_its_own_baseline(self):
-        exp2 = E.build_exp2_configs(seeds=(0, 1), measure_traits=("evil",))
-        for cfg in exp2:
+        trunks = decay_trunks(seeds=(0, 1))
+        for cfg in trunks:
             write_run(cfg, delta_p=[float(cfg.seed) + 1.0] * len(cfg.steps))
-        collection = collect(exp2, group=E.EXP2)
+        collection = collect(trunks, group=E.EXP2_DECAY)
         frame = projection_frame(collection, delta_p_0_lookup(collection.runs))
         assert not frame.empty
         for seed, expected in ((0, 1.0), (1, 2.0)):
@@ -435,18 +448,20 @@ class TestDeltaP0:
         assert lookup[("evil", 0)][probed] == pytest.approx(7.0)
 
     def test_base_probe_sweep_covers_datasets_no_run_starts_with(self):
-        """The gap this closes: an 8-step trajectory measures Delta P_0 for its
-        first dataset only, so the other seven come from probe_base."""
-        exp2 = E.build_exp2_configs(seeds=(0,), measure_traits=("evil",))
-        for cfg in exp2:
+        """The gap this closes: a 6-step trunk measures Delta P_0 for its first
+        dataset only, so the other five come from probe_base."""
+        trunks = decay_trunks()
+        drivers = E.EXP2_TRUNKS["a"]
+        for cfg in trunks:
             write_run(cfg)
-        collection = collect(exp2, group=E.EXP2)
-        assert len(missing_delta_p_0(collection, delta_p_0_lookup(collection.runs))) == 7
+        collection = collect(trunks, group=E.EXP2_DECAY)
+        absent = missing_delta_p_0(collection, delta_p_0_lookup(collection.runs))
+        assert len(absent) == len(drivers) - 1
 
-        write_base_probes(exp2[0], {s.dataset_id: 0.5 for s in E._EXP2_STEPS})
+        write_base_probes(trunks[0], {s.dataset_id: 0.5 for s in drivers})
         lookup = delta_p_0_lookup(collection.runs)
         assert not missing_delta_p_0(collection, lookup)
-        assert len(lookup[("evil", 0)]) == len(E._EXP2_STEPS)
+        assert len(lookup[("evil", 0)]) == len(drivers)
 
     def test_base_probes_are_shared_across_seeds(self):
         """One base probe sweep serves every seed of a model.
@@ -456,26 +471,26 @@ class TestDeltaP0:
         therefore enough -- the sweep measures the untouched base model, which
         no seed has acted on yet.
         """
-        exp2 = E.build_exp2_configs(seeds=(0, 1), measure_traits=("evil",))
-        for cfg in exp2:
+        trunks = decay_trunks(seeds=(0, 1))
+        for cfg in trunks:
             write_run(cfg)
         # Probing under seed 0 alone covers seed 1 as well.
-        probed = E._EXP2_STEPS[4].dataset_id
-        write_base_probes(exp2[0], {probed: 3.0})
-        lookup = base_probe_lookup(collect(exp2, group=E.EXP2).runs)
+        probed = E.EXP2_TRUNKS["a"][4].dataset_id
+        write_base_probes(trunks[0], {probed: 3.0})
+        lookup = base_probe_lookup(collect(trunks, group=E.EXP2_DECAY).runs)
         assert lookup[("evil", 0)][probed] == pytest.approx(3.0)
         assert lookup[("evil", 1)][probed] == pytest.approx(3.0)
 
     def test_a_missing_base_probe_file_is_not_an_error(self):
-        exp2 = E.build_exp2_configs(seeds=(0,), measure_traits=("evil",))
-        for cfg in exp2:
+        trunks = decay_trunks()
+        for cfg in trunks:
             write_run(cfg)
-        assert base_probe_lookup(collect(exp2, group=E.EXP2).runs) == {}
+        assert base_probe_lookup(collect(trunks, group=E.EXP2_DECAY).runs) == {}
 
     def test_projection_frame_is_empty_without_any_baseline(self):
-        exp2 = E.build_exp2_configs(seeds=(0,), measure_traits=("evil",))
-        for cfg in exp2:
+        trunks = decay_trunks()
+        for cfg in trunks:
             write_run(cfg)
-        frame = projection_frame(collect(exp2, group=E.EXP2), {})
+        frame = projection_frame(collect(trunks, group=E.EXP2_DECAY), {})
         assert frame.empty
         assert "delta_p_0" in frame.columns

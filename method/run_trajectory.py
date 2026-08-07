@@ -30,7 +30,13 @@ from pathlib import Path
 
 from method import experiments, report, steps, timing
 from method.backends import ExecutionBackend, get_backend, materialize
-from method.config import Backend, JudgeBackend, TrajectoryConfig, to_json
+from method.config import (
+    Backend,
+    JudgeBackend,
+    MeasurementLevel,
+    TrajectoryConfig,
+    to_json,
+)
 from method.notify import Heartbeat, Notifier
 from method.store import (
     Store,
@@ -92,10 +98,10 @@ def measure_checkpoint(
     with timer.stage("latent", t):
         latent = steps.compute_step_latent(cfg, t, store)
     push()
-    behavior_path = store.trait_measurement(
-        wid, cfg.trait, steps.Artifacts.BEHAVIOR_JSON
-    )
-    behavior = json.loads(behavior_path.read_text())
+    # Derived from the per-generation scores rather than read back from the
+    # summary written beside them; see steps.behavior_record for why a shared
+    # checkpoint makes that cache unsafe.
+    behavior = steps.behavior_record(cfg, t, store)
     with timer.stage("probes", t):
         probes = steps.measure_probes(cfg, t, store, backend, on_probe_done=push)
     return {
@@ -104,6 +110,41 @@ def measure_checkpoint(
         "behavior": behavior,
         "z": latent,
         "probes": probes,
+    }
+
+
+def measure_endpoint(
+    cfg: TrajectoryConfig,
+    t: int,
+    store: Store,
+    backend: ExecutionBackend,
+    syncer: Syncer | None = None,
+    timer: StageTimer | None = None,
+) -> dict:
+    """``b_t`` alone: the one measurement a discarded branch exists to produce.
+
+    Section 8 of ``docs/exp2.md`` gives branch endpoints exactly this. The
+    persona vector, ``h_neutral`` and ``z_t`` are properties of the *trunk*
+    checkpoint the branch left from, which the trunk has already measured;
+    DeltaP describes an update this endpoint will never receive, since the
+    branch is thrown away immediately after being scored.
+
+    The returned record carries no ``z`` key, so a reader can tell a branch
+    endpoint from a trunk checkpoint by the shape of what was recorded rather
+    than by parsing its name (see
+    :class:`method.visualization.schema.StepRecord`).
+    """
+    wid = get_weights_id(cfg, t)
+    logger.info("--- measuring branch endpoint t=%d (%s) ---", t, wid)
+    timer = StageTimer.disabled() if timer is None else timer
+    with timer.stage("behavior", t):
+        steps.measure_behavior(cfg, t, store, backend)
+    if syncer is not None:
+        _push_measurements(syncer, cfg, t)
+    return {
+        "t": t,
+        "weights_id": wid,
+        "behavior": steps.behavior_record(cfg, t, store),
     }
 
 
@@ -160,9 +201,19 @@ def run(
         backend_kind.value,
     )
 
+    # A branch measures only its endpoint (see MeasurementLevel), so every
+    # checkpoint it passes through on the way there is trained-or-reused and
+    # otherwise left alone. This isn't cache-hit avoidance -- each measurement
+    # function already checks its own output before materializing anything.
+    # It's ordering: branches run in an unordered fan across rental boxes, and
+    # skipping the prefix here means a branch can never pay for its trunk's
+    # measurements even if it happens to run first.
+    full = cfg.measure is MeasurementLevel.FULL
+
     record: list[dict] = []
     for t, step in enumerate(cfg.steps):
-        record.append(measure_checkpoint(cfg, t, store, backend, syncer, timer))
+        if full:
+            record.append(measure_checkpoint(cfg, t, store, backend, syncer, timer))
 
         # Action features describe the update about to happen, so they are
         # attributed to the checkpoint that precedes it.
@@ -173,17 +224,19 @@ def run(
         if syncer is not None:
             syncer.push_training_sample(sample_id)
 
-        with timer.stage("delta_p", t):
-            record[-1]["delta_p"] = steps.compute_delta_p(
-                cfg, t, store, backend, train_file, sample_id
-            )
-        record[-1]["next_dataset"] = step.dataset_id
+        if full:
+            with timer.stage("delta_p", t):
+                record[-1]["delta_p"] = steps.compute_delta_p(
+                    cfg, t, store, backend, train_file, sample_id
+                )
+            record[-1]["next_dataset"] = step.dataset_id
 
-        # DeltaP is the last (and among the most expensive) thing measured at
-        # checkpoint t, and training is about to start -- so this is the last
-        # chance to ship it before a preemption mid-training-step would lose it.
-        if syncer is not None:
-            _push_measurements(syncer, cfg, t)
+            # DeltaP is the last (and among the most expensive) thing measured
+            # at checkpoint t, and training is about to start -- so this is the
+            # last chance to ship it before a preemption mid-training-step
+            # would lose it.
+            if syncer is not None:
+                _push_measurements(syncer, cfg, t)
 
         target = get_weights_id(cfg, t + 1)
         # The cache hit is timed too, not just the training. A skipped stage
@@ -218,10 +271,9 @@ def run(
 
     # The final checkpoint has no successor, so it is measured but never used
     # to compute action features. Nothing writes to its bundle afterwards, so
-    # measure_checkpoint's own eager pushes are all it needs.
-    record.append(
-        measure_checkpoint(cfg, len(cfg.steps), store, backend, syncer, timer)
-    )
+    # the eager pushes inside these are all it needs.
+    measure_final = measure_checkpoint if full else measure_endpoint
+    record.append(measure_final(cfg, len(cfg.steps), store, backend, syncer, timer))
 
     with atomic_file(run_dir / "trajectory.json") as scratch:
         scratch.write_text(

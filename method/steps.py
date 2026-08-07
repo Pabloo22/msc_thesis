@@ -24,6 +24,7 @@ import torch
 from method.backends import ExecutionBackend, materialize
 from method.config import DeltaPMode, HNeutralSource, StepConfig, TrajectoryConfig
 from method.latent import compute_latent, delta_projection, summarize
+from method.noise import behavior_summary
 from method.store import (
     Store,
     atomic_dir,
@@ -173,15 +174,7 @@ def measure_behavior(
         )
         df = pd.read_csv(tmp_csv)
         (scratch / Artifacts.BEHAVIOR_JSON).write_text(
-            json.dumps(
-                {
-                    cfg.trait: float(df[cfg.trait].mean()),
-                    f"{cfg.trait}_std": float(df[cfg.trait].std()),
-                    "coherence": float(df["coherence"].mean()),
-                    "n": int(len(df)),
-                },
-                indent=2,
-            ),
+            json.dumps(behavior_summary(df, cfg.trait), indent=2),
             encoding="utf-8",
         )
     _promote(
@@ -190,6 +183,35 @@ def measure_behavior(
         marker=Artifacts.BEHAVIOR_CSV,
     )
     return out_csv
+
+
+def behavior_record(
+    cfg: TrajectoryConfig, t: int, store: Store
+) -> dict[str, float]:
+    """The behaviour summary for checkpoint ``t``, derived from the scored rows.
+
+    Read from ``behavior.csv`` rather than the ``behavior.json`` written beside
+    it, because that JSON is only written when the eval actually *runs*.
+    :func:`measure_behavior` returns early once the CSV exists, so a checkpoint
+    measured before a field was added to the summary would keep the old shape
+    for good -- and checkpoints are shared, so whichever experiment measures one
+    first fixes its format for every experiment that follows.
+
+    The acute case is the base checkpoint. Every trajectory of every family
+    resolves to one ``M_0`` (:meth:`~method.config.TrajectoryConfig.weights_key`
+    normalises the seed away at ``t=0``, and excludes trait), so exp3 having
+    measured it first would leave exp2's ``t=0`` record without ``SE`` while its
+    own ``t>=1`` records carried it -- and ``t=0`` is precisely what the
+    validation fan differences against.
+
+    Deriving from the raw rows removes the staleness by construction: there is
+    no cached summary left to invalidate. Costs one CSV parse per checkpoint,
+    against an eval that just generated and judged hundreds of completions.
+    """
+    csv = store.trait_measurement(
+        get_weights_id(cfg, t), cfg.trait, Artifacts.BEHAVIOR_CSV
+    )
+    return behavior_summary(pd.read_csv(csv), cfg.trait)
 
 
 def eval_progress_dir(final_csv: Path) -> Path:

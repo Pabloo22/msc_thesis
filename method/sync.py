@@ -32,6 +32,25 @@ Design constraints inherited from :mod:`method.store`:
   (:class:`PushLedger`), last-writer-wins otherwise -- where "unchanged" means
   unchanged in the bytes that matter, not in the mtimes a re-run stamps on them
   (:func:`_run_dir_signature`).
+* **Mutable artifacts merge on pull, never replace.** The same growth that
+  defeats a presence check on push defeats it on pull: a measurement bundle
+  accumulates a trait, a probe dataset and an h_neutral source at a time, so two
+  boxes routinely hold different subsets of one id with neither a superset. A
+  pull that replaced the local directory would delete whichever measurements
+  this box had produced but not yet pushed, and one that skipped on directory
+  existence -- as this did -- meant a box never learned what another had
+  measured, so divergent copies of a checkpoint never reconciled. Each mutable
+  archive therefore carries a sidecar index of its contents
+  (:func:`_paths_index`, :func:`_hashed_index`), consulted for kilobytes before
+  deciding whether the archive is worth fetching, and only the parts this box
+  lacks are copied in (:func:`_merge_from_tar`).
+* **One archive per artifact is coarse, and that has a cost.** Because a bundle
+  is a single remote object, touching any file in it re-uploads all of it --
+  rewriting a 200-byte ``behavior.json`` ships the hidden-state tensors beside
+  it. That is why ``push-runs`` exists as a separate CLI action. Splitting the
+  archive along the axes a bundle actually grows on (per trait, per probe key)
+  would remove the problem rather than route around it; it would also make each
+  piece effectively immutable, and so retire most of the index machinery above.
 * **Push one artifact at a time.** Every ``push_*`` entry point below covers a
   single artifact, so a run ships each one the moment it lands in the store
   rather than banking a trajectory's worth of GPU hours until the end. The
@@ -326,14 +345,131 @@ def _tar_dir(src: Path, dest_tar: Path) -> None:
 
 
 def _untar_dir(tar_path: Path, dest_dir: Path) -> None:
-    """Extract ``tar_path`` onto ``dest_dir`` atomically.
+    """Extract ``tar_path`` onto ``dest_dir`` atomically, replacing what is there.
 
     Uses :func:`method.store.atomic_dir` so an interrupted extraction cannot
     leave a half-populated artifact that ``has_adapter`` would report complete.
+
+    Because ``atomic_dir`` deletes ``dest_dir`` before the rename, this is only
+    ever safe when the destination holds nothing worth keeping -- i.e. when it
+    does not exist yet. A destination that already has content must go through
+    :func:`_merge_from_tar` instead; see :meth:`Syncer._pull_dirs`.
     """
     with atomic_dir(dest_dir) as scratch:
         with tarfile.open(tar_path, "r") as tar:
             _safe_extractall(tar, scratch)
+
+
+def _merge_from_tar(tar_path: Path, dest_dir: Path, wanted: Iterable[str]) -> None:
+    """Copy just ``wanted`` out of ``tar_path`` into an existing ``dest_dir``.
+
+    The non-destructive counterpart to :func:`_untar_dir`. Measurement bundles
+    grow along several independent axes -- a trait, a probe dataset, an
+    h_neutral source -- and two boxes routinely hold different subsets of the
+    same bundle with neither a superset of the other. Replacing the local
+    directory with the remote one would discard whichever measurements this box
+    had produced but not yet pushed, turning a stale read into lost GPU hours.
+
+    So nothing is deleted and nothing outside ``wanted`` is touched. The caller
+    decides what ``wanted`` means -- paths missing locally, and for artifacts
+    where the remote is authoritative, paths whose content differs.
+    """
+    with tempfile.TemporaryDirectory() as staging:
+        staged = Path(staging)
+        with tarfile.open(tar_path, "r") as tar:
+            _safe_extractall(tar, staged)
+        for relpath in sorted(wanted):
+            source = staged / relpath
+            if not source.is_file():
+                # The index named a path the tar does not carry. Skipping keeps
+                # a mismatched pair survivable rather than aborting the pull.
+                logger.warning("index lists %s but the archive lacks it", relpath)
+                continue
+            destination = dest_dir / relpath
+            with atomic_file(destination) as scratch:
+                shutil.copyfile(source, scratch)
+
+
+# --------------------------------------------------------------------------- #
+# Index sidecars: what a mutable archive contains, without downloading it.
+# --------------------------------------------------------------------------- #
+
+#: Suffix of the sidecar object pushed beside each mutable ``<id>.tar``.
+_INDEX_SUFFIX = ".files"
+
+#: Separator between a path and its token inside an index. NUL cannot occur in
+#: a path, so no escaping is needed.
+_INDEX_SEP = "\0"
+
+
+def _paths_index(path: Path) -> str:
+    """Index naming only the files present: the right question for a bundle.
+
+    Used for measurement bundles, where "does the remote hold something I am
+    missing" is answerable from names alone and is the only question worth
+    asking. Whether two boxes' copies of the *same* path agree is a separate
+    matter that content hashes would raise but must not silently resolve --
+    overwriting a local measurement with a remote one is a decision, not a sync
+    detail -- and hashing hundreds of megabytes of hidden-state tensors to ask
+    it would cost more than the download the index exists to avoid.
+    """
+    return "\n".join(
+        str(item.relative_to(path))
+        for item in sorted(path.rglob("*"))
+        if item.is_file()
+    )
+
+
+def _hashed_index(path: Path) -> str:
+    """Index pairing each file with a digest of its contents.
+
+    Used for run directories, where the remote *is* authoritative: a box
+    rewrites ``trajectory.json`` in place (a backfill, a re-run that measured
+    something new), and a plotting machine that already has the file needs the
+    new bytes, not just the ones it lacks. Names alone cannot express that.
+
+    Affordable here for the same reason :func:`_run_dir_signature` is: a run
+    directory is a small JSON plus dereferenced training samples, megabytes
+    against the hundreds a measurement bundle runs to.
+    """
+    lines = []
+    for item in sorted(path.rglob("*")):
+        if not item.is_file():
+            continue
+        lines.append(
+            f"{item.relative_to(path)}{_INDEX_SEP}{file_sha256(item)}"
+        )
+    return "\n".join(lines)
+
+
+def _parse_index(text: str) -> dict[str, str]:
+    """An index's ``relpath -> token`` map; the token is ``""`` when absent."""
+    entries = {}
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        relpath, _, token = line.partition(_INDEX_SEP)
+        entries[relpath] = token
+    return entries
+
+
+def _stale_paths(remote: Mapping[str, str], local: Mapping[str, str]) -> set[str]:
+    """Paths the remote holds that this box lacks or, where tokened, differs on.
+
+    With a paths-only index every token is ``""``, so this reduces to "what am I
+    missing" and an existing local file is never disturbed. With a hashed index
+    it additionally reports files whose content moved on.
+    """
+    return {
+        relpath
+        for relpath, token in remote.items()
+        if relpath not in local or (token and local[relpath] != token)
+    }
+
+
+def _index_relpath(relpath: str) -> str:
+    """The sidecar object name beside a ``<id>.tar``."""
+    return f"{relpath[: -len('.tar')]}{_INDEX_SUFFIX}"
 
 
 def _safe_extractall(tar: tarfile.TarFile, dest: Path) -> None:
@@ -657,6 +793,7 @@ class Syncer:
             self.store.measurement_dir(wid),
             f"{_MEASUREMENTS}/{wid}.tar",
             sign=_dir_signature,
+            index=_paths_index,
         )
 
     def push_run_dir(self, run_dir: Path) -> None:
@@ -667,7 +804,12 @@ class Syncer:
         nothing, and this archive is the only real transfer such a run would
         otherwise make.
         """
-        self._push_dir(run_dir, f"{_RUNS}/{run_dir.name}.tar", sign=_run_dir_signature)
+        self._push_dir(
+            run_dir,
+            f"{_RUNS}/{run_dir.name}.tar",
+            sign=_run_dir_signature,
+            index=_hashed_index,
+        )
 
     def push_base_probe(self, path: Path) -> None:
         """Upload one base-probe summary if it has changed."""
@@ -726,7 +868,12 @@ class Syncer:
             present=self.store.has_adapter,
         )
         self._pull_files(_SAMPLES, self.store.training_samples, sign=None)
-        self._pull_dirs(_MEASUREMENTS, self.store.measurements, sign=_dir_signature)
+        self._pull_dirs(
+            _MEASUREMENTS,
+            self.store.measurements,
+            sign=_dir_signature,
+            index=_paths_index,
+        )
 
     def pull_for_plotting(self) -> None:
         """Fetch just what the collector reads: run dirs and base probes.
@@ -735,8 +882,19 @@ class Syncer:
         the figures use are embedded in each ``trajectory.json`` -- so this
         pulls only ``trajectories/`` and is safe to run on a machine that never
         touches a GPU.
+
+        Uses a hashed index, so a run directory already on this box is refreshed
+        when the remote's copy has *changed*, not merely when files are missing
+        from it. That is what a rewritten ``trajectory.json`` looks like -- a
+        backfill, or a re-run that measured a new trait -- and skipping it was
+        why a plotting box could sit on numbers a GPU box had already corrected.
         """
-        self._pull_dirs(_RUNS, self.trajectories, sign=_run_dir_signature)
+        self._pull_dirs(
+            _RUNS,
+            self.trajectories,
+            sign=_run_dir_signature,
+            index=_hashed_index,
+        )
         self._pull_files(
             _BASE_PROBES, self.trajectories / "base_probes", sign=_file_signature
         )
@@ -796,8 +954,20 @@ class Syncer:
             names.add(name)
 
     def _push_dir(
-        self, src: Path, relpath: str, *, sign: Callable[[Path], str] | None
+        self,
+        src: Path,
+        relpath: str,
+        *,
+        sign: Callable[[Path], str] | None,
+        index: Callable[[Path], str] | None = None,
     ) -> None:
+        """Upload one directory artifact, plus the index a merging pull needs.
+
+        ``index`` is set exactly for the mutable artifacts, and is what lets a
+        puller ask "does this archive hold anything I lack" without fetching
+        the archive. It is uploaded *after* the tar, so an index is never
+        visible promising content the tar has not received yet.
+        """
         if not src.is_dir():
             return
         with self._attempt(f"push {relpath}"):
@@ -809,11 +979,38 @@ class Syncer:
             signature = sign(src) if sign else None
             if self._already_pushed(relpath, signature):
                 logger.debug("skip push: %s", relpath)
+                # The tar is up to date, but it may predate indexing entirely.
+                # Writing the sidecar now costs kilobytes and is what lets
+                # archives already on the remote take part in merging pulls,
+                # instead of waiting for a content change to re-upload them.
+                if index is not None:
+                    self._ensure_index(src, relpath, index)
                 return
             with _scratch_file(suffix=".tar") as tmp:
                 _tar_dir(src, tmp)
                 self.transport.upload(tmp, relpath)
+            if index is not None:
+                self._upload_index(src, relpath, index)
             self._record_push(relpath, signature)
+
+    def _ensure_index(
+        self, src: Path, relpath: str, index: Callable[[Path], str]
+    ) -> None:
+        """Write the sidecar for an archive already on the remote, if missing."""
+        index_relpath = _index_relpath(relpath)
+        reldir, _, name = index_relpath.rpartition("/")
+        if name in self._remote_names(reldir):
+            return
+        self._upload_index(src, relpath, index)
+
+    def _upload_index(
+        self, src: Path, relpath: str, index: Callable[[Path], str]
+    ) -> None:
+        index_relpath = _index_relpath(relpath)
+        with _scratch_file(suffix=_INDEX_SUFFIX) as tmp:
+            tmp.write_text(index(src), encoding="utf-8")
+            self.transport.upload(tmp, index_relpath)
+        self._note_pushed(index_relpath)
 
     def _push_file(
         self, src: Path, relpath: str, *, sign: Callable[[Path], str] | None
@@ -843,36 +1040,109 @@ class Syncer:
         *,
         sign: Callable[[Path], str] | None,
         present=None,
+        index: Callable[[Path], str] | None = None,
     ) -> None:
-        """Download every ``<id>.tar`` under ``reldir`` whose ``<id>`` is missing.
+        """Fetch what the remote holds under ``reldir`` and this box does not.
 
-        ``present`` decides "already have it": adapters use
-        :meth:`Store.has_adapter` (checks completeness, not mere directory
-        existence); others fall back to a plain directory check.
+        Three cases, because the artifacts differ in what "already have it"
+        can mean:
+
+        *Absent locally.* Downloaded whole, whatever the kind.
+
+        *Immutable and present* (adapters, keyed by ``present``, and training
+        samples). Presence is proof: the id determines the bytes, so there is
+        nothing a re-fetch could add.
+
+        *Mutable and present* (measurement bundles, run directories). Presence
+        proves nothing -- these grow a trait, a probe or a rewritten
+        ``trajectory.json`` at a time, and two boxes routinely hold different
+        subsets of the same id. This used to skip them, which is why a box that
+        had ever touched a checkpoint never learned what another box measured
+        on it, and why divergent copies never reconciled. Now the sidecar index
+        is consulted (kilobytes) and the archive fetched only when it names
+        paths this box is missing or, for a hashed index, has stale.
+
+        An archive with no sidecar is left alone rather than guessed at: it
+        predates indexing, and the next push of it writes one (see
+        :meth:`_ensure_index`).
 
         Guarded per artifact rather than per sweep, so one object that cannot
         be fetched costs only itself: the rest of the prefix still lands, and
         the run still starts from as much cached work as the remote would give
         up.
         """
-        for name in self._list(reldir):
+        names = self._list(reldir)
+        available = set(names)
+        for name in names:
             if not name.endswith(".tar"):
                 continue
             wid = name[: -len(".tar")]
-            have = present(wid) if present else (local_parent / wid).is_dir()
-            if have:
-                continue
+            local = local_parent / wid
             relpath = f"{reldir}/{name}"
-            with self._attempt(f"pull {relpath}"):
-                with _scratch_file(suffix=".tar") as tmp:
-                    self.transport.download(relpath, tmp)
-                    _untar_dir(tmp, local_parent / wid)
-                if sign:
-                    # What was just written locally *is* the remote object, so
-                    # record it as pushed; otherwise the next push would ship
-                    # every bundle this box pulled straight back up unchanged.
-                    self.ledger.record(relpath, sign(local_parent / wid))
-                logger.info("pulled %s", relpath)
+            have = present(wid) if present else local.is_dir()
+            if not have:
+                self._pull_whole_dir(relpath, local, sign=sign)
+                continue
+            if index is None:
+                continue
+            index_name = f"{wid}{_INDEX_SUFFIX}"
+            if index_name not in available:
+                logger.debug("no index for %s; leaving local copy alone", relpath)
+                continue
+            self._pull_missing(
+                relpath, f"{reldir}/{index_name}", local, sign=sign, index=index
+            )
+
+    def _pull_whole_dir(
+        self, relpath: str, local: Path, *, sign: Callable[[Path], str] | None
+    ) -> None:
+        with self._attempt(f"pull {relpath}"):
+            with _scratch_file(suffix=".tar") as tmp:
+                self.transport.download(relpath, tmp)
+                _untar_dir(tmp, local)
+            self._record_pull(relpath, local, sign)
+            logger.info("pulled %s", relpath)
+
+    def _pull_missing(
+        self,
+        relpath: str,
+        index_relpath: str,
+        local: Path,
+        *,
+        sign: Callable[[Path], str] | None,
+        index: Callable[[Path], str],
+    ) -> None:
+        """Add the parts of a remote archive this box lacks, deleting nothing."""
+        with self._attempt(f"pull {relpath}"):
+            with _scratch_file(suffix=_INDEX_SUFFIX) as tmp:
+                self.transport.download(index_relpath, tmp)
+                remote = _parse_index(tmp.read_text(encoding="utf-8"))
+            stale = _stale_paths(remote, _parse_index(index(local)))
+            if not stale:
+                logger.debug("up to date: %s", relpath)
+                return
+            with _scratch_file(suffix=".tar") as tmp:
+                self.transport.download(relpath, tmp)
+                _merge_from_tar(tmp, local, stale)
+            # Deliberately *not* recorded in the ledger. A merged directory is a
+            # superset of the remote archive, not a copy of it: the extra files
+            # are this box's own measurements, which may never have been pushed.
+            # Recording the merged signature here would tell the next push that
+            # this id is already up to date and strand them locally forever --
+            # the mirror image of the pull bug this whole path exists to fix.
+            logger.info("merged %d file(s) from %s", len(stale), relpath)
+
+    def _record_pull(
+        self, relpath: str, local: Path, sign: Callable[[Path], str] | None
+    ) -> None:
+        """Note that local content now matches the remote object it came from.
+
+        Only correct after a *whole* download, where the two are byte-identical.
+        Without it the next push would ship every bundle this box pulled
+        straight back up unchanged.
+        """
+        if sign:
+            self.ledger.record(relpath, sign(local))
 
     def _pull_files(
         self, reldir: str, local_parent: Path, *, sign: Callable[[Path], str] | None
@@ -973,9 +1243,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "action",
-        choices=["push", "pull", "pull-plots"],
+        choices=["push", "push-runs", "pull", "pull-plots"],
         help=(
             "push: upload the whole local store + trajectories; "
+            "push-runs: upload only run dirs + base probes; "
             "pull: fetch the reusable store prefix; "
             "pull-plots: fetch only run dirs + base probes (plotting box)"
         ),
@@ -1010,14 +1281,24 @@ def main() -> None:
     if syncer is None:
         raise SystemExit(f"{REMOTE_ENV} is not set; nothing to sync to.")
 
-    if args.action == "push":
-        # The store is swept once, not once per run dir: it is shared by every
-        # trajectory, so folding it into the per-run loop re-tarred and
-        # re-uploaded every measurement bundle N times over for N run dirs.
-        # Sweeping it here also means a store with no runs still gets pushed.
-        syncer.push_store()
-        run_dirs = sorted(p for p in syncer.trajectories.glob("*_seed*") if p.is_dir())
-        for run_dir in run_dirs:
+    if args.action in {"push", "push-runs"}:
+        if args.action == "push":
+            # The store is swept once, not once per run dir: it is shared by
+            # every trajectory, so folding it into the per-run loop re-tarred
+            # and re-uploaded every measurement bundle N times over for N run
+            # dirs. Sweeping it here also means a store with no runs still gets
+            # pushed.
+            syncer.push_store()
+        # ``push-runs`` skips that sweep, because a measurement bundle is one
+        # remote object: touching any file in it re-uploads all of it, tensors
+        # included. Rewriting a 200-byte behavior.json (see
+        # :mod:`method.backfill_se`) therefore costs the whole bundle, and
+        # across a store that is tens of gigabytes for a change that belongs
+        # entirely to ``trajectory.json``. See the module docstring's note on
+        # archive granularity for the underlying limitation.
+        for run_dir in sorted(
+            p for p in syncer.trajectories.glob("*_seed*") if p.is_dir()
+        ):
             syncer.push_run_dir(run_dir)
         syncer.push_base_probes()
     elif args.action == "pull":

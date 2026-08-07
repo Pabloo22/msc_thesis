@@ -89,6 +89,46 @@ class DatasetVersion(StrEnum):
     MISALIGNED_2 = "misaligned_2"
 
 
+class MeasurementLevel(StrEnum):
+    """How much of a trajectory is measured, and at which checkpoints.
+
+    A *branch* -- a trajectory fine-tuned from a checkpoint purely to read the
+    behaviour change it produces, then discarded (section 3 of
+    ``docs/exp2.md``) -- shares its whole prefix with the trunk it came off.
+    Content-addressing makes every artifact at a shared checkpoint reusable
+    regardless of which config computes it, but the fan is hundreds of branches
+    sharded across rental boxes with no guaranteed order against their trunks --
+    so "reusable" does not mean "already there". A branch that happened to run
+    before its trunk's measurements had synced would generate them itself:
+    persona-vector extraction, ``h_neutral``, and DeltaP for every probe, all
+    expensive. ``ENDPOINT_BEHAVIOR`` sidesteps the ordering question rather than
+    betting on it: a branch never touches its prefix's measurements at all, so
+    it stays a fixed one-train-one-eval unit no matter what else has or hasn't
+    run yet.
+
+    ``FULL``
+        Every checkpoint yields ``b_t``, ``v_t``, ``h_neutral``, ``z_t``, and
+        DeltaP both for the dataset the next step trains on and for every entry
+        in :attr:`TrajectoryConfig.probes`. What a trunk needs.
+    ``ENDPOINT_BEHAVIOR``
+        Only the final checkpoint, and only ``b``. What a branch needs, per
+        the measurement schedule in section 8: ``b_{t+1}`` and nothing else.
+
+    Relies on its trunk being measured ``FULL`` somewhere in the run; nothing
+    checks this. A branch run without its trunk still trains and scores its own
+    endpoint fine, but the ``z_t`` and probe series it was meant to share with
+    the trunk are simply absent from the collected results.
+
+    Deliberately absent from :meth:`TrajectoryConfig.weights_key`, like every
+    other measurement setting: it changes what is read off a checkpoint, never
+    the checkpoint. A branch and the trunk step it duplicates therefore resolve
+    to one adapter, which is what makes the fan-out affordable at all.
+    """
+
+    FULL = "full"
+    ENDPOINT_BEHAVIOR = "endpoint_behavior"
+
+
 @dataclass(frozen=True, kw_only=True)
 class ModelConfig:
     """A base model plus the layer its persona vectors are read from.
@@ -247,6 +287,10 @@ class TrajectoryConfig:
     #: object that appears in ``steps`` makes the probe and the action feature
     #: resolve to one artifact, so neither is computed twice.
     probes: tuple[StepConfig, ...] = ()
+    #: Which measurements this run is for; see :class:`MeasurementLevel`.
+    #: Bookkeeping like :attr:`group` and :attr:`labels`, and excluded from
+    #: :meth:`weights_key` for the same reason -- it cannot force a retrain.
+    measure: MeasurementLevel = MeasurementLevel.FULL
 
     def __post_init__(self) -> None:
         if not self.steps:
@@ -256,6 +300,15 @@ class TrajectoryConfig:
         probe_ids = [p.dataset_id for p in self.probes]
         if len(set(probe_ids)) != len(probe_ids):
             raise ValueError(f"duplicate probe datasets in {probe_ids!r}")
+        if self.probes and self.measure is MeasurementLevel.ENDPOINT_BEHAVIOR:
+            # Probes are measured per checkpoint, and this level visits none of
+            # them. Silently dropping them would leave a config that looks like
+            # it produces a DeltaP series and does not.
+            raise ValueError(
+                f"{self.name!r} sets probes but measure="
+                f"{MeasurementLevel.ENDPOINT_BEHAVIOR.value}, which measures no "
+                "checkpoint they could be read at; probe from the trunk instead"
+            )
 
     @property
     def label_map(self) -> dict[str, str]:

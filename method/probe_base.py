@@ -146,11 +146,9 @@ def run(
 
     for seed in seeds:
         for trait in traits:
-            # exp2's builder supplies the right model and measurement presets;
-            # its step sequence is irrelevant at t=0.
-            cfg = experiments.build_exp2_configs(
-                seeds=(seed,), measure_traits=(trait,), local=local
-            )[0]
+            cfg = experiments.base_template_config(
+                seed=seed, trait=trait, local=local
+            )
             logger.info(
                 "--- base probes: seed=%d trait=%s (%s) ---",
                 seed,

@@ -142,6 +142,20 @@ def _payload(t: int, behavior_val: float, next_dataset: str | None) -> dict:
 
 
 @pytest.fixture
+def branch_trajectory() -> Trajectory:
+    """What a branch writes: one endpoint record, b only, no z."""
+    return Trajectory.from_dict(
+        {
+            "config": {"name": "branch", "trait": "evil", "seed": 0},
+            "steps": [
+                {"t": 3, "weights_id": "t03-feedfeedfeedfeed",
+                 "behavior": {"evil": 55.0}},
+            ],
+        }
+    )
+
+
+@pytest.fixture
 def two_step_trajectory() -> Trajectory:
     payload = {
         "config": {"name": "toy", "trait": "evil", "seed": 0},
@@ -240,6 +254,43 @@ class TestZComponentMatrix:
     def test_one_row_per_trajectory(self, two_step_trajectory: Trajectory) -> None:
         out = schema.z_component_matrix([two_step_trajectory, two_step_trajectory], "r")
         assert out == [[30.0, 30.0, 30.0], [30.0, 30.0, 30.0]]
+
+    def test_branch_trajectories_contribute_no_row(
+        self, two_step_trajectory: Trajectory, branch_trajectory: Trajectory
+    ) -> None:
+        """A decay collection mixes trunks with branches, and a branch measures
+        only b -- so z must be skipped, not raised on. This crashed
+        ``make_plots --mock`` for the whole exp2_decay family."""
+        out = schema.z_component_matrix(
+            [two_step_trajectory, branch_trajectory], "r"
+        )
+        assert out == [[30.0, 30.0, 30.0]]
+
+
+class TestLatentIsOptional:
+    """Branch endpoints record no ``z`` (``MeasurementLevel.ENDPOINT_BEHAVIOR``)."""
+
+    def test_a_record_without_z_parses(self, branch_trajectory: Trajectory) -> None:
+        assert branch_trajectory.steps[0].z == {}
+        assert branch_trajectory.steps[0].behavior["evil"] == 55.0
+
+    def test_has_latent_distinguishes_trunk_from_branch(
+        self, two_step_trajectory: Trajectory, branch_trajectory: Trajectory
+    ) -> None:
+        assert two_step_trajectory.has_latent()
+        assert not branch_trajectory.has_latent()
+
+    def test_z_series_names_the_reason_it_is_missing(
+        self, branch_trajectory: Trajectory
+    ) -> None:
+        with pytest.raises(KeyError, match="Branch endpoints measure"):
+            branch_trajectory.z_series("rho")
+
+    def test_metric_pairs_skips_branches(
+        self, two_step_trajectory: Trajectory, branch_trajectory: Trajectory
+    ) -> None:
+        df = schema.metric_pairs([two_step_trajectory, branch_trajectory], "rho")
+        assert df["value"].tolist() == pytest.approx([1.0, 0.9])
 
 
 class TestDeltaPByDataset:

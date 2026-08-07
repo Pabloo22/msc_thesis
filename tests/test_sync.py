@@ -55,13 +55,21 @@ def _syncer(tmp_path, *, store_name="store", remote_name="remote", **kwargs) -> 
     )
 
 
-def _record_uploads(monkeypatch, syncer: Syncer) -> list[str]:
-    """Collect the relpaths ``syncer`` uploads, while still uploading them."""
+def _record_uploads(
+    monkeypatch, syncer: Syncer, *, include_indexes: bool = False
+) -> list[str]:
+    """Collect the relpaths ``syncer`` uploads, while still uploading them.
+
+    Index sidecars are filtered out by default: they always accompany the
+    mutable archive they describe, so a test asking "which artifacts went up"
+    means the archives. Pass ``include_indexes`` to assert on them directly.
+    """
     uploaded: list[str] = []
     real_upload = syncer.transport.upload
 
     def spy(local, relpath):
-        uploaded.append(relpath)
+        if include_indexes or not relpath.endswith(".files"):
+            uploaded.append(relpath)
         real_upload(local, relpath)
 
     monkeypatch.setattr(syncer.transport, "upload", spy)
@@ -324,6 +332,197 @@ class TestUnchangedMutableArtifactsSkip:
         uploaded = _record_uploads(monkeypatch, dst)
         dst.push_store()
         assert uploaded == []
+
+
+class TestMergingPullOfMutableBundles:
+    """A measurement bundle grows a trait/probe at a time on several boxes.
+
+    Presence of the directory therefore proves nothing about its contents, and
+    the pull used to skip on exactly that -- so a box that had ever touched a
+    checkpoint never learned what another box measured on it, and divergent
+    copies never reconciled. These pin down the fix and, just as importantly,
+    that it never destroys local work to achieve it.
+    """
+
+    def test_a_partial_bundle_gains_what_it_lacks(self, tmp_path):
+        src = _syncer(tmp_path, store_name="src")
+        _write_measurement(src.store, "t01-abc", "traits/evil/behavior.csv", "evil")
+        src.push_measurement("t01-abc")
+
+        # dst measured a *different* trait on the same checkpoint, so it holds
+        # the directory but not the file src has.
+        dst = _syncer(tmp_path, store_name="dst")
+        _write_measurement(dst.store, "t01-abc", "traits/syco/behavior.csv", "syco")
+        dst.pull_before_run()
+
+        bundle = dst.store.measurement_dir("t01-abc")
+        assert (bundle / "traits/evil/behavior.csv").read_text() == "evil"
+        assert (bundle / "traits/syco/behavior.csv").read_text() == "syco"
+
+    def test_local_measurements_are_never_destroyed(self, tmp_path):
+        # The naive "just pull anyway" fix: atomic_dir deletes the destination
+        # before renaming, so it would take unpushed GPU work with it.
+        src = _syncer(tmp_path, store_name="src")
+        _write_measurement(src.store, "t01-abc", "traits/evil/behavior.csv", "evil")
+        src.push_measurement("t01-abc")
+
+        dst = _syncer(tmp_path, store_name="dst")
+        _write_measurement(dst.store, "t01-abc", "h_neutral_base/mean.pt", "local")
+        dst.pull_before_run()
+
+        assert (
+            dst.store.measurement_dir("t01-abc") / "h_neutral_base/mean.pt"
+        ).read_text() == "local"
+
+    def test_a_diverged_file_keeps_the_local_copy(self, tmp_path):
+        # Same path, different bytes: two boxes measured the same (wid, trait)
+        # concurrently under an unseeded temperature-1.0 eval. A paths-only
+        # index reports nothing missing, so nothing is overwritten -- picking a
+        # winner is a deliberate reconciliation, not a sync side effect.
+        src = _syncer(tmp_path, store_name="src")
+        _write_measurement(src.store, "t01-abc", "traits/evil/behavior.csv", "remote")
+        src.push_measurement("t01-abc")
+
+        dst = _syncer(tmp_path, store_name="dst")
+        _write_measurement(dst.store, "t01-abc", "traits/evil/behavior.csv", "local")
+        dst.pull_before_run()
+
+        assert (
+            dst.store.measurement_dir("t01-abc") / "traits/evil/behavior.csv"
+        ).read_text() == "local"
+
+    def test_an_up_to_date_bundle_never_downloads_the_archive(
+        self, tmp_path, monkeypatch
+    ):
+        # The whole point of the sidecar: bundles are hundreds of megabytes, so
+        # a warm box must settle "nothing new here" from the index alone.
+        src = _syncer(tmp_path, store_name="src")
+        _write_measurement(src.store, "t01-abc", "traits/evil/behavior.csv", "evil")
+        src.push_measurement("t01-abc")
+
+        dst = _syncer(tmp_path, store_name="dst")
+        dst.pull_before_run()
+
+        downloaded: list[str] = []
+        real_download = dst.transport.download
+        monkeypatch.setattr(
+            dst.transport,
+            "download",
+            lambda relpath, local: (
+                downloaded.append(relpath),
+                real_download(relpath, local),
+            )[1],
+        )
+        dst.pull_before_run()
+
+        assert downloaded == ["store/measurements/t01-abc.files"]
+
+    def test_a_merged_bundle_is_still_pushed_afterwards(self, tmp_path, monkeypatch):
+        # A merged directory is a superset of the remote archive, so recording
+        # it in the ledger would strand this box's own measurements forever.
+        src = _syncer(tmp_path, store_name="src")
+        _write_measurement(src.store, "t01-abc", "traits/evil/behavior.csv", "evil")
+        src.push_measurement("t01-abc")
+
+        dst = _syncer(tmp_path, store_name="dst")
+        _write_measurement(dst.store, "t01-abc", "traits/syco/behavior.csv", "syco")
+        dst.pull_before_run()
+
+        uploaded = _record_uploads(monkeypatch, dst)
+        dst.push_store()
+        assert uploaded == ["store/measurements/t01-abc.tar"]
+
+    def test_an_archive_without_an_index_is_left_alone(self, tmp_path):
+        # Objects pushed before indexing existed. Guessing at their contents is
+        # what the destructive replace did; the next push writes their sidecar.
+        src = _syncer(tmp_path, store_name="src")
+        _write_measurement(src.store, "t01-abc", "traits/evil/behavior.csv", "evil")
+        src.push_measurement("t01-abc")
+        (tmp_path / "remote/store/measurements/t01-abc.files").unlink()
+
+        dst = _syncer(tmp_path, store_name="dst")
+        _write_measurement(dst.store, "t01-abc", "traits/syco/behavior.csv", "syco")
+        dst.pull_before_run()
+
+        bundle = dst.store.measurement_dir("t01-abc")
+        assert (bundle / "traits/syco/behavior.csv").exists()
+        assert not (bundle / "traits/evil/behavior.csv").exists()
+
+    def test_a_missing_index_is_written_without_reuploading_the_archive(
+        self, tmp_path, monkeypatch
+    ):
+        src = _syncer(tmp_path, store_name="src")
+        _write_measurement(src.store, "t01-abc", "traits/evil/behavior.csv", "evil")
+        src.push_measurement("t01-abc")
+        index = tmp_path / "remote/store/measurements/t01-abc.files"
+        index.unlink()
+
+        uploaded = _record_uploads(monkeypatch, src, include_indexes=True)
+        src.push_measurement("t01-abc")
+
+        assert uploaded == ["store/measurements/t01-abc.files"]
+        assert index.exists()
+
+    def test_adapters_get_no_index(self, tmp_path, monkeypatch):
+        """Immutable artifacts need none: the id already determines the bytes."""
+        src = _syncer(tmp_path)
+        _make_adapter(src.store, "t01-abc")
+
+        uploaded = _record_uploads(monkeypatch, src, include_indexes=True)
+        src.push_adapter("t01-abc")
+
+        assert uploaded == ["store/adapters/t01-abc.tar"]
+
+
+class TestPullForPlottingRefreshesChangedRuns:
+    def test_a_rewritten_trajectory_reaches_a_box_that_already_has_it(self, tmp_path):
+        """The backfill workflow: correct numbers on the box must reach the laptop.
+
+        Run dirs use a hashed index precisely for this -- nothing is *missing*
+        from the plotting box's copy, the bytes simply moved on.
+        """
+        src = _syncer(tmp_path, store_name="src")
+        run_dir = _make_run_dir(src, steps='[{"t": 0, "behavior": {"evil": 1.0}}]')
+        src.push_run_dir(run_dir)
+
+        dst = _syncer(tmp_path, store_name="dst")
+        dst.pull_for_plotting()
+        assert "1.0" in (dst.trajectories / "EXP1_seed0/trajectory.json").read_text()
+
+        (run_dir / "trajectory.json").write_text(
+            '{"steps": [{"t": 0, "behavior": {"evil": 1.0, "evil_se": 0.5}}]}',
+            encoding="utf-8",
+        )
+        src.push_run_dir(run_dir)
+        dst.pull_for_plotting()
+
+        assert (
+            "evil_se" in (dst.trajectories / "EXP1_seed0/trajectory.json").read_text()
+        )
+
+
+class TestPushRunsSkipsTheStoreSweep:
+    def test_push_runs_uploads_no_measurement_bundles(self, tmp_path, monkeypatch):
+        """Rewriting a small JSON must not re-upload a bundle of tensors.
+
+        A bundle is one remote object, so any change inside it re-uploads all of
+        it. ``backfill_se`` touches ``behavior.json`` in every bundle, which
+        through ``push`` would cost tens of gigabytes for edits belonging
+        entirely to ``trajectory.json``.
+        """
+        src = _syncer(tmp_path)
+        _write_measurement(src.store, "t00-xyz", "h_neutral_base/mean.pt", "heavy")
+        src.push_measurement("t00-xyz")
+        run_dir = _make_run_dir(src)
+        # What the backfill does: rewrite a tiny file inside the bundle.
+        _write_measurement(src.store, "t00-xyz", "traits/evil/behavior.json", "{}")
+
+        uploaded = _record_uploads(monkeypatch, src)
+        for path in sorted(p for p in src.trajectories.glob("*_seed*") if p.is_dir()):
+            src.push_run_dir(path)
+        src.push_base_probes()
+
+        assert uploaded == [f"trajectories/runs/{run_dir.name}.tar"]
 
 
 class TestPushStoreIsSweptOnce:

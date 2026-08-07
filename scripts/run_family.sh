@@ -6,7 +6,11 @@ set -e
 usage() {
     echo "Usage: bash scripts/run_family.sh <FAMILY_PREFIX> [LOCAL] [MOCK] [--seeds N [N ...]]"
     echo
-    echo "  FAMILY_PREFIX  EXP2 | EXP3 | EXP4"
+    echo "  FAMILY_PREFIX  EXP2_VALIDATION | EXP2_DECAY | EXP2_RESEED | EXP3 | EXP4"
+    echo "                 Matched as a prefix, so EXP2 runs all three exp2"
+    echo "                 families. Run them in the order docs/exp2.md gives:"
+    echo "                 EXP2_VALIDATION is the gate that can invalidate the"
+    echo "                 design before EXP2_DECAY's fan-out is paid for."
     echo "  LOCAL          run the small-proxy '_local' variants instead of paper scale"
     echo "  MOCK           fabricate artifacts instead of training (no GPU, no judge)."
     echo "                 Writes to trajectories-mock/ and store-mock/, which are"
@@ -19,7 +23,7 @@ usage() {
     echo "                 so the adapters they train never collide)"
     echo
     echo "Examples:"
-    echo "  bash scripts/run_family.sh EXP2"
+    echo "  bash scripts/run_family.sh EXP2_VALIDATION"
     echo "  bash scripts/run_family.sh EXP3 LOCAL"
     echo "  bash scripts/run_family.sh EXP3 LOCAL MOCK --seeds 0"
     echo "  CUDA_VISIBLE_DEVICES=0 bash scripts/run_family.sh EXP3 --seeds 0 1 2"

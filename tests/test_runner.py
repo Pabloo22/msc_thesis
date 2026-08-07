@@ -20,6 +20,7 @@ Failure modes that once existed silently:
 from __future__ import annotations
 
 import dataclasses
+import json
 import os
 import shutil
 
@@ -267,6 +268,12 @@ class TestArtifactsArePushedAsTheyAreProduced:
     """
 
     def _run_recording_uploads(self, tmp_path, monkeypatch) -> list[str]:
+        """Relpaths the run uploads, minus the index sidecars.
+
+        A mutable archive is always followed by its ``.files`` index (see
+        :func:`method.sync._index_relpath`); these tests are about which
+        *artifacts* a run ships and when, so the sidecars are noise here.
+        """
         monkeypatch.setattr("method.utils.TRAJECTORIES_DIR", tmp_path / "trajectories")
         store = Store(tmp_path / "store")
         monkeypatch.setattr(
@@ -278,7 +285,8 @@ class TestArtifactsArePushedAsTheyAreProduced:
         real_upload = LocalTransport.upload
 
         def spy(transport, local, relpath):
-            uploads.append(relpath)
+            if not relpath.endswith(".files"):
+                uploads.append(relpath)
             real_upload(transport, local, relpath)
 
         monkeypatch.setattr(LocalTransport, "upload", spy)
@@ -379,3 +387,88 @@ class TestLatentSourcesFollowTheConfig:
         latents = steps.compute_step_latent(both, 0, store)
 
         assert set(latents) == {"base", "current"}
+
+
+class TestBranchesMeasureOnlyTheirEndpoint:
+    """``MeasurementLevel.ENDPOINT_BEHAVIOR``: the fan-out's cost control.
+
+    A branch shares its whole prefix with the trunk it forked from, and the
+    trunk has already measured every checkpoint in it. Re-measuring is not
+    merely redundant -- each checkpoint costs a full merge-chain rebuild
+    (``materialize``) before it can discover the artifact is already there. With
+    144 branches in the design, doing that per branch is what the level exists
+    to avoid.
+    """
+
+    @staticmethod
+    def _design(tmp_path, monkeypatch):
+        monkeypatch.setattr("method.utils.TRAJECTORIES_DIR", tmp_path / "trajectories")
+        store = Store(tmp_path / "store")
+        monkeypatch.setattr(
+            Store, "for_backend", classmethod(lambda cls, backend: store)
+        )
+        drivers = E.EXP2_TRUNKS["a"][:2]
+        cfgs = E.build_exp2_decay_configs(
+            measure_traits=("evil",),
+            trunks={"a": drivers},
+            probes=E.EXP2_PROBES[:1],
+            local=True,
+        )
+        by_role = {}
+        for cfg in cfgs:
+            by_role.setdefault(cfg.label_map["role"], []).append(cfg)
+        return store, by_role["trunk"][0], by_role["branch"]
+
+    def test_a_branch_records_its_endpoint_and_nothing_else(
+        self, tmp_path, monkeypatch
+    ):
+        _, _, branches = self._design(tmp_path, monkeypatch)
+        branch = max(branches, key=lambda c: int(c.label_map["t"]))
+
+        run_dir = run_trajectory.run(branch, Backend.MOCK, "float16")
+
+        payload = json.loads((run_dir / "trajectory.json").read_text())
+        assert [s["t"] for s in payload["steps"]] == [len(branch.steps)]
+        endpoint = payload["steps"][0]
+        assert branch.trait in endpoint["behavior"]
+        # No z, no delta_p, no probes: all of them are properties of the trunk
+        # checkpoint this branch left from, and the trunk records them there.
+        assert "z" not in endpoint
+        assert "delta_p" not in endpoint
+        assert "probes" not in endpoint
+
+    def test_a_branch_leaves_the_prefix_checkpoints_unmeasured(
+        self, tmp_path, monkeypatch
+    ):
+        """Trained-or-reused, but never evaluated: the prefix is the trunk's job."""
+        store, _, branches = self._design(tmp_path, monkeypatch)
+        branch = max(branches, key=lambda c: int(c.label_map["t"]))
+        t_end = len(branch.steps)
+
+        run_trajectory.run(branch, Backend.MOCK, "float16")
+
+        for t in range(t_end):
+            wid = get_weights_id(branch, t)
+            assert not store.trait_measurement(
+                wid, branch.trait, steps.Artifacts.BEHAVIOR_CSV
+            ).exists(), f"checkpoint {t} was measured"
+        # ...while every adapter along the way still exists, so the branch did
+        # walk the chain rather than skipping the training too.
+        for t in range(1, t_end + 1):
+            assert store.has_adapter(get_weights_id(branch, t))
+        assert store.trait_measurement(
+            get_weights_id(branch, t_end), branch.trait, steps.Artifacts.BEHAVIOR_CSV
+        ).exists()
+
+    def test_a_branch_reuses_the_trunks_adapters(self, tmp_path, monkeypatch):
+        """The affordability claim, end to end: after the trunk has run, a
+        branch off checkpoint t trains exactly one new adapter."""
+        store, trunk, branches = self._design(tmp_path, monkeypatch)
+        run_trajectory.run(trunk, Backend.MOCK, "float16")
+        before = {p.name for p in store.adapters.iterdir()}
+
+        branch = max(branches, key=lambda c: int(c.label_map["t"]))
+        run_trajectory.run(branch, Backend.MOCK, "float16")
+
+        after = {p.name for p in store.adapters.iterdir()}
+        assert after - before == {get_weights_id(branch, len(branch.steps))}

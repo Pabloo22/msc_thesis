@@ -13,26 +13,30 @@ import dataclasses
 import pytest
 
 from method import experiments as E
+from method.config import MeasurementLevel
 from method.steps import dataset_path
 from method.store import Store, get_weights_id
 
-ALL_BUILDERS = (
-    E.build_exp2_configs,
-    E.build_hysteresis_configs,
-    E.build_diversity_configs,
-)
+ALL_BUILDERS = tuple(E.GROUP_BUILDERS.values())
 
 
 @pytest.fixture(scope="module")
 def all_configs():
     # Both scales: the registry carries the paper-scale configs and their
     # ``_local`` variants, so laptop/mock runs are reachable from the CLI.
+    # Seeds are left at each builder's default so this matches REGISTRY exactly.
     return [
         cfg
         for build in ALL_BUILDERS
         for local in (False, True)
         for cfg in build(local=local)
     ]
+
+
+def a_trunk(**kwargs) -> E.TrajectoryConfig:
+    """The trunk A config: a plain multi-step trajectory to assert generics on."""
+    kwargs.setdefault("measure_traits", ("evil",))
+    return E.build_exp2_decay_configs(trunks={"a": E.EXP2_TRUNKS["a"]}, **kwargs)[0]
 
 
 class TestRegistry:
@@ -68,7 +72,7 @@ class TestTraitSharesFineTuning:
 
     def test_configs_differing_only_in_trait_share_every_weights_id(self):
         evil, syco = (
-            E.build_exp2_configs(seeds=(0,), measure_traits=(tr,))[0]
+            a_trunk(seeds=(0,), measure_traits=(tr,))
             for tr in ("evil", "sycophantic")
         )
         assert evil.trait != syco.trait
@@ -84,10 +88,7 @@ class TestTraitSharesFineTuning:
         ) != store.trait_measurement(wid, "sycophantic", "behavior.json")
 
     def test_seed_still_changes_the_weights(self):
-        a, b = (
-            E.build_exp2_configs(seeds=(s,), measure_traits=("evil",))[0]
-            for s in (0, 1)
-        )
+        a, b = (a_trunk(seeds=(s,)) for s in (0, 1))
         assert get_weights_id(a, 1) != get_weights_id(b, 1)
 
     def test_seeds_share_the_base_checkpoint(self):
@@ -101,10 +102,7 @@ class TestTraitSharesFineTuning:
         redraw of ``v_0``, not a seed-controlled one -- an across-seed spread
         that no rerun of the same seed could reproduce.
         """
-        a, b = (
-            E.build_exp2_configs(seeds=(s,), measure_traits=("evil",))[0]
-            for s in (0, 1)
-        )
+        a, b = (a_trunk(seeds=(s,)) for s in (0, 1))
         assert get_weights_id(a, 0) == get_weights_id(b, 0)
 
     def test_normalizing_seed_at_t0_preserves_seed_0_keys(self):
@@ -113,8 +111,183 @@ class TestTraitSharesFineTuning:
         Dropping the field would rehash the seed-0 base checkpoint too and
         orphan the base measurements already in the store.
         """
-        cfg = E.build_exp2_configs(seeds=(0,), measure_traits=("evil",))[0]
-        assert get_weights_id(cfg, 0) == "t00-7fabae59bda88957"
+        assert get_weights_id(a_trunk(seeds=(0,)), 0) == "t00-7fabae59bda88957"
+
+
+class TestExp2Design:
+    """The redesigned RQ1 decay experiment (``docs/exp2.md``).
+
+    Every assertion here stands for a design constraint that is silent when
+    broken and expensive to discover from the data afterwards.
+    """
+
+    def trunk_and_branches(self, trunk: str = "a"):
+        cfgs = E.build_exp2_decay_configs(
+            measure_traits=("evil",), trunks={trunk: E.EXP2_TRUNKS[trunk]}
+        )
+        trunk_cfg = next(c for c in cfgs if c.label_map["role"] == "trunk")
+        branches = [c for c in cfgs if c.label_map["role"] == "branch"]
+        return trunk_cfg, branches
+
+    def test_a_branch_shares_every_checkpoint_of_the_trunk_prefix(self):
+        """The claim the whole budget rests on: a branch trains *one* step.
+
+        ``weights_key`` hashes the step prefix, so ``drivers[:t] + (probe,)``
+        resolves to the trunk's own adapters for checkpoints 0..t and only the
+        endpoint is new. If this breaks, the 144 branches stop being one
+        fine-tune each and the design becomes unaffordable.
+        """
+        trunk, branches = self.trunk_and_branches()
+        trunk_ids = {get_weights_id(trunk, i) for i in range(len(trunk.steps) + 1)}
+        for branch in branches:
+            t = int(branch.label_map["t"])
+            assert len(branch.steps) == t + 1
+            assert [get_weights_id(branch, i) for i in range(t + 1)] == [
+                get_weights_id(trunk, i) for i in range(t + 1)
+            ]
+            # The endpoint is the one new checkpoint, and it is new against the
+            # *whole* trunk -- not just against trunk[t+1], which does not exist
+            # for a branch off the final checkpoint.
+            assert get_weights_id(branch, t + 1) not in trunk_ids
+
+    def test_a_branch_trains_exactly_the_examples_its_delta_p_describes(self):
+        """The (x, y) pair has to be about one thing.
+
+        ``Delta P`` is measured at the trunk checkpoint over the probe's cached
+        training sample; the branch then fine-tunes on the probe. Both resolve
+        through ``training_sample_id``, which includes ``n_examples`` -- so a
+        branch scaled differently from the trunk's probe would pair a
+        ``Delta P`` computed over one set of examples with a ``Delta b``
+        produced by another.
+        """
+        for local in (False, True):
+            cfgs = E.build_exp2_decay_configs(
+                measure_traits=("evil",),
+                trunks={"a": E.EXP2_TRUNKS["a"]},
+                local=local,
+            )
+            trunk = next(c for c in cfgs if c.label_map["role"] == "trunk")
+            probes = {p.dataset_id: p for p in trunk.probes}
+            for branch in (c for c in cfgs if c.label_map["role"] == "branch"):
+                assert branch.steps[-1] == probes[branch.label_map["probe"]]
+
+    def test_branches_measure_only_their_endpoint(self):
+        trunk, branches = self.trunk_and_branches()
+        assert trunk.measure is MeasurementLevel.FULL
+        assert trunk.probes
+        for branch in branches:
+            assert branch.measure is MeasurementLevel.ENDPOINT_BEHAVIOR
+            assert branch.probes == ()
+
+    def test_the_fan_covers_every_checkpoint_from_one_upward(self):
+        """Section 3: measure everywhere, not at a subset.
+
+        The schedules make ``b`` a sawtooth, so sampling only post-re-alignment
+        checkpoints reads its troughs and understates decay. ``t = 0`` is absent
+        because all three trunks share ``M_0`` and the validation fan covers it
+        over all 24 datasets.
+        """
+        _, branches = self.trunk_and_branches()
+        fanned = {int(b.label_map["t"]) for b in branches}
+        assert fanned == set(range(1, len(E.EXP2_TRUNKS["a"]) + 1))
+        per_checkpoint = {t: 0 for t in fanned}
+        for branch in branches:
+            per_checkpoint[int(branch.label_map["t"])] += 1
+        assert set(per_checkpoint.values()) == {len(E.EXP2_PROBES)}
+
+    def test_the_probe_set_is_fixed_across_checkpoints_and_trunks(self):
+        """Section 3b: paired design. A probe set that varied by step would make
+        a change in R^2 unattributable between drift and the probe set."""
+        by_t = {}
+        for cfg in E.build_exp2_decay_configs(measure_traits=("evil",)):
+            if cfg.label_map["role"] != "branch":
+                continue
+            key = (cfg.label_map["trunk"], cfg.label_map["t"])
+            by_t.setdefault(key, set()).add(cfg.label_map["probe"])
+        assert len(by_t) == len(E.EXP2_TRUNKS) * len(E.EXP2_TRUNKS["a"])
+        assert set(map(frozenset, by_t.values())) == {
+            frozenset(p.dataset_id for p in E.EXP2_PROBES)
+        }
+
+    def test_steps_since_realignment_follows_each_schedule(self):
+        """Section 4's phase variable: 0 after a Normal driver, +1 per X."""
+        assert E.steps_since_realignment(E.EXP2_TRUNKS["a"]) == (0, 1, 0, 1, 0, 1, 0)
+        assert E.steps_since_realignment(E.EXP2_TRUNKS["b"]) == (0, 1, 2, 0, 1, 2, 0)
+        assert E.steps_since_realignment(E.EXP2_TRUNKS["c"]) == (0,) * 7
+
+    def test_branches_record_the_phase_of_the_checkpoint_they_left_from(self):
+        for trunk_name, drivers in E.EXP2_TRUNKS.items():
+            since = E.steps_since_realignment(drivers)
+            _, branches = self.trunk_and_branches(trunk_name)
+            for branch in branches:
+                t = int(branch.label_map["t"])
+                assert branch.label_map["steps_since_realignment"] == str(since[t])
+
+    def test_feasibility_rejects_a_probe_that_is_also_a_driver(self):
+        probe = E.EXP2_PROBES[0]
+        with pytest.raises(ValueError, match="also probes"):
+            E.check_exp2_feasibility({"x": (probe,)}, E.EXP2_PROBES)
+
+    def test_feasibility_rejects_within_trunk_reuse(self):
+        """Training twice on one dataset inside a trunk confounds decay with the
+        repeated-exposure effect exp3/exp4 exist to isolate."""
+        driver = E.EXP2_TRUNKS["a"][0]
+        with pytest.raises(ValueError, match="trains twice"):
+            E.check_exp2_feasibility({"x": (driver, driver)}, E.EXP2_PROBES)
+
+    def test_the_shipped_probe_set_and_trunks_are_feasible(self):
+        """The default design must satisfy its own constraints; the driver pool
+        is tight enough (trunk C consumes 6 of the 8 Normals) that a plausible
+        edit to EXP2_PROBES can break it."""
+        E.check_exp2_feasibility()
+        assert len(E.EXP2_PROBES) == 8
+        assert all(len(d) == 6 for d in E.EXP2_TRUNKS.values())
+
+    def test_validation_fans_all_24_datasets_one_step_each(self):
+        cfgs = E.build_exp2_validation_configs(measure_traits=("evil",))
+        assert len(cfgs) == 24
+        assert {c.steps[0].dataset_id for c in cfgs} == {
+            d.dataset_id for d in E.ALL_DATASETS
+        }
+        for cfg in cfgs:
+            assert len(cfg.steps) == 1
+            assert cfg.measure is MeasurementLevel.FULL
+
+    def test_the_decay_fan_starts_at_one_because_validation_covers_t0(self):
+        """All three trunks share ``M_0``, so emitting the t=0 fan per trunk
+        would run it three times over."""
+        validation = {
+            c.steps[0].dataset_id
+            for c in E.build_exp2_validation_configs(measure_traits=("evil",))
+        }
+        assert {p.dataset_id for p in E.EXP2_PROBES} <= validation
+        for cfg in E.build_exp2_decay_configs(measure_traits=("evil",)):
+            if cfg.label_map["role"] == "branch":
+                assert int(cfg.label_map["t"]) >= 1
+
+    def test_reseed_replicates_trunk_a_under_a_different_seed(self):
+        reseed = E.build_exp2_reseed_configs(measure_traits=("evil",))
+        trunk, _ = self.trunk_and_branches("a")
+        assert len(reseed) == 1
+        assert reseed[0].steps == trunk.steps
+        assert reseed[0].seed != trunk.seed
+        # Different seed, so every trained checkpoint is genuinely re-run --
+        # only the untouched base model is shared.
+        assert get_weights_id(reseed[0], 0) == get_weights_id(trunk, 0)
+        for t in range(1, len(trunk.steps) + 1):
+            assert get_weights_id(reseed[0], t) != get_weights_id(trunk, t)
+
+    def test_reseed_refuses_the_decay_seed(self):
+        with pytest.raises(ValueError, match="decay family's own seed"):
+            E.build_exp2_reseed_configs(seeds=(E.EXP2_SEED,))
+
+    def test_trunks_may_reuse_datasets_across_but_not_within(self):
+        """Reuse across trunks is fine -- they are independent trajectories --
+        and trunk C needing all 6 remaining Normals makes it unavoidable."""
+        used = [
+            {d.dataset_id for d in drivers} for drivers in E.EXP2_TRUNKS.values()
+        ]
+        assert any(a & b for a, b in zip(used, used[1:]))
 
 
 class TestPrefixSharing:
@@ -222,14 +395,14 @@ class TestPrefixSharing:
 class TestLocalScaling:
     def test_local_variants_use_the_small_model_and_capped_examples(self):
         for build in ALL_BUILDERS:
-            for cfg in build(seeds=(0,), measure_traits=("evil",), local=True):
+            for cfg in build(measure_traits=("evil",), local=True):
                 assert cfg.model is E.QWEN_0_5B
                 assert all(s.n_examples == 64 for s in cfg.steps)
                 assert cfg.name.endswith("_local")
 
     def test_paper_scale_variants_use_the_7b_model_and_full_datasets(self):
         for build in ALL_BUILDERS:
-            for cfg in build(seeds=(0,), measure_traits=("evil",)):
+            for cfg in build(measure_traits=("evil",)):
                 assert cfg.model is E.QWEN_7B
                 assert all(s.n_examples is None for s in cfg.steps)
 

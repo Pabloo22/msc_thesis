@@ -20,7 +20,7 @@ import pytest
 
 from method import experiments as E, probe_base, steps
 from method.backends import get_backend
-from method.config import Backend, DatasetVersion, StepConfig
+from method.config import Backend, DatasetVersion, MeasurementLevel, StepConfig
 from method.store import Store, get_weights_id
 from method.sync import LocalTransport, Syncer
 from method.utils import base_probes_path
@@ -74,21 +74,40 @@ class TestProbesAreMeasurementOnly:
         with pytest.raises(ValueError, match="duplicate probe datasets"):
             make_cfg(probes=(EVIL, EVIL))
 
-    def test_exp2_probes_are_a_subset_of_its_steps(self):
-        """The defaults probe datasets exp2 actually trains on, so each probe
-        series has a step whose effect it can be read against."""
-        cfg = E.build_exp2_configs(seeds=(0,), measure_traits=("evil",))[0]
+    def test_exp2_decay_probes_are_disjoint_from_its_drivers(self):
+        """Section 3b: a probe that is also a driver would measure memorisation
+        by the time the trunk reaches its later checkpoints, not susceptibility --
+        so a trunk's probes and its own steps must never overlap."""
+        cfg = next(
+            c
+            for c in E.build_exp2_decay_configs()
+            if c.label_map.get("role") == "trunk"
+        )
         step_ids = {s.dataset_id for s in cfg.steps}
         assert cfg.probes
-        assert {p.dataset_id for p in cfg.probes} <= step_ids
+        assert {p.dataset_id for p in cfg.probes}.isdisjoint(step_ids)
 
 
 class TestBuilderProbeDefaults:
     """Every family probes the dataset whose figure it has to explain."""
 
     def test_every_builder_gives_every_config_a_probe(self):
+        # Two exceptions, both by design: exp2_validation *is* the Delta P_0
+        # measurement (each config is a single fine-tune from M_0), so it has
+        # no separate checkpoint to probe from; and an ENDPOINT_BEHAVIOR branch
+        # is barred from carrying probes at all (TrajectoryConfig rejects it),
+        # since the trunk it forked from already probes every checkpoint the
+        # branch shares with it.
+        #
+        # Each builder is left on its own default seeds -- forcing seeds=(0,)
+        # uniformly would trip build_exp2_reseed_configs's guard against
+        # reusing the decay family's seed (see EXP2_SEED / EXP2_RESEED_SEED).
         for group, build in E.GROUP_BUILDERS.items():
-            for cfg in build(seeds=(0,), measure_traits=("evil",)):
+            if group == E.EXP2_VALIDATION:
+                continue
+            for cfg in build(measure_traits=("evil",)):
+                if cfg.measure is MeasurementLevel.ENDPOINT_BEHAVIOR:
+                    continue
                 assert cfg.probes, f"{group}/{cfg.name} has no probes"
 
     def test_exp3_probes_the_target_dataset_its_bar_reports(self):
@@ -118,8 +137,12 @@ class TestBuilderProbeDefaults:
             assert f"{realign}/normal" in probed
 
     def test_probes_can_be_overridden_per_builder(self):
-        for build in E.GROUP_BUILDERS.values():
-            cfgs = build(seeds=(0,), measure_traits=("evil",), probes=())
+        # exp2_validation takes no `probes` kwarg at all: it has none to
+        # override, by design (see the previous test).
+        for group, build in E.GROUP_BUILDERS.items():
+            if group == E.EXP2_VALIDATION:
+                continue
+            cfgs = build(measure_traits=("evil",), probes=())
             assert cfgs and all(cfg.probes == () for cfg in cfgs)
 
     def test_a_default_naming_one_dataset_twice_is_deduplicated(self):
@@ -141,8 +164,15 @@ class TestBuilderProbeDefaults:
         """The saving depends on a probe and the step naming the same dataset
         resolving to one ``training_sample_id``. That hash includes
         ``n_examples``, so localising steps but not probes would silently double
-        the measurement cost at local scale."""
-        for build in E.GROUP_BUILDERS.values():
+        the measurement cost at local scale.
+
+        Scoped to exp3/exp4, where a probe naming the trajectory's own step is
+        the point. exp2_decay is the opposite by design (section 3b: probes are
+        disjoint from drivers), and exp2_validation has no probes at all, so
+        neither has any overlap for this to check.
+        """
+        for group in (E.EXP3, E.EXP4):
+            build = E.GROUP_BUILDERS[group]
             for cfg in build(seeds=(0,), measure_traits=("evil",), local=True):
                 by_id = {s.dataset_id: s for s in cfg.steps}
                 shared = [p for p in cfg.probes if p.dataset_id in by_id]
@@ -326,10 +356,16 @@ class TestProbeBase:
 
     def test_the_probe_set_covers_every_dataset_the_experiments_train_on(self):
         """If a dataset any experiment trains on were absent here, its points
-        would be dropped from the projection scatter with no error."""
+        would be dropped from the projection scatter with no error.
+
+        Each builder is left on its own default seeds, matching
+        :func:`method.experiments.all_probe_datasets` itself -- forcing
+        seeds=(0,) uniformly would trip build_exp2_reseed_configs's guard
+        against reusing the decay family's seed.
+        """
         probed = {s.dataset_id for s in E.all_probe_datasets()}
         for build in E.GROUP_BUILDERS.values():
-            for cfg in build(seeds=(0,), measure_traits=("evil",)):
+            for cfg in build(measure_traits=("evil",)):
                 for step in cfg.steps:
                     assert step.dataset_id in probed
 
