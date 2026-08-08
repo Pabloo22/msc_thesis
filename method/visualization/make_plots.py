@@ -4,12 +4,19 @@ r"""Generate every figure from *real* saved trajectories and write them to disk.
     poetry run python -m method.visualization.make_plots --experiment exp3
     poetry run python -m method.visualization.make_plots --mock --local
 
-The counterpart to :mod:`method.visualization.demo`, which draws the same
-figures from synthetic fixtures. Both call the same functions in
-:mod:`method.visualization.figures`; only the data source differs. Runs are
+The counterpart to :mod:`method.visualization.demo`, which draws the
+trajectory-shaped figures from synthetic fixtures. Both call the same functions
+in :mod:`method.visualization.figures`; only the data source differs. Runs are
 found by asking :mod:`method.visualization.collect` which configs the registry
 says should exist -- so a partially finished sweep plots what has run and
 reports what has not, rather than silently plotting fewer seeds.
+
+exp2's figures are section 9 of ``docs/exp2.md``, in its numbering: the
+validation fan (1), the decay scatter grid (2), the headline $R^2$ and slope
+curves with their noise ceiling (3), the mechanism regression (4), the phase
+contrast (4b) and the paired drift plots (5). Its analysis lives in
+:mod:`method.visualization.decay`; this module only chooses what to draw and
+what to name it.
 
 ``--local`` selects the small-model variants of each design (the ones a mock
 or laptop run produces); without it, the paper-scale configs are used. Each
@@ -26,31 +33,31 @@ from __future__ import annotations
 
 import argparse
 import logging
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
-from method import experiments
-from method.visualization import figures, schema, style
+from method import experiments, seed_noise
+from method.visualization import decay, figures, style
 from method.visualization.collect import (
     Collection,
     collect_group,
-    delta_p_0_lookup,
     diversity_frame,
     hysteresis_frame,
-    missing_delta_p_0,
-    projection_frame,
+    seed_noise_frame,
 )
 from method.visualization.labels import (
     DIVERSITY_CONDITION_LABELS,
     DIVERSITY_CONDITIONS,
     HYSTERESIS_CONDITION_LABELS,
     HYSTERESIS_CONDITIONS,
+    TRUNKS,
     display_dataset_name,
     display_trait_name,
+    display_trunk_name,
+    trunk_index,
 )
-from method.visualization.metrics import ratio_percent, stack_and_trim
 
 import matplotlib.pyplot as plt  # noqa: E402  (backend fixed by style import)
 
@@ -66,192 +73,366 @@ def _emit(fig: plt.Figure, name: str, out_dir: Path, saved: list[Path]) -> None:
     logger.info("wrote %s", out_dir / f"{name}.png")
 
 
-#: A component's step-0 value must be at least this fraction of the series'
-#: largest magnitude before "% of step 0" is worth plotting.
-_PCT_BASELINE_FLOOR = 0.05
+# --- experiment 2: the RQ1 decay experiment (docs/exp2.md section 9) -------
+
+#: The three families the decay experiment is split across. They share a base
+#: checkpoint and a probe set, and every figure below needs at least two of
+#: them, so they are collected together whichever one was asked for.
+EXP2_GROUPS = (
+    experiments.EXP2_VALIDATION,
+    experiments.EXP2_DECAY,
+    experiments.EXP2_RESEED,
+)
+
+#: Which checkpoint-level quantities plot 4 regresses $R^2$ on. Drift is what
+#: RQ1 claims causes decay; $b_t$ and the phase are the two nuisances that
+#: would otherwise explain it just as well, which is why the schedules in
+#: section 4 are varied enough to tell them apart.
+MECHANISM_PREDICTORS = {
+    "rho": r"Persona-vector rotation $\rho_t$",
+    "r": r"Persona-vector norm $r_t$",
+    "b_t": r"Behaviour level $b_t$",
+    "steps_since_realignment": "Steps since re-alignment",
+}
 
 
-def _percent_safe(runs: list[list[float]]) -> bool:
-    r"""Whether "% of step-0 value" is meaningful for this quantity.
+def _trunk_colors(trunks: Sequence[str]) -> dict[str, str]:
+    """A fixed hue per trunk, assigned by identity rather than by row order."""
+    return {trunk: style.categorical_color(trunk_index(trunk)) for trunk in trunks}
 
-    $\rho_t$ and $r_t$ start at a solidly non-zero value (1, and the persona
-    vector's norm), so a percentage reads naturally. $p_t$ and $q_t$ are
-    projections that start at essentially zero on the base model, and dividing
-    by that produces swings of thousands of percent that say nothing about the
-    dynamics -- those are plotted in raw units instead.
+
+def _present_trunks(frame: pd.DataFrame) -> list[str]:
+    """Trunks with rows in ``frame``, in the ladder's order (section 4)."""
+    found = set(frame["trunk"])
+    return [t for t in TRUNKS if t in found] + sorted(found - set(TRUNKS))
+
+
+#: Families that sweep seeds over a fixed step sequence, most preferred first.
+#: exp3 leads because its arms are the closest analogue of an exp2 branch --
+#: several one-step arms, five seeds each -- while exp4's every arm ends in a
+#: re-alignment step, so only its first checkpoint is comparable at all.
+SEED_NOISE_SOURCES = (experiments.EXP3, experiments.EXP4)
+
+
+def _sigma_seed(collections: Mapping[str, Collection]) -> dict[str, float]:
+    r"""$\sigma_{seed}(b)$ per trait, from whichever collected family sweeps seeds.
+
+    Section 6b's noise ceiling needs the spread a single fine-tune shows when
+    it is repeated under another seed, and no run measures its own. exp3 sweeps
+    five seeds over fixed sequences, so its one-step arms estimate exactly the
+    quantity a branch contributes -- see :mod:`method.seed_noise`, which this
+    defers to rather than re-deriving.
+
+    Traits with no multi-seed arm on disk are simply absent, and the caller
+    falls back to an eval-noise-only ceiling.
     """
-    try:
-        matrix = stack_and_trim(runs)
-    except ValueError:
-        return False
-    scale = float(np.abs(matrix).max())
-    baseline = float(np.abs(matrix[:, 0]).min())
-    return scale > 0 and baseline >= _PCT_BASELINE_FLOOR * scale
+    estimates: dict[str, float] = {}
+    for group in SEED_NOISE_SOURCES:
+        collection = collections.get(group)
+        if not collection:
+            continue
+        single = seed_noise.single_step_behavior_noise(seed_noise_frame(collection))
+        for trait, arms in single.groupby("trait"):
+            estimates.setdefault(str(trait), float(arms["sd"].median()))
+    return estimates
 
 
-def _seed_step_matrix(pairs: pd.DataFrame, value_col: str) -> np.ndarray | None:
-    """``[n_seeds, n_steps]`` matrix of ``value_col``, or None if unusable.
+def _series_by(
+    frame: pd.DataFrame, *, key: str, value: str
+) -> dict[str, list[float]]:
+    """``key`` -> its ``value`` at each ``t``, ordered by ``t``.
 
-    Seeds missing any step are dropped rather than averaged over, because
-    :func:`~method.visualization.metrics.mean_std` propagates NaN into both the
-    mean line and the band. Returns None when nothing rectangular survives.
+    Keys missing any checkpoint are dropped rather than plotted short, for the
+    same reason a ragged seed is: a truncated line reads as a quantity that
+    stopped moving, not as a measurement that never happened.
     """
-    wide = pairs.groupby(["seed", "t"])[value_col].mean().unstack("t")
-    wide = wide.sort_index(axis=1).dropna(axis=0, how="any")
-    if wide.empty or wide.shape[1] == 0:
-        return None
-    return wide.to_numpy()
+    if frame.empty:
+        return {}
+    wide = frame.pivot_table(index=key, columns="t", values=value).sort_index(axis=1)
+    complete = wide.dropna(axis=0, how="any")
+    dropped = sorted(set(wide.index) - set(complete.index))
+    if dropped:
+        logger.warning(
+            "%s missing at some checkpoint for %s; omitted from the drift plot",
+            value,
+            ", ".join(str(d) for d in dropped),
+        )
+    return {str(k): [float(v) for v in row] for k, row in complete.iterrows()}
 
 
-# --- experiment 2 ---------------------------------------------------------
+def _split_by_seed(
+    frame: pd.DataFrame, primary: int
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Split a frame into the primary run and its reseeded replicate(s)."""
+    return frame[frame["seed"] == primary], frame[frame["seed"] != primary]
 
 
 def build_exp2(
-    collection: Collection,
+    collections: Mapping[str, Collection],
     out_dir: Path,
     *,
     stat: str = "mean",
     source: str = "base",
-    delta_p_0_runs: list | None = None,
+    sigma_seed: Mapping[str, float] | None = None,
+    n_resamples: int = 2000,
 ) -> list[Path]:
-    r"""Figures for "Running One Trajectory with Multiple Seeds".
+    r"""Every figure in section 9 of ``docs/exp2.md``, one set per measured trait.
 
-    ``delta_p_0_runs`` is the pool of runs searched for base-model $\Delta P$
-    measurements, defaulting to ``collection`` itself. The complete source is
-    the sweep written by :mod:`method.probe_base`; runs contribute only what
-    their own first step happened to measure.
+    ``collections`` holds the three exp2 families keyed by group name. They are
+    passed together because the figures cross them: the decay family supplies
+    the trunks and their fans, the validation family supplies the shared
+    $t = 0$ column that the decay family deliberately does not re-emit, and the
+    reseed family supplies the paired replicate plot 5 overlays.
+
+    ``sigma_seed`` maps a trait to its fine-tune seed noise. Where it is
+    missing the ceiling on plot 3 accounts for eval noise alone, which makes it
+    an upper bound on the true ceiling; the figure is still drawn, and the
+    shortfall is logged rather than silently absorbed.
     """
     saved: list[Path] = []
-    if not collection:
-        logger.warning("exp2: no runs on disk; skipping")
+    decay_runs = collections.get(experiments.EXP2_DECAY) or Collection(
+        experiments.EXP2_DECAY
+    )
+    validation = collections.get(experiments.EXP2_VALIDATION) or Collection(
+        experiments.EXP2_VALIDATION
+    )
+    reseed = collections.get(experiments.EXP2_RESEED) or Collection(
+        experiments.EXP2_RESEED
+    )
+    if not (decay_runs or validation):
+        logger.warning("exp2: no decay or validation runs on disk; skipping")
         return saved
 
-    lookup = delta_p_0_lookup(delta_p_0_runs or collection.runs, stat=stat)
-    absent = missing_delta_p_0(collection, lookup)
-    if absent:
-        logger.warning(
-            "exp2: no Delta P_0 measured for %d dataset(s), which will be dropped "
-            "from the projection scatter: %s. Fix by running "
-            "`python -m method.probe_base`, which measures Delta P for every "
-            "dataset at each seed's base checkpoint without training anything.",
-            len(absent),
-            ", ".join(sorted(absent)),
-        )
+    sigma_seed = dict(sigma_seed or {})
+    fan = decay.validation_frame(validation, stat=stat)
+    rows = decay.decay_frame(decay_runs, validation, stat=stat, source=source)
+    drift_runs = [*decay_runs.runs, *reseed.runs]
+    ratios = decay.probe_drift_frame(drift_runs, stat=stat, source=source)
+    latents = decay.latent_frame(drift_runs, stat=stat, source=source)
 
-    for trait in collection.values("trait"):
-        subset = collection.filter(trait=trait)
+    traits = list(
+        dict.fromkeys(
+            [*validation.values("trait"), *decay_runs.values("trait")]
+        )
+    )
+    for trait in traits:
         pretty = display_trait_name(trait)
         prefix = f"exp2_{trait}"
-
-        pairs = projection_frame(subset, lookup, stat=stat)
-        if pairs.empty:
-            logger.warning(
-                "exp2/%s: no step has both a Delta P_0 and a Delta P_t; "
-                "skipping the projection figures",
-                trait,
-            )
-        else:
-            fig = figures.scatter_projection_correlation(
-                pairs["delta_p_0"],
-                pairs["delta_p_t"],
-                pairs["delta_behavior"],
-                title=f"{pretty}: projection difference vs. behaviour change",
-            )
-            _emit(fig, f"{prefix}_projection_correlation", out_dir, saved)
-
-            ratios = pairs.assign(
-                ratio=ratio_percent(pairs["delta_p_t"], pairs["delta_p_0"])
-            )
-            matrix = _seed_step_matrix(ratios, "ratio")
-            if matrix is not None:
-                fig = figures.line_with_band(
-                    {r"$\Delta P_t$": matrix},
-                    ylabel=r"$\Delta P_t$ (% of $\Delta P_0$ for that dataset)",
-                    xlabel="Step $t$",
-                    reference=100.0,
-                    reference_label="Step-0 value",
-                    title=rf"{pretty}: drift of $\Delta P_t$ relative to $\Delta P_0$",
-                )
-                _emit(fig, f"{prefix}_drift_delta_p", out_dir, saved)
-
-        # The proposal's "how far has Delta P_t drifted from its step-0 value"
-        # line plot. Unlike the ratio plot above -- which compares a *different*
-        # dataset at each step against its own baseline -- this follows a fixed
-        # probe dataset across a moving model, so every change is the model's.
-        probed = sorted(
-            {ds for traj in subset.trajectories for ds in traj.probed_datasets()}
+        saved += _validation_figure(fan, trait, pretty, prefix, out_dir)
+        saved += _decay_figures(
+            rows[rows["trait"] == trait],
+            trait,
+            pretty,
+            prefix,
+            out_dir,
+            sigma_seed=sigma_seed.get(trait),
+            n_resamples=n_resamples,
         )
-        probe_series = {}
-        for dataset in probed:
-            rows = schema.probe_matrix(subset.trajectories, dataset, stat=stat)
-            if rows and _percent_safe(rows):
-                probe_series[display_dataset_name(dataset)] = rows
-            elif rows:
-                logger.warning(
-                    "exp2/%s: Delta P_0 for %s is too close to zero to express "
-                    "later steps as a percentage of it; omitting from the "
-                    "probe drift plot",
-                    trait,
-                    dataset,
-                )
-        if probe_series:
-            fig = figures.drift_line(
-                probe_series,
-                ylabel=r"$\Delta P_t$ (% of step 0)",
-                title=rf"{pretty}: drift of $\Delta P_t$ for a fixed dataset",
-            )
-            _emit(fig, f"{prefix}_drift_probes", out_dir, saved)
+        saved += _drift_figures(
+            ratios[ratios["trait"] == trait],
+            latents[latents["trait"] == trait],
+            pretty,
+            prefix,
+            out_dir,
+        )
+    return saved
 
-        # z_t components against the behaviour change they precede.
-        metric_data = {}
-        for component, label in Z_LABELS.items():
-            mp = schema.metric_pairs(subset.trajectories, component, source=source)
-            if not mp.empty:
-                metric_data[label] = (
-                    mp["value"].to_numpy(),
-                    mp["delta_behavior"].to_numpy(),
-                )
-        if metric_data:
-            fig = figures.scatter_metric_grid(
-                metric_data,
-                title=f"{pretty}: latent-state components vs. behaviour change",
-            )
-            _emit(fig, f"{prefix}_latent_metric_grid", out_dir, saved)
 
-        # Drift of every z_t component from its own step-0 value. Components
-        # whose baseline is too close to zero for a percentage to mean
-        # anything get their own raw-unit plot instead of poisoning the shared
-        # axis (see _percent_safe).
-        as_percent: dict[str, list[list[float]]] = {}
-        for component, label in Z_LABELS.items():
-            runs = schema.z_component_matrix(
-                subset.trajectories, component, source=source
-            )
-            if not runs:
-                continue
-            if _percent_safe(runs):
-                as_percent[label] = runs
-                continue
-            try:
-                matrix = stack_and_trim(runs)
-            except ValueError:
-                continue
-            fig = figures.line_with_band(
-                {label: matrix},
-                ylabel=f"{label} (raw units)",
-                xlabel="Step $t$",
-                title=f"{pretty}: {label} over the trajectory",
-            )
-            _emit(fig, f"{prefix}_drift_{component}", out_dir, saved)
+def _validation_figure(
+    fan: pd.DataFrame, trait: str, pretty: str, prefix: str, out_dir: Path
+) -> list[Path]:
+    """Plot 1: the 24-dataset replication of the persona-vectors correlation."""
+    saved: list[Path] = []
+    subset = fan[fan["trait"] == trait]
+    if subset.empty:
+        logger.warning(
+            "exp2/%s: no validation runs, so the t=0 fan (plot 1) and the t=0 "
+            "column of the decay grid are both unavailable. Run the "
+            "%r family first -- section 10 makes it phase 1 precisely because "
+            "it gates everything downstream",
+            trait,
+            experiments.EXP2_VALIDATION,
+        )
+        return saved
+    fig = figures.scatter_validation(
+        subset["delta_p_0"],
+        subset["delta_b"],
+        datasets=list(subset["dataset"]),
+        yerr=subset["se_delta_b"],
+        title=(
+            f"{pretty}: projection difference predicts behaviour change "
+            f"at $M_0$ ({len(subset)} datasets)"
+        ),
+    )
+    _emit(fig, f"{prefix}_validation", out_dir, saved)
+    return saved
 
-        if as_percent:
-            fig = figures.drift_line(
-                as_percent,
-                ylabel="% of step-0 value",
-                title=f"{pretty}: drift of the latent state over the trajectory",
-            )
-            _emit(fig, f"{prefix}_drift_z", out_dir, saved)
 
+def _decay_figures(
+    rows: pd.DataFrame,
+    trait: str,
+    pretty: str,
+    prefix: str,
+    out_dir: Path,
+    *,
+    sigma_seed: float | None,
+    n_resamples: int,
+) -> list[Path]:
+    """Plots 2, 3, 4 and 4b, all read off the same ``(trunk, t, probe)`` rows."""
+    saved: list[Path] = []
+    if rows.empty:
+        logger.warning(
+            "exp2/%s: no checkpoint has both a Delta P and a branch endpoint; "
+            "skipping the decay figures",
+            trait,
+        )
+        return saved
+
+    trunks = _present_trunks(rows)
+    colors = _trunk_colors(trunks)
+    labels = {t: display_trunk_name(t) for t in trunks}
+
+    fig = figures.decay_scatter_grid(
+        rows,
+        trunks=trunks,
+        trunk_labels=labels,
+        title=(
+            rf"{pretty}: does $\Delta P_0$ still predict $\Delta b$ "
+            "as the model drifts?"
+        ),
+    )
+    _emit(fig, f"{prefix}_decay_grid", out_dir, saved)
+
+    if sigma_seed is None:
+        logger.warning(
+            "exp2/%s: no sigma_seed(b) available, so plot 3's noise ceiling "
+            "counts eval noise only and is an upper bound on the true ceiling. "
+            "Run a seed-swept family (exp3) and re-plot, or pass --sigma-seed",
+            trait,
+        )
+    fits = decay.fit_frame(
+        rows, sigma_seed=sigma_seed or 0.0, n_resamples=n_resamples
+    )
+    ceiling_note = (
+        rf"eval noise + $\sigma_{{seed}}$={sigma_seed:.2f}"
+        if sigma_seed is not None
+        else "eval noise only"
+    )
+    fig = figures.headline_curves(
+        fits,
+        series_labels=decay.SERIES_LABELS,
+        trunks=trunks,
+        trunk_labels=labels,
+        trunk_colors=colors,
+        ceiling_label=rf"$R^2_{{max}}$ ({ceiling_note})",
+        title=f"{pretty}: predictive accuracy along the trajectory",
+    )
+    _emit(fig, f"{prefix}_headline", out_dir, saved)
+
+    checkpoints = decay.mechanism_frame(fits)
+    fig = figures.mechanism_grid(
+        checkpoints,
+        MECHANISM_PREDICTORS,
+        trunk_labels={**labels, "shared": "Shared $M_0$"},
+        trunk_colors={**colors, "shared": style.SECONDARY_INK},
+        title=f"{pretty}: what predicts the loss of predictive accuracy",
+    )
+    _emit(fig, f"{prefix}_mechanism", out_dir, saved)
+
+    pairs = decay.phase_contrast_frame(fits)
+    if pairs.empty:
+        logger.info(
+            "exp2/%s: no trunk has a re-alignment step with misalignment to "
+            "undo, so there is no phase contrast to draw",
+            trait,
+        )
+    else:
+        fig = figures.phase_contrast(
+            pairs,
+            series_labels=decay.SERIES_LABELS,
+            trunk_colors=colors,
+            title=f"{pretty}: effect of a single re-alignment step on $R^2$",
+        )
+        _emit(fig, f"{prefix}_phase_contrast", out_dir, saved)
+    return saved
+
+
+def _drift_figures(
+    ratios: pd.DataFrame,
+    latents: pd.DataFrame,
+    pretty: str,
+    prefix: str,
+    out_dir: Path,
+) -> list[Path]:
+    r"""Plot 5: paired drift of $\Delta P_t$ and of $z_t$, with the reseed overlay."""
+    saved: list[Path] = []
+    primary_seed = experiments.EXP2_SEED
+
+    for trunk in _present_trunks(ratios) if not ratios.empty else []:
+        arm = ratios[ratios["trunk"] == trunk]
+        own, replicate = _split_by_seed(arm, primary_seed)
+        series = {
+            display_dataset_name(k): v
+            for k, v in _series_by(own, key="probe", value="ratio").items()
+        }
+        if not series:
+            continue
+        fig = figures.overlay_lines(
+            series,
+            {
+                display_dataset_name(k): v
+                for k, v in _series_by(replicate, key="probe", value="ratio").items()
+            },
+            # Keyed by display name because that is what the legend shows; the
+            # mark itself is derived from the identifier, so the two stay in
+            # step however the display name is spelled.
+            marks={
+                display_dataset_name(probe): style.dataset_mark(probe)
+                for probe in set(arm["probe"])
+            },
+            ylabel=r"$\Delta P_t$ (% of $\Delta P_0$)",
+            reference=100.0,
+            reference_label=r"$\Delta P_0$",
+            title=(
+                f"{pretty}, trunk {trunk.upper()}: drift of a fixed dataset's "
+                r"$\Delta P$"
+            ),
+        )
+        _emit(fig, f"{prefix}_drift_delta_p_trunk_{trunk}", out_dir, saved)
+
+    if latents.empty:
+        return saved
+    trunks = _present_trunks(latents)
+    colors = {display_trunk_name(t): style.categorical_color(trunk_index(t))
+              for t in trunks}
+    own, replicate = _split_by_seed(latents, primary_seed)
+    panels = {
+        label: {
+            display_trunk_name(trunk): values
+            for trunk in trunks
+            for values in _series_by(
+                own[own["trunk"] == trunk], key="trunk", value=component
+            ).values()
+        }
+        for component, label in Z_LABELS.items()
+    }
+    replicates = {
+        label: {
+            display_trunk_name(trunk): values
+            for trunk in trunks
+            for values in _series_by(
+                replicate[replicate["trunk"] == trunk], key="trunk", value=component
+            ).values()
+        }
+        for component, label in Z_LABELS.items()
+    }
+    fig = figures.overlay_grid(
+        panels,
+        replicates,
+        colors=colors,
+        title=f"{pretty}: drift of the latent state along each trunk",
+    )
+    _emit(fig, f"{prefix}_drift_z", out_dir, saved)
     return saved
 
 
@@ -388,47 +569,69 @@ def build_exp4(collection: Collection, out_dir: Path) -> list[Path]:
 
 # --- driver ---------------------------------------------------------------
 
+#: Which figure builder each single-family experiment gets. exp2 is absent
+#: because it is not a single family: its figures cross the validation, decay
+#: and reseed groups (see :data:`EXP2_GROUPS`), so :func:`build_and_save` hands
+#: :func:`build_exp2` all three at once instead.
 BUILDERS = {
-    experiments.EXP2: build_exp2,
     experiments.EXP3: build_exp3,
     experiments.EXP4: build_exp4,
 }
+
+#: Every family ``--experiment`` accepts, in run order (section 10 of
+#: ``docs/exp2.md``: the validation fan gates the decay fans, which the reseed
+#: replicate checks).
+GROUPS = (*EXP2_GROUPS, *BUILDERS)
 
 
 def build_and_save(
     out_dir: Path,
     *,
-    groups: list[str] | None = None,
+    groups: Sequence[str] | None = None,
     local: bool = False,
     mock: bool = False,
     stat: str = "mean",
     source: str = "base",
+    sigma_seed: float | None = None,
+    n_resamples: int = 2000,
 ) -> list[Path]:
-    """Build every requested experiment's figures, returning the files written."""
-    groups = groups or list(BUILDERS)
+    """Build every requested experiment's figures, returning the files written.
+
+    Asking for any one exp2 family collects all three. They are not
+    independent: the decay fans have no ``t = 0`` column without the validation
+    family, and the reseed family is only meaningful overlaid on the trunk it
+    replicates.
+    """
+    groups = list(groups) if groups else list(GROUPS)
+    if any(group in EXP2_GROUPS for group in groups):
+        groups = list(dict.fromkeys([*EXP2_GROUPS, *groups]))
     collections = {
-        group: collect_group(group, local=local, mock=mock)
-        for group in groups
+        group: collect_group(group, local=local, mock=mock) for group in groups
     }
     for collection in collections.values():
         logger.info(collection.summary())
 
     saved: list[Path] = []
-    if experiments.EXP2 in collections:
-        # Every collected run is searched for Delta P_0, not just exp2's: a
-        # hysteresis baseline's first step measures the base model against a
-        # dataset exp2 only reaches mid-trajectory. This is a bonus, not the
-        # mechanism -- `probe_base` is what covers every dataset properly.
+    if any(group in collections for group in EXP2_GROUPS):
+        # A flat override applies to every trait; measured seed noise is
+        # per-trait, so it is only consulted when nothing was passed.
+        measured = _sigma_seed(collections)
+        traits = {*measured, *collections[experiments.EXP2_DECAY].values("trait")}
         saved += build_exp2(
-            collections[experiments.EXP2],
+            collections,
             out_dir,
             stat=stat,
             source=source,
-            delta_p_0_runs=[run for c in collections.values() for run in c.runs],
+            sigma_seed=(
+                {trait: sigma_seed for trait in traits}
+                if sigma_seed is not None
+                else measured
+            ),
+            n_resamples=n_resamples,
         )
-    for group in (experiments.EXP3, experiments.EXP4):
+    for group, build in BUILDERS.items():
         if group in collections:
-            saved += BUILDERS[group](collections[group], out_dir)
+            saved += build(collections[group], out_dir)
     return saved
 
 
@@ -450,9 +653,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--experiment",
-        choices=[*BUILDERS, "all"],
+        choices=[*GROUPS, "all"],
         default="all",
-        help="which experiment family to plot (default: all)",
+        help=(
+            "which experiment family to plot (default: all). Any one exp2 "
+            "family pulls in the other two, which its figures need"
+        ),
     )
     parser.add_argument(
         "--out-dir",
@@ -483,6 +689,22 @@ def main() -> None:
         default="base",
         help="which h_neutral source the z_t components come from",
     )
+    parser.add_argument(
+        "--sigma-seed",
+        type=float,
+        default=None,
+        help=(
+            "fine-tune seed SD of b, for the noise ceiling on exp2's headline "
+            "figure (default: read off a seed-swept family via "
+            "method.seed_noise; without one the ceiling counts eval noise only)"
+        ),
+    )
+    parser.add_argument(
+        "--n-resamples",
+        type=int,
+        default=2000,
+        help="bootstrap resamples behind exp2's R^2 and slope intervals",
+    )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -495,7 +717,7 @@ def main() -> None:
     for noisy in ("fontTools", "matplotlib", "PIL"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
-    groups = list(BUILDERS) if args.experiment == "all" else [args.experiment]
+    groups = list(GROUPS) if args.experiment == "all" else [args.experiment]
     out_dir = args.out_dir or default_out_dir(local=args.local, mock=args.mock)
     saved = build_and_save(
         out_dir,
@@ -504,6 +726,8 @@ def main() -> None:
         mock=args.mock,
         stat=args.stat,
         source=args.source,
+        sigma_seed=args.sigma_seed,
+        n_resamples=args.n_resamples,
     )
     if not saved:
         logger.error(

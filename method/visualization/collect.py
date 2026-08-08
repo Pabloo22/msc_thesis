@@ -28,6 +28,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from method import experiments
@@ -372,6 +373,81 @@ def projection_frame(
                      "delta_behavior", "trait"]
         )
     return pd.concat(frames, ignore_index=True)
+
+
+# --- seed noise -----------------------------------------------------------
+
+
+def seed_noise_frame(
+    collection: Collection, *, source: str = "base"
+) -> pd.DataFrame:
+    r"""Across-seed spread of every measured quantity, per arm and checkpoint.
+
+    Section 6c of ``docs/exp2.md`` asks whether the latent trajectory
+    $z_t = (p, q, \rho, r)$ is stable when a trajectory is re-run under a
+    different fine-tuning seed. That question is usually answered with a
+    dedicated paired replicate, but any family that already sweeps seeds over a
+    *fixed* step sequence answers it for free -- and exp3 sweeps five.
+
+    Grouping is by ``(config name, trait, t)``. The config name excludes the
+    seed by construction (it is a separate field, see
+    :func:`method.experiments.build_hysteresis_configs`), so one group is
+    exactly "the same recipe under every seed that has finished".
+
+    Reads only the run directories, never the store: $b$ and $z$ are both
+    recorded in ``trajectory.json``, so this runs on a laptop holding no
+    adapters or activations.
+
+    Safe on a partly-finished sweep, which is the normal case while a family is
+    still running. ``n_seeds`` records how many runs each row actually saw and
+    ``sd`` is ``NaN`` where that is below two, so an arm with one seed is
+    visibly unestimated rather than silently reported as having zero noise.
+
+    Note $t = 0$ is expected to show exactly zero spread:
+    :meth:`method.config.TrajectoryConfig.weights_key` normalises the seed away
+    at the base checkpoint, so every seed reads one shared measurement of one
+    shared model. A non-zero value there means something is wrong upstream, so
+    the row is kept rather than filtered out.
+
+    ``checkpoints`` identifies the actual weights each row summarises, so rows
+    that are the same measurement under two names can be collapsed downstream.
+    They arise legitimately: exp3's ``diff`` arms start on another arm's
+    dataset, so by content addressing their early checkpoints *are* that arm's
+    checkpoints. Averaging over such rows as though they were independent would
+    overstate how many distinct fine-tunes an estimate rests on.
+    """
+    grouped: dict[tuple[str, str, int], dict[str, list[float]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    checkpoints: dict[tuple[str, str, int], set[str]] = defaultdict(set)
+    for run in collection.runs:
+        for step in run.trajectory.steps:
+            key = (run.config.name, run.trait, step.t)
+            values = grouped[key]
+            values["b"].append(step.behavior[run.trait])
+            for component, value in step.z.get(source, {}).items():
+                values[component].append(value)
+            checkpoints[key].add(step.weights_id)
+
+    rows = []
+    for (name, trait, t), components in sorted(grouped.items()):
+        for component, observed in sorted(components.items()):
+            array = np.asarray(observed, dtype=float)
+            rows.append(
+                {
+                    "name": name,
+                    "trait": trait,
+                    "t": t,
+                    "component": component,
+                    "n_seeds": len(array),
+                    "mean": float(array.mean()),
+                    # Sample SD: these are draws from the seed distribution, not
+                    # the whole of it.
+                    "sd": float(array.std(ddof=1)) if len(array) > 1 else float("nan"),
+                    "checkpoints": "|".join(sorted(checkpoints[(name, trait, t)])),
+                }
+            )
+    return pd.DataFrame(rows)
 
 
 # --- bar-chart frames -----------------------------------------------------

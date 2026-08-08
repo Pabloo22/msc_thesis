@@ -70,6 +70,32 @@ DIVERSITY_CONDITION_LABELS = {
 #: Trait as it should appear in a figure title.
 TRAIT_TITLES = {"evil": "Evil", "sycophantic": "Sycophancy"}
 
+#: The exp2 trunks, in the order section 4 of ``docs/exp2.md`` presents them:
+#: a dose-response ladder from the most aggressive schedule to the control.
+#: Fixed here rather than taken from whatever a frame happens to contain, so
+#: that a trunk keeps its colour in every figure even when another is missing
+#: -- a reader who learned "A is blue" must not be repainted by a partial sweep.
+TRUNKS = ("a", "b", "c")
+TRUNK_LABELS = {
+    "a": r"A: II drivers, $X\,N\,X\,N\,X\,N$",
+    "b": r"B: I drivers, $X\,X\,N\,X\,X\,N$",
+    "c": r"C: Normal only (control)",
+}
+
+
+def display_trunk_name(trunk: str) -> str:
+    """``"a"`` -> the schedule-annotated label, falling back to ``"Trunk a"``."""
+    return TRUNK_LABELS.get(trunk, f"Trunk {trunk}")
+
+
+def trunk_index(trunk: str) -> int:
+    """Palette slot for a trunk: its position in :data:`TRUNKS`.
+
+    Colour follows the entity, never its row number in the data, so trunk C
+    stays on slot 3 whether or not A and B have finished running.
+    """
+    return TRUNKS.index(trunk) if trunk in TRUNKS else len(TRUNKS)
+
 
 def display_trait_name(trait: str) -> str:
     """``"sycophantic"`` -> ``"Sycophancy"``, falling back to the raw string."""

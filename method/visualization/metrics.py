@@ -46,6 +46,79 @@ def linear_fit(x: ArrayLike, y: ArrayLike) -> LinearFit:
     return LinearFit(slope=float(slope), intercept=float(intercept), r2=r2)
 
 
+@dataclass(frozen=True)
+class FitInterval:
+    """A fit plus a bootstrap confidence interval on its slope and $R^2$."""
+
+    fit: LinearFit
+    r2_lo: float
+    r2_hi: float
+    slope_lo: float
+    slope_hi: float
+    #: Resamples that produced a usable fit. Below ``n_resamples`` when some
+    #: draw was degenerate; zero means the interval is NaN, not tight.
+    n_usable: int
+
+
+def bootstrap_fit(
+    x: ArrayLike,
+    y: ArrayLike,
+    *,
+    n_resamples: int = 2000,
+    level: float = 0.95,
+    seed: int = 0,
+) -> FitInterval:
+    r"""Fit ``y ~ x`` and bootstrap the uncertainty in its slope and $R^2$.
+
+    Points are resampled with replacement as *units*, which for the RQ1 decay
+    curves means resampling the probe datasets: a checkpoint's $R^2$ rests on
+    eight of them, and the question the interval answers is how much of it is
+    the particular eight that were chosen (section 6 of ``docs/exp2.md``, the
+    "probe-set sampling" row).
+
+    Percentile interval rather than normal-theory, because $R^2$ lives on
+    $[0, 1]$ and its sampling distribution against eight points is neither
+    symmetric nor anywhere near Gaussian at the ends.
+
+    Resamples where every drawn ``x`` (or every drawn ``y``) is identical are
+    dropped rather than scored: a duplicated point carries no fit, and counting
+    it as $R^2 = 0$ would bias the lower bound down by an artifact of the
+    resampling. :attr:`FitInterval.n_usable` reports how many survived.
+    """
+    x_arr = np.asarray(x, dtype=float)
+    y_arr = np.asarray(y, dtype=float)
+    fit = linear_fit(x_arr, y_arr)
+    if x_arr.size < 2 or n_resamples < 1:
+        return FitInterval(fit, np.nan, np.nan, np.nan, np.nan, 0)
+
+    rng = np.random.default_rng(seed)
+    idx = rng.integers(0, x_arr.size, size=(n_resamples, x_arr.size))
+    xs, ys = x_arr[idx], y_arr[idx]
+    dx = xs - xs.mean(axis=1, keepdims=True)
+    dy = ys - ys.mean(axis=1, keepdims=True)
+    sxx = (dx * dx).sum(axis=1)
+    syy = (dy * dy).sum(axis=1)
+    sxy = (dx * dy).sum(axis=1)
+
+    usable = (sxx > 0) & (syy > 0)
+    slopes = np.where(usable, sxy / np.where(usable, sxx, 1.0), np.nan)
+    r2s = np.where(usable, sxy**2 / np.where(usable, sxx * syy, 1.0), np.nan)
+    if not usable.any():
+        return FitInterval(fit, np.nan, np.nan, np.nan, np.nan, 0)
+
+    tail = 100 * (1 - level) / 2
+    r2_lo, r2_hi = np.nanpercentile(r2s, [tail, 100 - tail])
+    slope_lo, slope_hi = np.nanpercentile(slopes, [tail, 100 - tail])
+    return FitInterval(
+        fit=fit,
+        r2_lo=float(r2_lo),
+        r2_hi=float(r2_hi),
+        slope_lo=float(slope_lo),
+        slope_hi=float(slope_hi),
+        n_usable=int(usable.sum()),
+    )
+
+
 def stack_and_trim(series: Sequence[Sequence[float]]) -> NDArray[np.float64]:
     """Stack ragged per-seed series into a ``[n_seeds, n_steps]`` matrix.
 

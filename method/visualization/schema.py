@@ -28,7 +28,13 @@ class StepRecord:
     t: int
     weights_id: str
     behavior: dict[str, float]
-    z: dict[str, dict[str, float]]  # keyed by h_neutral source, e.g. "base"
+    #: Keyed by h_neutral source, e.g. ``"base"``. Empty on a *branch* endpoint,
+    #: which by design measures only ``b`` (see
+    #: :class:`method.config.MeasurementLevel`): ``z`` is a property of the
+    #: trunk checkpoint the branch left from, and the trunk records it there.
+    #: Emptiness is therefore the marker that distinguishes the two kinds of
+    #: record, which is why it defaults rather than being required.
+    z: dict[str, dict[str, float]] = field(default_factory=dict)
     delta_p: dict[str, float] | None = None  # absent on the final checkpoint
     next_dataset: str | None = None  # "dataset/version"; absent on final checkpoint
     #: DeltaP for datasets measured at *this* checkpoint whether or not the
@@ -44,7 +50,7 @@ class StepRecord:
             t=payload["t"],
             weights_id=payload["weights_id"],
             behavior=dict(payload["behavior"]),
-            z={k: dict(v) for k, v in payload["z"].items()},
+            z={k: dict(v) for k, v in (payload.get("z") or {}).items()},
             delta_p=(
                 dict(payload["delta_p"]) if payload.get("delta_p") is not None else None
             ),
@@ -85,8 +91,26 @@ class Trajectory:
         return [s.behavior[key] for s in self.steps]
 
     def z_series(self, component: str, source: str = "base") -> list[float]:
-        """One ``z_t`` component (``p``/``q``/``rho``/``r``) across every checkpoint."""
+        """One ``z_t`` component (``p``/``q``/``rho``/``r``) across every checkpoint.
+
+        Raises ``KeyError`` if any checkpoint lacks the series, for the same
+        reason :meth:`probe_series` does: a short series plots as a truncated
+        line rather than as the missing measurement it is. Use
+        :meth:`has_latent` to ask first -- a branch never has one.
+        """
+        missing = [s.t for s in self.steps if source not in s.z]
+        if missing:
+            raise KeyError(
+                f"trajectory {self.name!r} (seed {self.seed}) has no {source!r} "
+                f"latent at checkpoint(s) {missing}. Branch endpoints measure "
+                "only b by design (see method.config.MeasurementLevel); z is "
+                "recorded by the trunk they forked from."
+            )
         return [s.z[source][component] for s in self.steps]
+
+    def has_latent(self, source: str = "base") -> bool:
+        """Whether every checkpoint carries ``z``, so a full series exists."""
+        return bool(self.steps) and all(source in s.z for s in self.steps)
 
     def datasets(self) -> list[str]:
         """The ``dataset/version`` trained on after each non-terminal checkpoint."""
@@ -200,9 +224,15 @@ def metric_pairs(
 
     Used for the "same thing with $p$, $q$, $\rho$ and $r$" scatters
     (``figures.scatter_metric_grid``).
+
+    Trajectories carrying no latent series are skipped rather than raising, so a
+    decay collection -- trunks measured in full alongside branches measured only
+    at their endpoint -- contributes the trunks instead of failing outright.
     """
     rows = []
     for traj in trajectories:
+        if not traj.has_latent(source):
+            continue
         for step, nxt in zip(traj.steps, traj.steps[1:]):
             rows.append(
                 {
@@ -226,8 +256,16 @@ def z_component_matrix(
     Feeds the "how much has $\\rho$/$r$/$p$/$q$ drifted from step 0" line plot
     (``figures.drift_line``); rows may differ in length across trajectories of
     different lengths.
+
+    Trajectories with no latent series contribute no row, mirroring
+    :func:`probe_matrix`: a decay collection mixes trunks, which carry ``z`` at
+    every checkpoint, with branches, which carry it nowhere by design.
     """
-    return [traj.z_series(component, source=source) for traj in trajectories]
+    return [
+        traj.z_series(component, source=source)
+        for traj in trajectories
+        if traj.has_latent(source)
+    ]
 
 
 def probe_matrix(
