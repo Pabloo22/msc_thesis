@@ -222,6 +222,16 @@ def read_stages(path: Path) -> list[StageRecord]:
     ]
 
 
+def failed_stage(records: Sequence[StageRecord]) -> StageRecord | None:
+    """The stage a run died in, if its stage log shows one.
+
+    The last unsuccessful record rather than the first: a resumed run can carry
+    older failures in the same log, and what a report needs to name is where
+    *this* attempt stopped.
+    """
+    return next((r for r in reversed(records) if not r.ok), None)
+
+
 def read_runs(path: Path | None = None, *, mock: bool = False) -> list[RunRecord]:
     return [
         RunRecord(
@@ -391,7 +401,16 @@ def format_stage_table(records: Sequence[StageRecord]) -> str:
         group = by_stage[stage]
         worked = [r for r in group if r.did_work]
         total = sum(r.seconds for r in group)
-        cached = len(group) - len(worked)
+        # Failures are counted apart from cache hits even though neither is
+        # evidence about how long the stage takes: a stage that burned two
+        # minutes and then raised was reported as "cached", which reads as the
+        # opposite of what happened.
+        failed = sum(1 for r in group if not r.ok)
+        cached = len(group) - len(worked) - failed
+        notes = [
+            f"{cached} cached" if cached else "",
+            f"{failed} failed" if failed else "",
+        ]
         rows.append(
             [
                 stage,
@@ -402,7 +421,7 @@ def format_stage_table(records: Sequence[StageRecord]) -> str:
                     if worked
                     else "-"
                 ),
-                f"{cached} cached" if cached else "",
+                ", ".join(n for n in notes if n),
             ]
         )
     total = sum(r.seconds for r in records)

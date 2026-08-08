@@ -15,6 +15,7 @@ import pytest
 
 from method import report, timing
 from method.timing import StageRecord, StageTimer
+from method.utils import StepFailed
 
 
 def stage(t: int, name: str, seconds: float, ok: bool = True) -> StageRecord:
@@ -184,6 +185,13 @@ class TestFormatting:
         assert "cached" in table
         assert "TOTAL" in table
 
+    def test_stage_table_does_not_call_a_failure_a_cache_hit(self):
+        """A stage that burned two minutes and then died is not "cached"."""
+        table = timing.format_stage_table([stage(0, "delta_p", 162.0, ok=False)])
+
+        assert "1 failed" in table
+        assert "cached" not in table
+
     def test_empty_tables_do_not_crash(self):
         assert timing.format_stage_table([]) == "(no stages recorded)"
         assert timing.format_checkpoint_table([]) == "(no checkpoints recorded)"
@@ -216,6 +224,44 @@ class TestReports:
         # The decision this email supports is whether to stop paying.
         assert "still rented" in body
         assert body.index("CUDA out of memory") < body.index("Where the time went")
+
+    def test_failure_report_quotes_what_the_worker_printed(self, tmp_path):
+        """The reason a subprocess died is in its output, not in the exception.
+
+        Without this the whole report of a broken run was "exit status 1",
+        which is true of every broken run and so tells the reader nothing.
+        """
+        from method import experiments as E
+
+        error = StepFailed(
+            1,
+            ["python", "-m", "method._generate_worker", "--model", "Qwen"],
+            "  | torch.OutOfMemoryError: CUDA out of memory",
+        )
+
+        _, body = report.trajectory_report(
+            E.SMOKE_MOCK, tmp_path, elapsed=200.0, error=error, traceback_text="tb"
+        )
+
+        assert "CUDA out of memory" in body
+        assert "method._generate_worker" in body
+        assert body.index("CUDA out of memory") < body.index("Where the time went")
+
+    def test_failure_report_names_the_stage_that_died(self, tmp_path):
+        from method import experiments as E
+
+        timer = StageTimer(timing.stage_log_path(tmp_path), trajectory="EXP3_x", seed=0)
+        with timer.stage("behavior", 0):
+            pass
+        with pytest.raises(RuntimeError), timer.stage("delta_p", 2):
+            raise RuntimeError("boom")
+
+        _, body = report.trajectory_report(
+            E.SMOKE_MOCK, tmp_path, elapsed=200.0, error=RuntimeError("boom")
+        )
+
+        assert "Failed during" in body
+        assert "delta_p at t=2" in body
 
     def test_success_report_has_no_failure_language(self, tmp_path):
         from method import experiments as E

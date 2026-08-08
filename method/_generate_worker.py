@@ -21,9 +21,12 @@ from pathlib import Path
 from method.utils import PERSONA_VECTORS_DIR, require_cuda
 from method.vllm_patches import (
     VENDORED_MAX_NUM_SEQS,
+    disable_vllm_lora,
     force_vllm_cudagraph_sizes,
     force_vllm_dtype,
     force_vllm_max_model_len,
+    freeze_gc_during_cudagraph_capture,
+    share_vllm_compile_cache,
 )
 
 
@@ -42,6 +45,12 @@ def main() -> None:
     parser.add_argument(
         "--vllm_cudagraph_max_size", type=int, default=VENDORED_MAX_NUM_SEQS
     )
+    # The remaining three all target engine startup, and all default on. 0 turns
+    # one off, which is what scripts/bench_cudagraph.sh varies to attribute the
+    # time (see the docstrings in method.vllm_patches for what each one costs).
+    parser.add_argument("--vllm_share_compile_cache", type=int, default=1)
+    parser.add_argument("--vllm_gc_freeze", type=int, default=1)
+    parser.add_argument("--vllm_disable_lora", type=int, default=1)
     args = parser.parse_args()
 
     # vLLM would fail on its own, but only after ~45s of engine startup and
@@ -53,6 +62,17 @@ def main() -> None:
         force_vllm_max_model_len(args.vllm_max_model_len)
     if args.vllm_cudagraph_max_size:
         force_vllm_cudagraph_sizes(args.vllm_cudagraph_max_size)
+    if args.vllm_share_compile_cache:
+        share_vllm_compile_cache(
+            args.model,
+            dtype=args.vllm_dtype,
+            max_model_len=args.vllm_max_model_len,
+        )
+    if args.vllm_disable_lora:
+        disable_vllm_lora(args.model)
+    # Instruments either way: the GC numbers are what say whether freezing is
+    # what fixed capture, and they are only meaningful next to a run without it.
+    freeze_gc_during_cudagraph_capture(freeze=bool(args.vllm_gc_freeze))
 
     # The vendored package imports itself by bare top-level names (e.g.
     # ``from config import ...``, ``from eval.model_utils import ...``), which

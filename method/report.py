@@ -32,7 +32,7 @@ from method.timing import (
     format_duration,
     hourly_rate,
 )
-from method.utils import DOTENV_PATH, load_dotenv
+from method.utils import DOTENV_PATH, StepFailed, load_dotenv
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +86,37 @@ def _cost_suffix(seconds: float) -> str:
     return f"  ({cost})" if cost else ""
 
 
+def _failure_parts(
+    error: BaseException,
+    traceback_text: str,
+    *,
+    where: timing.StageRecord | None = None,
+) -> list[str]:
+    """The top of a failure report: what died, where, and what it said.
+
+    Ordered by how much of the decision each part settles. The exception's own
+    message says almost nothing when the failure was a subprocess -- "exited
+    with status 1" -- so the worker's last lines come immediately after it,
+    ahead of the parent's traceback, which describes the code that *called* the
+    thing that broke rather than the break.
+    """
+    parts = [
+        "This run stopped early. The GPU is still rented until you stop it.",
+        f"{type(error).__name__}: {error}",
+    ]
+    if where is not None:
+        parts.append(
+            _line("Failed during", f"{where.stage} at t={where.t}")
+            + "\n"
+            + _line("Reached", format_duration(where.seconds) + " into that stage")
+        )
+    if isinstance(error, StepFailed) and error.tail:
+        parts.append(f"Last output from {error.worker}:\n{error.tail}")
+    if traceback_text:
+        parts.append(traceback_text.rstrip())
+    return parts
+
+
 def trajectory_report(
     cfg: TrajectoryConfig,
     run_dir: Path,
@@ -126,13 +157,10 @@ def trajectory_report(
 
     parts: list[str] = []
 
-    if failed:
-        parts.append(
-            "This run stopped early. The GPU is still rented until you stop it."
+    if error is not None:
+        parts.extend(
+            _failure_parts(error, traceback_text, where=timing.failed_stage(records))
         )
-        parts.append(f"{type(error).__name__}: {error}")
-        if traceback_text:
-            parts.append(traceback_text.rstrip())
 
     # Above the timing tables: this is the other thing that makes stopping the
     # box the wrong move, and it should not need scrolling to either.
@@ -194,13 +222,8 @@ def job_report(
     subject = f"{prefix}{title} — {outcome} {format_duration(elapsed)}"
 
     parts: list[str] = []
-    if failed:
-        parts.append(
-            "This run stopped early. The GPU is still rented until you stop it."
-        )
-        parts.append(f"{type(error).__name__}: {error}")
-        if traceback_text:
-            parts.append(traceback_text.rstrip())
+    if error is not None:
+        parts.extend(_failure_parts(error, traceback_text))
     parts.append(
         "\n".join(
             [

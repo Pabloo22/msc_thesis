@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import codecs
 import json
 import logging
 import os
 import re
 import subprocess
+import sys
+from collections import deque
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -32,9 +35,7 @@ def trajectories_root(*, mock: bool = False) -> Path:
     return TRAJECTORIES_DIR.parent / f"{TRAJECTORIES_DIR.name}{suffix}"
 
 
-def base_probes_path(
-    base_weights_id: str, trait: str, *, mock: bool = False
-) -> Path:
+def base_probes_path(base_weights_id: str, trait: str, *, mock: bool = False) -> Path:
     """Where the base-model DeltaP probe summary for one trait is written.
 
     Keyed by the *base* ``weights_id`` (which reduces to the model alone, since
@@ -160,10 +161,23 @@ def require_cuda(component: str) -> None:
     the bus breaks NVML enumeration for the whole machine, which is why this
     reports the driver's own message rather than assuming the device is merely
     busy.
+
+    The check has to answer without touching the CUDA runtime, which is why it
+    counts devices rather than asking ``torch.cuda.is_available()``. That call
+    goes straight to ``cudaGetDeviceCount``, and torch responds by registering
+    an ``atfork`` handler that marks every later fork of this process as a bad
+    one -- while leaving ``torch.cuda.is_initialized()`` False, since no context
+    was actually created. vLLM reads exactly that flag to decide whether its V1
+    engine may fork ``EngineCore``, so it sees a clean parent, forks, and the
+    child dies in ``torch.cuda.set_device`` with "Cannot re-initialize CUDA in
+    forked subprocess" -- 45s into engine startup, in a worker whose only sin
+    was checking that the GPU it was about to use exists. ``device_count`` asks
+    NVML first and only falls back to the runtime when NVML cannot answer,
+    which is the case this function raises on regardless.
     """
     import torch  # imported here: utils is loaded by CPU-only paths too
 
-    if torch.cuda.is_available():
+    if torch.cuda.device_count() > 0:
         return
     try:
         torch.cuda.init()
@@ -203,8 +217,118 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
     return records
 
 
+#: How many lines of a dead worker's output to carry back to the parent. The
+#: consumer is an email body, and the thing being looked for -- a CUDA OOM, a
+#: missing file, an engine-core traceback -- lives in the last few dozen lines.
+_TAIL_LINES = 60
+
+
+class StepFailed(subprocess.CalledProcessError):
+    """A worker subprocess that exited non-zero, holding on to what it said.
+
+    A bare :class:`~subprocess.CalledProcessError` stringifies to the exit
+    status and the argv, which is the one thing about the failure that was
+    already known. The reason went to the worker's stderr, which the parent
+    inherited and therefore never held, so the emailed report (see
+    :mod:`method.report`) could only say "exit status 1".
+
+    :attr:`tail` carries those lines instead. Deliberately *not* part of
+    ``__str__``: this exception is both printed as a traceback and quoted in a
+    report, and putting sixty lines in the message would print them twice in
+    the one place they are actually read.
+    """
+
+    def __init__(self, returncode: int, cmd: list[str], tail: str) -> None:
+        super().__init__(returncode, cmd, output=tail)
+        #: The end of the worker's merged stdout/stderr, ``  | ``-quoted.
+        self.tail = tail
+        #: The module that died, e.g. ``method._generate_worker``.
+        self.worker = _worker_name(cmd)
+
+    def __str__(self) -> str:
+        return f"{self.worker} exited with status {self.returncode}"
+
+
+def _worker_name(cmd: Sequence[str]) -> str:
+    """The part of an argv worth naming: the module, not the interpreter path.
+
+    ``[python, -m, method._generate_worker, --model, ...]`` is read as
+    ``method._generate_worker``; anything unrecognised falls back to the
+    executable's own name, so a vendored script still gets a label.
+    """
+    cmd = list(cmd)
+    if "-m" in cmd[:2]:
+        index = cmd.index("-m") + 1
+        if index < len(cmd):
+            return cmd[index]
+    return Path(cmd[0]).name if cmd else "subprocess"
+
+
+def _tail(lines: Sequence[str], limit: int = _TAIL_LINES) -> str:
+    """The last ``limit`` non-blank lines, indented as a quoted block."""
+    kept = [line for line in lines if line.strip()][-limit:]
+    return "\n".join(f"  | {line}" for line in kept)
+
+
+class _TailBuffer:
+    """The last few lines of a stream, as it is still being written.
+
+    Progress bars are why this is not simply a deque of ``\\n``-terminated
+    lines: tqdm redraws one line thousands of times with ``\\r`` and never ends
+    it, so a line-based buffer would hold a single unbounded string and, worse,
+    would let a bar's frames evict the traceback printed after it. Only the
+    last frame before each newline is kept, which is the one a human reading
+    the log would have seen.
+    """
+
+    def __init__(self, keep: int) -> None:
+        self._lines: deque[str] = deque(maxlen=keep)
+        self._current = ""
+
+    def feed(self, text: str) -> None:
+        *complete, self._current = (self._current + text).split("\n")
+        self._lines.extend(line.rsplit("\r", 1)[-1] for line in complete)
+        self._current = self._current.rsplit("\r", 1)[-1]
+
+    def lines(self) -> list[str]:
+        """Everything buffered, including a line the writer never finished."""
+        return [*self._lines, self._current]
+
+
 def run_step(cmd: list[str], *, cwd: Path, dry_run: bool) -> None:
+    """Run a worker to completion, streaming its output and keeping the tail.
+
+    The output is piped rather than inherited so that a failure can quote it
+    (see :class:`StepFailed`). It is echoed in the chunks it arrives in rather
+    than line by line, because the workers' most visible output is a progress
+    bar that never emits a newline: waiting for one would make a live run look
+    frozen for the whole of a generation pass.
+    """
     logger.info("$ (cwd=%s) %s", cwd, " ".join(cmd))
     if dry_run:
         return
-    subprocess.run(cmd, cwd=cwd, check=True)
+    tail = _TailBuffer(keep=_TAIL_LINES * 4)
+    # Incremental, so a multi-byte character split across two reads survives.
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    with subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        # Unbuffered on this side, so a read returns what the child has
+        # written so far rather than waiting for a full buffer -- and on the
+        # child's side too: CPython block-buffers stdout when it is a pipe
+        # rather than a terminal, which would otherwise hold a worker's prints
+        # back by kilobytes at a time and make a live run look stalled.
+        bufsize=0,
+        env={**os.environ, "PYTHONUNBUFFERED": "1"},
+    ) as proc:
+        stream = proc.stdout
+        assert stream is not None  # guaranteed by stdout=PIPE
+        for chunk in iter(lambda: stream.read(8192), b""):
+            text = decoder.decode(chunk)
+            sys.stdout.write(text)
+            sys.stdout.flush()
+            tail.feed(text)
+    if proc.returncode:
+        raise StepFailed(proc.returncode, cmd, _tail(tail.lines()))

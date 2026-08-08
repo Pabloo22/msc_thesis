@@ -29,9 +29,12 @@ from method.eval_progress import ProgressStore, make_eval_batched
 from method.utils import DOTENV_PATH, load_dotenv
 from method.vllm_patches import (
     VENDORED_MAX_NUM_SEQS,
+    disable_vllm_lora,
     force_vllm_cudagraph_sizes,
     force_vllm_dtype,
     force_vllm_max_model_len,
+    freeze_gc_during_cudagraph_capture,
+    share_vllm_compile_cache,
 )
 
 logger = logging.getLogger(__name__)
@@ -194,6 +197,33 @@ def main() -> None:
         "engine startup on a rental box and is paid again by every stage. 0 "
         "restores vLLM's own list, which is only useful for measuring that.",
     )
+    parser.add_argument(
+        "--vllm_share_compile_cache",
+        type=int,
+        default=1,
+        help="Key vLLM's torch.compile cache on the model architecture rather "
+        "than its path. vLLM's own key includes the path, so every merged "
+        "checkpoint recompiles from cold (~48s) for a graph identical across "
+        "the trajectory. 0 restores vLLM's own hashing.",
+    )
+    parser.add_argument(
+        "--vllm_gc_freeze",
+        type=int,
+        default=1,
+        help="Freeze Python's GC around CUDA-graph capture, so gen-2 passes "
+        "stop re-walking the loaded model and its inductor artifacts. 0 still "
+        "reports the GC cost but does not avoid it, which is how the two are "
+        "told apart.",
+    )
+    parser.add_argument(
+        "--vllm_disable_lora",
+        type=int,
+        default=1,
+        help="Drop the vendored loader's enable_lora when the model is not an "
+        "adapter directory. This pipeline merges adapters before inference, so "
+        "LoRA is never requested, but its warmup still runs inside every "
+        "capture dummy run. 0 keeps LoRA enabled.",
+    )
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument(
         "--progress_dir",
@@ -221,6 +251,17 @@ def main() -> None:
         force_vllm_max_model_len(args.vllm_max_model_len)
     if args.vllm_cudagraph_max_size:
         force_vllm_cudagraph_sizes(args.vllm_cudagraph_max_size)
+    if args.vllm_share_compile_cache:
+        share_vllm_compile_cache(
+            args.model,
+            dtype=args.vllm_dtype,
+            max_model_len=args.vllm_max_model_len,
+        )
+    if args.vllm_disable_lora:
+        disable_vllm_lora(args.model)
+    # Instruments either way: the GC numbers are what say whether freezing is
+    # what fixed capture, and they are only meaningful next to a run without it.
+    freeze_gc_during_cudagraph_capture(freeze=bool(args.vllm_gc_freeze))
 
     if args.judge_backend == "stub":
         # Both judge.py and eval_persona's module-level setup_credentials()

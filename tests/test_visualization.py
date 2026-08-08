@@ -7,12 +7,15 @@ trajectory), so these tests run with no GPU, no judge, and no fine-tuning.
 from __future__ import annotations
 
 import json
+import logging
 import math
 
 import numpy as np
 import pandas as pd
 import pytest
+from matplotlib.collections import PathCollection
 
+from method import experiments
 from method.visualization import figures, labels, make_plots, schema, style, synthetic
 from method.visualization.demo import build_and_save
 from method.visualization.labels import display_dataset_name
@@ -25,6 +28,20 @@ from method.visualization.metrics import (
     stack_and_trim,
 )
 from method.visualization.schema import StepRecord, Trajectory
+
+import matplotlib.pyplot as plt  # noqa: E402  (backend fixed by style import)
+
+
+@pytest.fixture(autouse=True)
+def close_figures():
+    """Release every Figure a test built.
+
+    These tests assert on figures rather than saving them, so nothing closes
+    them; matplotlib keeps each one alive and warns once twenty are open.
+    """
+    yield
+    plt.close("all")
+
 
 # --- metrics.py -------------------------------------------------------------
 
@@ -594,6 +611,382 @@ class TestDiversityBar:
         assert len(ax.patches) == len(synthetic.DIVERSITY_CONDITIONS)
 
 
+# --- figures.py: the RQ1 decay set (docs/exp2.md section 9) ------------------
+
+
+def _decay_rows(trunks=("a", "b"), checkpoints=range(3), n_probes=4) -> pd.DataFrame:
+    """A decay frame in the shape :mod:`method.visualization.decay` emits."""
+    rng = np.random.default_rng(0)
+    return pd.DataFrame(
+        [
+            {
+                "trunk": trunk,
+                "t": t,
+                "probe": f"d{i}/normal",
+                "steps_since_realignment": t % 2,
+                "delta_p_0": float(i),
+                "delta_p_t": float(i) + t,
+                "delta_b": 2.0 * i + rng.normal(0, 0.1),
+                "se_delta_b": 0.4,
+            }
+            for trunk in trunks
+            for t in checkpoints
+            for i in range(n_probes)
+        ]
+    )
+
+
+def _fits(trunks=("a", "b"), checkpoints=range(3)) -> pd.DataFrame:
+    """A fit frame: one row per (trunk, checkpoint), both series present."""
+    return pd.DataFrame(
+        [
+            {
+                "trunk": trunk,
+                "t": t,
+                "r2_max": 0.9,
+                "rho": 1.0 - 0.1 * t,
+                "r": 30.0 + t,
+                "b_t": 40.0 + t,
+                "steps_since_realignment": t % 2,
+                "r2_p0": 0.8 - 0.1 * t,
+                "r2_p0_lo": 0.6 - 0.1 * t,
+                "r2_p0_hi": 0.9,
+                "r2_pt": 0.8,
+                "r2_pt_lo": 0.7,
+                "r2_pt_hi": 0.9,
+                "slope_p0": 2.0 - 0.2 * t,
+                "slope_p0_lo": 1.0,
+                "slope_p0_hi": 3.0,
+                "slope_pt": 2.0,
+                "slope_pt_lo": 1.5,
+                "slope_pt_hi": 2.5,
+            }
+            for trunk in trunks
+            for t in checkpoints
+        ]
+    )
+
+
+class TestDatasetMarks:
+    """A dataset is a family and a version, and they are different kinds of
+    fact: the family is nominal and takes the shape channel, the version is
+    ordered by severity and takes a single-hue ramp."""
+
+    def test_family_picks_the_shape_and_version_the_fill(self) -> None:
+        normal = style.dataset_mark("mistake_gsm8k/normal")
+        second = style.dataset_mark("mistake_gsm8k/misaligned_2")
+        assert normal.marker == second.marker
+        assert normal.face != second.face
+
+    def test_every_family_has_its_own_shape(self) -> None:
+        assert len(set(style.DATASET_MARKERS.values())) == len(style.DATASET_MARKERS)
+
+    def test_the_eight_experiment_families_are_all_covered(self) -> None:
+        assert set(style.DATASET_MARKERS) == set(experiments.DATASET_NAMES)
+
+    def test_the_ramp_darkens_with_severity(self) -> None:
+        """Normal, I and II are ordered, so their fills must be too --
+        lightness is the channel that survives colour-vision deficiency."""
+        fills = [
+            style.VERSION_FILL[v] for v in ("normal", "misaligned_1", "misaligned_2")
+        ]
+        assert [_luminance(f) for f in fills] == sorted(
+            (_luminance(f) for f in fills), reverse=True
+        )
+
+    def test_normal_is_hollow_so_it_needs_a_dark_outline(self) -> None:
+        """Its fill is the page itself; without the outline the mark would not
+        exist on the chart at all."""
+        mark = style.dataset_mark("insecure_code/normal")
+        assert mark.face == style.SURFACE
+        assert _luminance(mark.edge) < 0.3
+
+    def test_the_line_colour_separates_I_from_II(self) -> None:
+        """Both share a dark outline for a crisp silhouette, so taking the line
+        from the outline would draw six probe datasets as six identical lines."""
+        first = style.dataset_mark("sycophancy/misaligned_1")
+        second = style.dataset_mark("evil/misaligned_2")
+        assert first.edge == second.edge
+        assert first.line != second.line
+
+    def test_an_unknown_dataset_still_gets_a_mark(self) -> None:
+        mark = style.dataset_mark("made_up/normal")
+        assert mark.marker == style.UNKNOWN_MARKER
+        assert mark.face == style.SURFACE
+
+
+def _luminance(hex_color: str) -> float:
+    """Relative luminance, for asserting a ramp actually ramps."""
+
+    def channel(value: int) -> float:
+        c = value / 255
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+    r, g, b = (int(hex_color.lstrip("#")[i : i + 2], 16) for i in (0, 2, 4))
+    return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+
+
+class TestDatasetLegend:
+    DATASETS = [
+        "evil/misaligned_2",
+        "mistake_gsm8k/normal",
+        "mistake_gsm8k/misaligned_2",
+    ]
+
+    def test_keys_the_encoding_rather_than_naming_every_dataset(self) -> None:
+        """24 datasets would need 24 entries; the encoding needs at most 11."""
+        handles, texts = figures.dataset_legend(self.DATASETS)
+        assert texts == ["Evil", "GSM8K", "Normal", "II"]
+        assert len(handles) == len(texts)
+
+    def test_order_is_fixed_not_the_order_the_data_arrived_in(self) -> None:
+        shuffled = list(reversed(self.DATASETS))
+        assert figures.dataset_legend(shuffled)[1] == (
+            figures.dataset_legend(self.DATASETS)[1]
+        )
+
+    def test_absent_families_and_versions_are_not_listed(self) -> None:
+        _, texts = figures.dataset_legend(["evil/normal"])
+        assert texts == ["Evil", "Normal"]
+
+
+class TestScatterValidation:
+    def test_marks_are_grouped_into_one_call_per_shape(self) -> None:
+        """A scatter takes a single marker, so eight families are eight calls
+        over disjoint index sets."""
+        fig = figures.scatter_validation(
+            [0.0, 1.0, 2.0],
+            [0.0, 2.0, 4.0],
+            datasets=["evil/normal", "evil/misaligned_2", "sycophancy/normal"],
+        )
+        (ax,) = fig.axes
+        scatters = [c for c in ax.collections if isinstance(c, PathCollection)]
+        assert len(scatters) == 2  # pentagon and triangle
+        assert sum(len(c.get_offsets()) for c in scatters) == 3
+
+    def test_naming_the_datasets_adds_the_encoding_key(self) -> None:
+        fig = figures.scatter_validation(
+            [0.0, 1.0], [0.0, 2.0], datasets=["evil/normal", "sycophancy/normal"]
+        )
+        legend = fig.axes[0].get_legend()
+        assert [t.get_text() for t in legend.get_texts()] == [
+            "Evil",
+            "Sycophancy",
+            "Normal",
+        ]
+
+    def test_single_series_reports_its_fit_without_a_legend(self) -> None:
+        """One series needs no legend box -- the axes name the quantity -- but
+        the fit's statistics still have to be readable off the figure."""
+        fig = figures.scatter_validation([0.0, 1.0, 2.0], [0.0, 2.0, 4.0])
+        (ax,) = fig.axes
+        assert ax.get_legend() is None
+        annotations = [t.get_text() for t in ax.texts]
+        assert any("R^2" in a or "R$^2$" in a or r"$R^2$" in a for a in annotations)
+        assert any("n$ = 3" in a for a in annotations)
+
+    def test_error_bars_are_drawn_when_given(self) -> None:
+        plain = figures.scatter_validation([0.0, 1.0], [0.0, 2.0])
+        with_err = figures.scatter_validation([0.0, 1.0], [0.0, 2.0], yerr=[0.5, 0.5])
+        assert len(with_err.axes[0].collections) > len(plain.axes[0].collections)
+
+    def test_all_zero_error_bars_are_skipped(self) -> None:
+        """A run evaluated with one generation per question has no
+        within-question spread; flat caps would imply a measurement it did
+        not make."""
+        plain = figures.scatter_validation([0.0, 1.0], [0.0, 2.0])
+        zeroed = figures.scatter_validation([0.0, 1.0], [0.0, 2.0], yerr=[0.0, 0.0])
+        assert len(zeroed.axes[0].collections) == len(plain.axes[0].collections)
+
+
+class TestDecayScatterGrid:
+    def test_one_panel_per_trunk_and_checkpoint(self) -> None:
+        fig = figures.decay_scatter_grid(_decay_rows())
+        assert len(fig.axes) == 2 * 3
+
+    def test_every_panel_holds_both_series_and_both_r2_values(self) -> None:
+        fig = figures.decay_scatter_grid(_decay_rows())
+        ax = fig.axes[0]
+        scatters = [c for c in ax.collections if isinstance(c, PathCollection)]
+        assert len(scatters) == 2  # Delta P_0 and Delta P_t
+        annotations = " ".join(t.get_text() for t in ax.texts)
+        assert r"\Delta P_0" in annotations and r"\Delta P_t" in annotations
+
+    def test_axes_are_shared_so_slopes_are_comparable(self) -> None:
+        """Per-panel scales would let a flattening slope and a shrinking
+        Delta b range look identical, which is the confusion the figure
+        exists to prevent."""
+        fig = figures.decay_scatter_grid(_decay_rows())
+        assert len({ax.get_ylim() for ax in fig.axes}) == 1
+        assert len({ax.get_xlim() for ax in fig.axes}) == 1
+
+    def test_phase_is_marked_per_panel_not_per_column(self) -> None:
+        """The three schedules put their re-alignments at different depths, so
+        column t has a different phase in each row."""
+        rows = _decay_rows()
+        rows.loc[rows["trunk"] == "b", "steps_since_realignment"] = 2
+        fig = figures.decay_scatter_grid(rows, trunks=["a", "b"])
+        titles = {ax.get_title(loc="right") for ax in fig.axes}
+        assert "s = 2" in titles
+
+    def test_a_checkpoint_with_no_runs_is_marked_not_dropped(self) -> None:
+        """A half-finished fan must leave its column visibly empty; silently
+        narrowing the grid would hide which checkpoints are still missing."""
+        rows = _decay_rows()
+        fig = figures.decay_scatter_grid(
+            rows[rows["t"] != 1], checkpoints=[0, 1, 2]
+        )
+        empty = [ax for ax in fig.axes if not ax.collections]
+        assert len(empty) == 2  # one per trunk
+        assert all("not run" in t.get_text() for ax in empty for t in ax.texts)
+
+
+class TestHeadlineCurves:
+    def test_one_column_per_series_and_a_row_each_for_r2_and_slope(self) -> None:
+        fig = figures.headline_curves(_fits())
+        assert len(fig.axes) == 4
+        ylabels = [ax.get_ylabel() for ax in fig.axes]
+        assert any("R^2" in label for label in ylabels)
+        assert any("slope" in label for label in ylabels)
+
+    def test_r2_panels_are_bounded_to_the_unit_interval(self) -> None:
+        fig = figures.headline_curves(_fits())
+        low, high = fig.axes[0].get_ylim()
+        assert low <= 0 and high <= 1.05
+
+    def test_noise_ceiling_is_drawn_once_per_trunk_on_the_r2_row(self) -> None:
+        with_ceiling = figures.headline_curves(_fits())
+        without = figures.headline_curves(_fits(), ceiling_column=None)
+        assert len(with_ceiling.axes[0].lines) == len(without.axes[0].lines) + 2
+
+    def test_a_trunk_missing_from_the_frame_is_simply_absent(self) -> None:
+        fig = figures.headline_curves(_fits(trunks=("a",)))
+        legend = fig.legends[0]
+        assert len([t for t in legend.get_texts() if "Trunk" in t.get_text()]) == 1
+
+
+class TestMechanismGrid:
+    PREDICTORS = {"rho": r"$\rho_t$", "b_t": r"$b_t$"}
+
+    def test_one_panel_per_predictor_with_a_fit(self) -> None:
+        fig = figures.mechanism_grid(_fits(), self.PREDICTORS)
+        assert len(fig.axes) == 2
+        assert all(ax.lines for ax in fig.axes)
+
+    def test_states_the_checkpoint_count_not_the_dataset_count(self) -> None:
+        """A point here is a checkpoint: the probes at it were already spent
+        producing the single R^2 plotted."""
+        rows = _fits()
+        fig = figures.mechanism_grid(rows, self.PREDICTORS, title="Mechanism")
+        assert f"$n$ = {len(rows)} checkpoints" in fig._suptitle.get_text()
+
+    def test_colour_identifies_the_trunk(self) -> None:
+        fig = figures.mechanism_grid(
+            _fits(), self.PREDICTORS, trunk_colors={"a": style.BLUE, "b": style.ORANGE}
+        )
+        assert len(fig.axes[0].collections) == 2
+
+
+class TestPhaseContrast:
+    def _pairs(self) -> pd.DataFrame:
+        return pd.DataFrame(
+            [
+                {
+                    "trunk": "a", "t_before": 1, "t_after": 2, "pair": "A: 1-2",
+                    "r2_p0_before": 0.8, "r2_p0_after": 0.4, "delta_r2_p0": -0.4,
+                    "r2_pt_before": 0.8, "r2_pt_after": 0.75, "delta_r2_pt": -0.05,
+                },
+                {
+                    "trunk": "b", "t_before": 2, "t_after": 3, "pair": "B: 2-3",
+                    "r2_p0_before": 0.6, "r2_p0_after": 0.5, "delta_r2_p0": -0.1,
+                    "r2_pt_before": 0.6, "r2_pt_after": 0.6, "delta_r2_pt": 0.0,
+                },
+            ]
+        )
+
+    def test_a_connected_pair_per_realignment_step(self) -> None:
+        fig = figures.phase_contrast(self._pairs())
+        ax = fig.axes[0]
+        assert len(ax.lines) == 2  # one connector per pair
+        assert len(ax.collections) == 4  # before and after marker per pair
+
+    def test_shows_levels_as_well_as_the_difference(self) -> None:
+        """A drop from 0.9 to 0.6 and one from 0.4 to 0.1 are the same bar and
+        very different findings, so the markers carry the level."""
+        fig = figures.phase_contrast(self._pairs())
+        ys = np.concatenate(
+            [c.get_offsets()[:, 1] for c in fig.axes[0].collections]
+        )
+        assert sorted(ys) == pytest.approx([0.4, 0.5, 0.6, 0.8])
+        assert any("-0.40" in t.get_text() for t in fig.axes[0].texts)
+
+    def test_both_projection_series_get_a_panel(self) -> None:
+        fig = figures.phase_contrast(self._pairs())
+        assert len(fig.axes) == 2
+
+
+class TestOverlayLines:
+    def test_one_line_per_series_plus_the_reference(self) -> None:
+        fig = figures.overlay_lines(
+            {"a": [1.0, 2.0], "b": [3.0, 4.0]},
+            ylabel="y",
+            reference=100.0,
+            reference_label="ref",
+        )
+        (ax,) = fig.axes
+        assert len(ax.lines) == 3
+
+    def test_dataset_marks_replace_the_categorical_hues(self) -> None:
+        """Eight probes would take all eight categorical slots and leave the
+        reader an arbitrary dataset-to-colour map to memorise."""
+        marks = {
+            "Evil (II)": style.dataset_mark("evil/misaligned_2"),
+            "Code (Normal)": style.dataset_mark("insecure_code/normal"),
+        }
+        fig = figures.overlay_lines(
+            {"Evil (II)": [1.0, 2.0], "Code (Normal)": [3.0, 4.0]},
+            ylabel="y",
+            marks=marks,
+        )
+        (ax,) = fig.axes
+        drawn = {line.get_label(): line for line in ax.lines}
+        assert drawn["Evil (II)"].get_marker() == style.DATASET_MARKERS["evil"]
+        assert drawn["Evil (II)"].get_color() == style.VERSION_LINE["misaligned_2"]
+        assert drawn["Code (Normal)"].get_markerfacecolor() == style.SURFACE
+
+    def test_a_replicate_shares_its_series_colour_and_is_dashed(self) -> None:
+        """The reseed rides the colour of the run it replicates, so n = 2
+        costs no extra hue and cannot be read as a fourth condition."""
+        fig = figures.overlay_lines(
+            {"a": [1.0, 2.0]}, {"a": [1.1, 2.1]}, ylabel="y"
+        )
+        (ax,) = fig.axes
+        primary, replicate = ax.lines[0], ax.lines[1]
+        assert primary.get_color() == replicate.get_color()
+        assert primary.get_linestyle() == "-"
+        assert replicate.get_linestyle() != "-"
+
+    def test_the_dashed_convention_is_named_in_the_legend(self) -> None:
+        fig = figures.overlay_lines({"a": [1.0]}, {"a": [1.1]}, ylabel="y")
+        texts = [t.get_text() for t in fig.axes[0].get_legend().get_texts()]
+        assert any("dashed" in t for t in texts)
+
+
+class TestOverlayGrid:
+    def test_one_panel_per_component(self) -> None:
+        panels = {r"$\rho_t$": {"a": [1.0, 0.9]}, r"$r_t$": {"a": [30.0, 31.0]}}
+        fig = figures.overlay_grid(panels)
+        assert len(fig.axes) == 2
+        assert [ax.get_ylabel() for ax in fig.axes] == list(panels)
+
+    def test_only_the_bottom_row_is_labelled(self) -> None:
+        """The panels share an x-axis, so a label under the top row would name
+        ticks that are not drawn."""
+        panels = {f"p{i}": {"a": [1.0, 2.0]} for i in range(4)}
+        fig = figures.overlay_grid(panels, ncols=2)
+        assert [bool(ax.get_xlabel()) for ax in fig.axes] == [False, False, True, True]
+
+
 # --- style.py --------------------------------------------------------------
 
 
@@ -639,6 +1032,56 @@ class TestDefaultOutDir:
                     make_plots.default_out_dir(local=local, mock=mock)
                     != style.PLOTS_DIR
                 )
+
+
+class TestExp2Driver:
+    def test_every_exp2_family_is_reachable_from_the_cli(self) -> None:
+        assert set(make_plots.EXP2_GROUPS) <= set(make_plots.GROUPS)
+        assert experiments.EXP2_DECAY in make_plots.GROUPS
+
+    def test_trunk_colour_follows_the_trunk_not_the_row_order(self) -> None:
+        """A reader who learned "A is blue" must not be repainted because a
+        partial sweep left A out of the frame."""
+        full = make_plots._trunk_colors(["a", "b", "c"])
+        partial = make_plots._trunk_colors(["b", "c"])
+        assert partial == {k: v for k, v in full.items() if k != "a"}
+
+    def test_trunks_are_ordered_by_the_ladder_not_alphabetically(self) -> None:
+        frame = pd.DataFrame({"trunk": ["c", "a", "b"]})
+        assert make_plots._present_trunks(frame) == ["a", "b", "c"]
+
+    def test_an_unknown_trunk_still_appears(self) -> None:
+        frame = pd.DataFrame({"trunk": ["z", "a"]})
+        assert make_plots._present_trunks(frame) == ["a", "z"]
+
+    def test_series_are_ordered_by_checkpoint(self) -> None:
+        frame = pd.DataFrame(
+            {"probe": ["p", "p", "p"], "t": [2, 0, 1], "ratio": [30.0, 10.0, 20.0]}
+        )
+        assert make_plots._series_by(frame, key="probe", value="ratio") == {
+            "p": [10.0, 20.0, 30.0]
+        }
+
+    def test_a_series_missing_a_checkpoint_is_dropped(self, caplog) -> None:
+        """A truncated line reads as a quantity that stopped moving, not as a
+        measurement that never happened."""
+        frame = pd.DataFrame(
+            {
+                "probe": ["p", "p", "q"],
+                "t": [0, 1, 0],
+                "ratio": [10.0, 20.0, 30.0],
+            }
+        )
+        with caplog.at_level(logging.WARNING):
+            series = make_plots._series_by(frame, key="probe", value="ratio")
+        assert set(series) == {"p"}
+        assert "q" in caplog.text
+
+    def test_the_reseed_is_split_off_by_seed(self) -> None:
+        frame = pd.DataFrame({"seed": [0, 0, 1], "value": [1.0, 2.0, 3.0]})
+        own, replicate = make_plots._split_by_seed(frame, 0)
+        assert list(own["value"]) == [1.0, 2.0]
+        assert list(replicate["value"]) == [3.0]
 
 
 # --- demo.py -----------------------------------------------------------------

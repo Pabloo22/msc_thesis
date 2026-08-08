@@ -398,7 +398,8 @@ class TestPhaseContrastFrame:
             decay.decay_frame(build_decay(), build_validation()), n_resamples=10
         )
         pairs = decay.phase_contrast_frame(fits, TRUNKS)
-        assert list(zip(pairs["t_before"], pairs["t_after"])) == [(1, 2), (3, 4), (5, 6)]
+        straddled = list(zip(pairs["t_before"], pairs["t_after"]))
+        assert straddled == [(1, 2), (3, 4), (5, 6)]
         assert set(pairs["trunk"]) == {"a"}
 
     def test_difference_is_after_minus_before(self) -> None:
