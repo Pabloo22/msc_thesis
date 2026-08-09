@@ -2,7 +2,7 @@
 
 These build ``trajectory.json`` files shaped exactly like the ones the runner
 writes -- trunks measured at every checkpoint, branches carrying a single
-endpoint -- and assert on the tables section 9 of ``docs/exp2.md`` draws from.
+endpoint -- and assert on the tables the decay figures are drawn from.
 Nothing here loads a model, and the figures are exercised separately in
 ``test_visualization.py``.
 

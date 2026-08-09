@@ -124,7 +124,7 @@ def measure_endpoint(
 ) -> dict:
     """``b_t`` alone: the one measurement a discarded branch exists to produce.
 
-    Section 8 of ``docs/exp2.md`` gives branch endpoints exactly this. The
+    A branch endpoint is measured for exactly this and nothing else. The
     persona vector, ``h_neutral`` and ``z_t`` are properties of the *trunk*
     checkpoint the branch left from, which the trunk has already measured;
     DeltaP describes an update this endpoint will never receive, since the

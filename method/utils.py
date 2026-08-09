@@ -295,7 +295,13 @@ class _TailBuffer:
         return [*self._lines, self._current]
 
 
-def run_step(cmd: list[str], *, cwd: Path, dry_run: bool) -> None:
+def run_step(
+    cmd: list[str],
+    *,
+    cwd: Path,
+    dry_run: bool,
+    extra_env: dict[str, str] | None = None,
+) -> None:
     """Run a worker to completion, streaming its output and keeping the tail.
 
     The output is piped rather than inherited so that a failure can quote it
@@ -303,6 +309,10 @@ def run_step(cmd: list[str], *, cwd: Path, dry_run: bool) -> None:
     than line by line, because the workers' most visible output is a progress
     bar that never emits a newline: waiting for one would make a live run look
     frozen for the whole of a generation pass.
+
+    ``extra_env`` overlays this process's environment for the child only. It is
+    for settings a worker cannot apply to itself because they are read before
+    or during interpreter start-up, such as CUDA allocator configuration.
     """
     logger.info("$ (cwd=%s) %s", cwd, " ".join(cmd))
     if dry_run:
@@ -321,7 +331,7 @@ def run_step(cmd: list[str], *, cwd: Path, dry_run: bool) -> None:
         # rather than a terminal, which would otherwise hold a worker's prints
         # back by kilobytes at a time and make a live run look stalled.
         bufsize=0,
-        env={**os.environ, "PYTHONUNBUFFERED": "1"},
+        env={**os.environ, "PYTHONUNBUFFERED": "1", **(extra_env or {})},
     ) as proc:
         stream = proc.stdout
         assert stream is not None  # guaranteed by stdout=PIPE

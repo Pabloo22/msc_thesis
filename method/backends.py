@@ -354,6 +354,13 @@ class RealBackend(ExecutionBackend):
             ],
             cwd=REPO_ROOT,
             dry_run=False,
+            # Every batch is a different padded width, so the caching allocator
+            # accumulates blocks that fit no later batch: the run that motivated
+            # this died with 1.5GB reserved-but-unallocated and 400MB free.
+            # Expandable segments grow a block in place instead of reserving a
+            # new one per shape. Scoped to this worker rather than exported for
+            # the whole pipeline because vLLM manages its own pool.
+            extra_env={"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"},
         )
 
     def generate_answers(

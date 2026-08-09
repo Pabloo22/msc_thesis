@@ -115,7 +115,7 @@ class TestTraitSharesFineTuning:
 
 
 class TestExp2Design:
-    """The redesigned RQ1 decay experiment (``docs/exp2.md``).
+    """The redesigned RQ1 decay experiment.
 
     Every assertion here stands for a design constraint that is silent when
     broken and expensive to discover from the data afterwards.

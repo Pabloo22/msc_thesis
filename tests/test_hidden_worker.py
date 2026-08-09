@@ -18,7 +18,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from method._hidden_worker import response_avg_hidden
+from method._hidden_worker import plan_batches, response_avg_hidden
 
 
 class CharTokenizer:
@@ -43,12 +43,15 @@ class LinearModel:
     def __init__(self, n_layers: int = 2, hidden: int = 4):
         self.config = SimpleNamespace(num_hidden_layers=n_layers, hidden_size=hidden)
         self.device = torch.device("cpu")
+        #: (rows, padded width) of every forward, for the memory-bound tests.
+        self.shapes: list[tuple[int, int]] = []
 
     def __call__(
         self, *, input_ids, attention_mask, output_hidden_states, logits_to_keep=0
     ):
         assert output_hidden_states
         assert input_ids.shape == attention_mask.shape
+        self.shapes.append(tuple(input_ids.shape))
         # Accepted and ignored, as the real forward effectively does for this
         # caller: it bounds the lm_head projection, which produces ``logits``,
         # and this stand-in has no head and returns none. Hidden states are
@@ -133,3 +136,84 @@ class TestResponseAvgHidden:
                 layer=1,
                 batch_size=2,
             )
+
+    @pytest.mark.parametrize("max_batch_tokens", [2, 5, 9, 1000])
+    def test_result_is_invariant_to_the_token_budget(self, max_batch_tokens):
+        """The budget reorders samples into like-length batches; rows must
+        still come back in the input's order, with the input's values."""
+        reference = response_avg_hidden(
+            LinearModel(), CharTokenizer(), PROMPTS, ANSWERS, layer=1, batch_size=1
+        )
+        budgeted = response_avg_hidden(
+            LinearModel(),
+            CharTokenizer(),
+            PROMPTS,
+            ANSWERS,
+            layer=1,
+            batch_size=len(PROMPTS),
+            max_batch_tokens=max_batch_tokens,
+        )
+        torch.testing.assert_close(budgeted[0], reference[0])
+        torch.testing.assert_close(budgeted[1], reference[1])
+
+    def test_no_forward_exceeds_the_token_budget(self):
+        """The bound is on padded tokens, which is what the OOM was in."""
+        model = LinearModel()
+        response_avg_hidden(
+            model,
+            CharTokenizer(),
+            PROMPTS,
+            ANSWERS,
+            layer=1,
+            batch_size=len(PROMPTS),
+            max_batch_tokens=8,
+        )
+
+        assert model.shapes  # guard against vacuously passing on no forwards
+        assert all(rows * width <= 8 for rows, width in model.shapes)
+
+    def test_the_heaviest_forward_comes_first(self):
+        """A batch size that cannot fit should OOM in the first seconds, not
+        hours in -- which is how the 2h54m failure was paid for."""
+        model = LinearModel()
+        response_avg_hidden(
+            model, CharTokenizer(), PROMPTS, ANSWERS, layer=1, batch_size=2
+        )
+
+        widths = [width for _, width in model.shapes]
+        assert widths == sorted(widths, reverse=True)
+
+
+class TestPlanBatches:
+    def test_rows_are_capped_by_batch_size(self):
+        assert plan_batches([10] * 7, batch_size=3, max_batch_tokens=10_000) == [
+            [0, 1, 2],
+            [3, 4, 5],
+            [6],
+        ]
+
+    def test_long_samples_get_fewer_rows_than_short_ones(self):
+        # The failure being fixed: at a fixed 8 rows the 100-token samples cost
+        # 8x the 12-token ones, and only the former batch runs out of memory.
+        lengths = [100] * 3 + [12] * 8
+        batches = plan_batches(lengths, batch_size=8, max_batch_tokens=200)
+
+        assert len(batches[0]) == 2  # the long samples
+        assert len(batches[-1]) > 2  # the short ones, in the same budget
+        assert all(len(b) * max(lengths[i] for i in b) <= 200 for b in batches)
+
+    def test_every_sample_appears_exactly_once(self):
+        lengths = [7, 3, 9, 1, 4, 4, 12, 2]
+        batches = plan_batches(lengths, batch_size=3, max_batch_tokens=15)
+
+        assert sorted(i for b in batches for i in b) == list(range(len(lengths)))
+
+    def test_an_oversized_sample_runs_alone_rather_than_being_dropped(self):
+        """Dropping it would misalign every later DeltaP row."""
+        batches = plan_batches([5, 99, 5], batch_size=4, max_batch_tokens=10)
+
+        assert [1] in batches
+        assert sorted(i for b in batches for i in b) == [0, 1, 2]
+
+    def test_empty_input_plans_no_batches(self):
+        assert plan_batches([], batch_size=8, max_batch_tokens=100) == []

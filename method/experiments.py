@@ -115,10 +115,9 @@ EXP1 = TrajectoryConfig(
 #
 #: The RQ1 decay experiment is three families rather than one. They share a
 #: model and a base checkpoint but differ in what they gate, what they cost and
-#: which figures they feed, and ``docs/exp2.md`` section 10 runs them in this
-#: order because the first can invalidate the design before the third is paid
-#: for. Splitting them is what lets a phase be run, plotted and judged on its
-#: own.
+#: which figures they feed, and they are run in this order because the first
+#: can invalidate the design before the third is paid for. Splitting them is
+#: what lets a phase be run, plotted and judged on its own.
 EXP2_VALIDATION = "exp2_validation"  # section 5: the t=0 fan over all 24 datasets
 EXP2_DECAY = "exp2_decay"  # sections 3-4: three trunks, each fanned out at every t
 EXP2_RESEED = "exp2_reseed"  # section 6c: trunk A again under another seed
@@ -180,13 +179,12 @@ def _scale_presets(
 
 
 # --- experiment 2 (RQ1): does Delta P_0 go stale as the model drifts? ------
-# Redesigned per ``docs/exp2.md``. The design it replaces ran one 8-step
-# trajectory over 5 seeds, which yields a single (Delta P, Delta b) pair per
-# step and therefore no correlation at all: seeds reduce the variance of each
-# point, they do not create additional points (section 2). What follows instead
-# separates two roles -- *drivers* advance a trunk, *probes* are fine-tuned from
-# a checkpoint, scored, and thrown away -- so every checkpoint yields a scatter
-# of K points and a real R^2.
+# The design this replaces ran one 8-step trajectory over 5 seeds, which yields
+# a single (Delta P, Delta b) pair per step and therefore no correlation at
+# all: seeds reduce the variance of each point, they do not create additional
+# points. What follows instead separates two roles -- *drivers* advance a
+# trunk, *probes* are fine-tuned from a checkpoint, scored, and thrown away --
+# so every checkpoint yields a scatter of K points and a real R^2.
 
 #: The eight SFT dataset directories, each with three versions, giving the 24
 #: datasets the design partitions into probes and drivers.

@@ -3,8 +3,9 @@
     poetry run python -m method.seed_noise
     poetry run python -m method.seed_noise --group exp3 --csv seed_noise.csv
 
-Section 6 of ``docs/exp2.md`` needs two numbers that no single run can supply,
-because both describe what happens when the *same* recipe is trained twice:
+The noise budget of the RQ1 decay experiment needs two numbers that no single
+run can supply, because both describe what happens when the *same* recipe is
+trained twice:
 
 ``sigma_seed(b)``
     The spread in a checkpoint's trait score attributable to data ordering,

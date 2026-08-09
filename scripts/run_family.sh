@@ -8,7 +8,7 @@ usage() {
     echo
     echo "  FAMILY_PREFIX  EXP2_VALIDATION | EXP2_DECAY | EXP2_RESEED | EXP3 | EXP4"
     echo "                 Matched as a prefix, so EXP2 runs all three exp2"
-    echo "                 families. Run them in the order docs/exp2.md gives:"
+    echo "                 families. Run them in the order listed above:"
     echo "                 EXP2_VALIDATION is the gate that can invalidate the"
     echo "                 design before EXP2_DECAY's fan-out is paid for."
     echo "  LOCAL          run the small-proxy '_local' variants instead of paper scale"

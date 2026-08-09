@@ -5,9 +5,8 @@ store, model or plotting access, so they run identically inside a live
 measurement and over an archived CSV, and can be unit tested on synthetic
 frames.
 
-Section 6 of ``docs/exp2.md`` separates three noise sources and warns against
-collapsing them into one number. Two of them are computable from data that
-already exists:
+The noise budget separates three sources and warns against collapsing them
+into one number. Two of them are computable from data that already exists:
 
 ``SE(b)``
     Eval noise: how precisely one checkpoint's trait score is pinned down,

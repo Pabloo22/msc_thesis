@@ -93,18 +93,17 @@ class MeasurementLevel(StrEnum):
     """How much of a trajectory is measured, and at which checkpoints.
 
     A *branch* -- a trajectory fine-tuned from a checkpoint purely to read the
-    behaviour change it produces, then discarded (section 3 of
-    ``docs/exp2.md``) -- shares its whole prefix with the trunk it came off.
-    Content-addressing makes every artifact at a shared checkpoint reusable
-    regardless of which config computes it, but the fan is hundreds of branches
-    sharded across rental boxes with no guaranteed order against their trunks --
-    so "reusable" does not mean "already there". A branch that happened to run
-    before its trunk's measurements had synced would generate them itself:
-    persona-vector extraction, ``h_neutral``, and DeltaP for every probe, all
-    expensive. ``ENDPOINT_BEHAVIOR`` sidesteps the ordering question rather than
-    betting on it: a branch never touches its prefix's measurements at all, so
-    it stays a fixed one-train-one-eval unit no matter what else has or hasn't
-    run yet.
+    behaviour change it produces, then discarded -- shares its whole prefix
+    with the trunk it came off. Content-addressing makes every artifact at a
+    shared checkpoint reusable regardless of which config computes it, but the
+    fan is hundreds of branches sharded across rental boxes with no guaranteed
+    order against their trunks -- so "reusable" does not mean "already there".
+    A branch that happened to run before its trunk's measurements had synced
+    would generate them itself: persona-vector extraction, ``h_neutral``, and
+    DeltaP for every probe, all expensive. ``ENDPOINT_BEHAVIOR`` sidesteps the
+    ordering question rather than betting on it: a branch never touches its
+    prefix's measurements at all, so it stays a fixed one-train-one-eval unit
+    no matter what else has or hasn't run yet.
 
     ``FULL``
         Every checkpoint yields ``b_t``, ``v_t``, ``h_neutral``, ``z_t``, and

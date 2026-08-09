@@ -68,6 +68,20 @@ Design constraints inherited from :mod:`method.store`:
   :class:`Syncer` -- so a blip costs a retry instead of a trajectory's GPU
   hours. What could not be shipped is left in :attr:`Syncer.unsynced` for the
   caller to report; see :func:`format_unsynced`.
+
+The commands that can be run are:
+
+- ``poetry run python -m method.sync push``
+- ``poetry run python -m method.sync pull``
+- ``poetry run python -m method.sync push-runs``
+- ``poetry run python -m method.sync push-adapter <id>``
+- ``poetry run python -m method.sync push-measurements <id>``
+- ``poetry run python -m method.sync push-sample <id>``
+- ``poetry run python -m method.sync pull-run <id>``
+
+Regarding the force flag: a push that overwrites a remote object is always a deliberate decision, so the CLI requires ``--force`` to be passed. The syncer itself does not, because it is used by the trajectory runner and the sweeps, which have no way to know whether the remote is authoritative or not -- they just want to ship what they produced. The CLI is strict about failures, because its only job is the transfer; the trajectory runner is not, because its only job is the GPU hours, and a blip on the network should not throw them away.
+
+
 """
 
 from __future__ import annotations

@@ -613,7 +613,7 @@ class TestDiversityBar:
         assert len(ax.patches) == len(synthetic.DIVERSITY_CONDITIONS)
 
 
-# --- figures.py: the RQ1 decay set (docs/exp2.md section 9) ------------------
+# --- figures.py: the RQ1 decay set -------------------------------------------
 
 
 def _decay_rows(trunks=("a", "b"), checkpoints=range(3), n_probes=4) -> pd.DataFrame:
