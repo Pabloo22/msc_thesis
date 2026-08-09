@@ -70,8 +70,8 @@ DIVERSITY_CONDITION_LABELS = {
 #: Trait as it should appear in a figure title.
 TRAIT_TITLES = {"evil": "Evil", "sycophantic": "Sycophancy"}
 
-#: The exp2 trunks, in the order section 4 of ``docs/exp2.md`` presents them:
-#: a dose-response ladder from the most aggressive schedule to the control.
+#: The exp2 trunks, in the order the design presents them: a dose-response
+#: ladder from the most aggressive schedule to the control.
 #: Fixed here rather than taken from whatever a frame happens to contain, so
 #: that a trunk keeps its colour in every figure even when another is missing
 #: -- a reader who learned "A is blue" must not be repainted by a partial sweep.

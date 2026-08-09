@@ -73,8 +73,8 @@ def bootstrap_fit(
     Points are resampled with replacement as *units*, which for the RQ1 decay
     curves means resampling the probe datasets: a checkpoint's $R^2$ rests on
     eight of them, and the question the interval answers is how much of it is
-    the particular eight that were chosen (section 6 of ``docs/exp2.md``, the
-    "probe-set sampling" row).
+    the particular eight that were chosen (the "probe-set sampling" row of the
+    noise budget).
 
     Percentile interval rather than normal-theory, because $R^2$ lives on
     $[0, 1]$ and its sampling distribution against eight points is neither

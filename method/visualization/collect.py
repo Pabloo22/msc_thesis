@@ -383,11 +383,11 @@ def seed_noise_frame(
 ) -> pd.DataFrame:
     r"""Across-seed spread of every measured quantity, per arm and checkpoint.
 
-    Section 6c of ``docs/exp2.md`` asks whether the latent trajectory
-    $z_t = (p, q, \rho, r)$ is stable when a trajectory is re-run under a
-    different fine-tuning seed. That question is usually answered with a
-    dedicated paired replicate, but any family that already sweeps seeds over a
-    *fixed* step sequence answers it for free -- and exp3 sweeps five.
+    The design asks whether the latent trajectory $z_t = (p, q, \rho, r)$ is
+    stable when a trajectory is re-run under a different fine-tuning seed. That
+    question is usually answered with a dedicated paired replicate, but any
+    family that already sweeps seeds over a *fixed* step sequence answers it
+    for free -- and exp3 sweeps five.
 
     Grouping is by ``(config name, trait, t)``. The config name excludes the
     seed by construction (it is a separate field, see

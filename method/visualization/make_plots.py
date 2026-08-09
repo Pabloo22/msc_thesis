@@ -11,12 +11,11 @@ found by asking :mod:`method.visualization.collect` which configs the registry
 says should exist -- so a partially finished sweep plots what has run and
 reports what has not, rather than silently plotting fewer seeds.
 
-exp2's figures are section 9 of ``docs/exp2.md``, in its numbering: the
-validation fan (1), the decay scatter grid (2), the headline $R^2$ and slope
-curves with their noise ceiling (3), the mechanism regression (4), the phase
-contrast (4b) and the paired drift plots (5). Its analysis lives in
-:mod:`method.visualization.decay`; this module only chooses what to draw and
-what to name it.
+exp2's figures, in the design's numbering: the validation fan (1), the decay
+scatter grid (2), the headline $R^2$ and slope curves with their noise ceiling
+(3), the mechanism regression (4), the phase contrast (4b) and the paired
+drift plots (5). Its analysis lives in :mod:`method.visualization.decay`; this
+module only chooses what to draw and what to name it.
 
 ``--local`` selects the small-model variants of each design (the ones a mock
 or laptop run produces); without it, the paper-scale configs are used. Each
@@ -76,7 +75,7 @@ def _emit(fig: plt.Figure, name: str, out_dir: Path, saved: list[Path]) -> None:
     logger.info("wrote %s", out_dir / f"{name}.png")
 
 
-# --- experiment 2: the RQ1 decay experiment (docs/exp2.md section 9) -------
+# --- experiment 2: the RQ1 decay experiment --------------------------------
 
 #: The three families the decay experiment is split across. They share a base
 #: checkpoint and a probe set, and every figure below needs at least two of
@@ -179,7 +178,7 @@ def build_exp2(
     sigma_seed: Mapping[str, float] | None = None,
     n_resamples: int = 2000,
 ) -> list[Path]:
-    r"""Every figure in section 9 of ``docs/exp2.md``, one set per measured trait.
+    r"""Every figure of the RQ1 decay experiment, one set per measured trait.
 
     ``collections`` holds the three exp2 families keyed by group name. They are
     passed together because the figures cross them: the decay family supplies
@@ -581,9 +580,8 @@ BUILDERS = {
     experiments.EXP4: build_exp4,
 }
 
-#: Every family ``--experiment`` accepts, in run order (section 10 of
-#: ``docs/exp2.md``: the validation fan gates the decay fans, which the reseed
-#: replicate checks).
+#: Every family ``--experiment`` accepts, in run order (the validation fan
+#: gates the decay fans, which the reseed replicate checks).
 GROUPS = (*EXP2_GROUPS, *BUILDERS)
 
 

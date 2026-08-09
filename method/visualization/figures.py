@@ -455,7 +455,7 @@ def hysteresis_bar(
     return fig
 
 
-# --- the RQ1 decay experiment (docs/exp2.md section 9) --------------------
+# --- the RQ1 decay experiment ---------------------------------------------
 
 
 def _corner_text(

@@ -1,6 +1,6 @@
-r"""The RQ1 decay analysis: exp2's runs reduced to the tables section 9 plots.
+r"""The RQ1 decay analysis: exp2's runs reduced to the tables its figures plot.
 
-``docs/exp2.md`` measures at two levels and the figures need both, so this
+The experiment measures at two levels and the figures need both, so this
 module produces both rather than one flattened table:
 
 *Level 1 -- inside a checkpoint.* :func:`decay_frame` gives one row per

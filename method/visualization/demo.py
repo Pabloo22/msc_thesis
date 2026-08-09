@@ -10,10 +10,9 @@ of what the real figures will look like once experiments have actually run.
 
 Covers the figures whose input is a plain per-seed trajectory: the projection
 scatter, the latent-metric grid, the drift lines and the two bar charts. The
-RQ1 decay set (section 9 of ``docs/exp2.md``) is not drawn here, because its
-input is a *fan* -- trunks crossed with branches crossed with a validation
-family -- which the mock backend already produces in schema-faithful form.
-Preview those with::
+RQ1 decay set is not drawn here, because its input is a *fan* -- trunks
+crossed with branches crossed with a validation family -- which the mock
+backend already produces in schema-faithful form. Preview those with::
 
     poetry run python -m method.run_trajectory --config <NAME> --backend mock
     poetry run python -m method.visualization.make_plots --mock --local
