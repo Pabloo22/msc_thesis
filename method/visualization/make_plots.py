@@ -21,7 +21,10 @@ what to name it.
 ``--local`` selects the small-model variants of each design (the ones a mock
 or laptop run produces); without it, the paper-scale configs are used. Each
 combination writes to its own directory (see :func:`default_out_dir`), so a
-mock smoke test never overwrites a paper-scale figure of the same name.
+mock smoke test never overwrites a paper-scale figure of the same name. Within
+that directory, each experiment family gets its own subdirectory in turn
+(``exp2``, ``exp3``, ``exp4``), so ``--experiment exp3`` lands in
+``plots/real/exp3`` rather than mixed in with the others.
 
 Note that the figures under ``plots/`` itself are the *synthetic* ones written
 by :mod:`method.visualization.demo`. They are drawn from fixtures, not from any
@@ -619,7 +622,7 @@ def build_and_save(
         traits = {*measured, *collections[experiments.EXP2_DECAY].values("trait")}
         saved += build_exp2(
             collections,
-            out_dir,
+            out_dir / "exp2",
             stat=stat,
             source=source,
             sigma_seed=(
@@ -631,7 +634,7 @@ def build_and_save(
         )
     for group, build in BUILDERS.items():
         if group in collections:
-            saved += build(collections[group], out_dir)
+            saved += build(collections[group], out_dir / group)
     return saved
 
 
@@ -665,8 +668,10 @@ def main() -> None:
         type=Path,
         default=None,
         help=(
-            "directory to write PNG/PDF figures into (default: one per run "
-            "source -- plots/real, plots/real-local, plots/mock, plots/mock-local)"
+            "parent directory to write PNG/PDF figures into, one subdirectory "
+            "per experiment family (exp2/exp3/exp4) underneath (default: one "
+            "per run source -- plots/real, plots/real-local, plots/mock, "
+            "plots/mock-local)"
         ),
     )
     parser.add_argument(
@@ -735,7 +740,7 @@ def main() -> None:
             "poetry run python -m method.run_trajectory --config <NAME>"
         )
         return
-    print(f"Wrote {len(saved)} file(s) to {out_dir}:")
+    print(f"Wrote {len(saved)} file(s) under {out_dir}:")
     for path in saved:
         print(f"  {path}")
 

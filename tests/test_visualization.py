@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -17,6 +18,7 @@ from matplotlib.collections import PathCollection
 
 from method import experiments
 from method.visualization import figures, labels, make_plots, schema, style, synthetic
+from method.visualization.collect import Collection
 from method.visualization.demo import build_and_save
 from method.visualization.labels import display_dataset_name
 from method.visualization.metrics import (
@@ -1032,6 +1034,45 @@ class TestDefaultOutDir:
                     make_plots.default_out_dir(local=local, mock=mock)
                     != style.PLOTS_DIR
                 )
+
+
+class TestBuildAndSaveOutputLayout:
+    def test_each_experiment_family_gets_its_own_subdirectory(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """--experiment exp3 must land in <out_dir>/exp3, not mixed flat into
+        the shared run-source directory with exp2/exp4 figures."""
+        recorded: dict[str, Path] = {}
+
+        def fake_build_exp2(_collections, out_dir, **_kwargs) -> list[Path]:
+            recorded["exp2"] = out_dir
+            return []
+
+        def fake_build(group: str):
+            def _build(_collection, out_dir: Path) -> list[Path]:
+                recorded[group] = out_dir
+                return []
+
+            return _build
+
+        monkeypatch.setattr(
+            make_plots, "collect_group", lambda group, **_kw: Collection(group)
+        )
+        monkeypatch.setattr(make_plots, "build_exp2", fake_build_exp2)
+        monkeypatch.setattr(
+            make_plots,
+            "BUILDERS",
+            {
+                experiments.EXP3: fake_build(experiments.EXP3),
+                experiments.EXP4: fake_build(experiments.EXP4),
+            },
+        )
+
+        make_plots.build_and_save(tmp_path, groups=list(make_plots.GROUPS))
+
+        assert recorded["exp2"] == tmp_path / "exp2"
+        assert recorded[experiments.EXP3] == tmp_path / "exp3"
+        assert recorded[experiments.EXP4] == tmp_path / "exp4"
 
 
 class TestExp2Driver:
