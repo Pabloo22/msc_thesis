@@ -501,6 +501,46 @@ class TestPullForPlottingRefreshesChangedRuns:
             "evil_se" in (dst.trajectories / "EXP1_seed0/trajectory.json").read_text()
         )
 
+    def test_a_rerun_that_only_retimed_does_not_make_a_box_pull_forever(
+        self, tmp_path, monkeypatch
+    ):
+        """A pull that changes nothing must not be a pull that repeats.
+
+        The timing log is excluded from a run dir's signature, so a re-run that
+        only appended rows leaves the remote tar holding the *old* log. An index
+        that hashed the new one would advertise bytes the tar does not contain:
+        every pull would fetch the whole archive, merge a log that still
+        disagreed with the index, and be equally stale next time.
+        """
+        src = _syncer(tmp_path, store_name="src")
+        run_dir = _make_run_dir(src)
+        src.push_run_dir(run_dir)
+
+        dst = _syncer(tmp_path, store_name="dst")
+        dst.pull_for_plotting()
+
+        # A cached re-run on the GPU box: same payload, more timing rows. The
+        # index is dropped so the backfill path rewrites it from current disk,
+        # which is where the two used to part company.
+        _rerun(run_dir)
+        (tmp_path / "remote/trajectories/runs/EXP1_seed0.files").unlink()
+        src.push_run_dir(run_dir)
+
+        downloads = []
+        real_download = dst.transport.download
+        monkeypatch.setattr(
+            dst.transport,
+            "download",
+            lambda relpath, local: (
+                downloads.append(relpath),
+                real_download(relpath, local),
+            )[1],
+        )
+        dst.pull_for_plotting()
+        dst.pull_for_plotting()
+
+        assert not [relpath for relpath in downloads if relpath.endswith(".tar")]
+
 
 class TestPushRunsSkipsTheStoreSweep:
     def test_push_runs_uploads_no_measurement_bundles(self, tmp_path, monkeypatch):

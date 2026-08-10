@@ -408,6 +408,21 @@ def _merge_from_tar(tar_path: Path, dest_dir: Path, wanted: Iterable[str]) -> No
 # Index sidecars: what a mutable archive contains, without downloading it.
 # --------------------------------------------------------------------------- #
 
+#: Files a run directory rewrites on every invocation without changing what the
+#: run *is*: ``timings.jsonl`` gains a row per stage even when every one of them
+#: was a cache hit.
+#:
+#: This set governs *both* halves of a run dir's sync, and they must not drift
+#: apart. :func:`_run_dir_signature` skips these files so timing noise does not
+#: re-upload a whole archive, which means the remote tar can hold an older copy
+#: of them indefinitely; :func:`_hashed_index` and :func:`_parse_index`
+#: therefore skip them too, so no index ever advertises a version of them the
+#: tar beside it was never re-uploaded to contain. An index that promised one
+#: sent every puller to fetch the whole archive, merge bytes that still
+#: disagreed with the index, and arrive back where it started -- on every pull,
+#: forever.
+_VOLATILE_RUN_FILES = frozenset({STAGE_LOG})
+
 #: Suffix of the sidecar object pushed beside each mutable ``<id>.tar``.
 _INDEX_SUFFIX = ".files"
 
@@ -445,10 +460,14 @@ def _hashed_index(path: Path) -> str:
     Affordable here for the same reason :func:`_run_dir_signature` is: a run
     directory is a small JSON plus dereferenced training samples, megabytes
     against the hundreds a measurement bundle runs to.
+
+    Skips :data:`_VOLATILE_RUN_FILES`, exactly as the signature that decides
+    whether the archive is re-uploaded does. Indexing a file the signature
+    ignores is what lets an index and its tar disagree permanently.
     """
     lines = []
     for item in sorted(path.rglob("*")):
-        if not item.is_file():
+        if not item.is_file() or item.name in _VOLATILE_RUN_FILES:
             continue
         lines.append(
             f"{item.relative_to(path)}{_INDEX_SEP}{file_sha256(item)}"
@@ -457,12 +476,22 @@ def _hashed_index(path: Path) -> str:
 
 
 def _parse_index(text: str) -> dict[str, str]:
-    """An index's ``relpath -> token`` map; the token is ``""`` when absent."""
+    """An index's ``relpath -> token`` map; the token is ``""`` when absent.
+
+    Drops :data:`_VOLATILE_RUN_FILES` on the way in as well as on the way out
+    (:func:`_hashed_index`), because the indexes already on the remote were
+    written before that exclusion existed and cannot be corrected without
+    re-uploading every archive they describe. Since :func:`_stale_paths` walks
+    the *remote* map, one such entry is enough to keep a run dir permanently
+    stale on its own; filtering here retires them in place instead.
+    """
     entries = {}
     for line in text.splitlines():
         if not line.strip():
             continue
         relpath, _, token = line.partition(_INDEX_SEP)
+        if Path(relpath).name in _VOLATILE_RUN_FILES:
+            continue
         entries[relpath] = token
     return entries
 
@@ -614,12 +643,6 @@ def _file_signature(path: Path) -> str:
     return f"{stat.st_size}-{stat.st_mtime_ns}"
 
 
-#: Files a run directory rewrites on every invocation without changing what the
-#: run *is*: ``timings.jsonl`` gains a row per stage even when every one of them
-#: was a cache hit.
-_VOLATILE_RUN_FILES = frozenset({STAGE_LOG})
-
-
 def _run_dir_signature(path: Path) -> str:
     """Digest of a run directory's payload: its contents, minus the timing log.
 
@@ -644,6 +667,11 @@ def _run_dir_signature(path: Path) -> str:
     diagnostics, the numbers the collector reads all live in
     ``trajectory.json``, and the rows in question are precisely the ones that
     timed cache hits.
+
+    Skipping them here is what forces :func:`_hashed_index` to skip them too:
+    an archive this declines to re-upload keeps whatever copy of them it was
+    built with, so indexing them would advertise bytes the tar does not hold.
+    See :data:`_VOLATILE_RUN_FILES`.
     """
     digest = hashlib.sha256()
     for item in sorted(path.rglob("*")):
