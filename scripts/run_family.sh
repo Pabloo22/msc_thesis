@@ -4,7 +4,8 @@
 set -e
 
 usage() {
-    echo "Usage: bash scripts/run_family.sh <FAMILY_PREFIX> [LOCAL] [MOCK] [--seeds N [N ...]]"
+    echo "Usage: bash scripts/run_family.sh <FAMILY_PREFIX> [LOCAL] [MOCK]" \
+         "[--seeds N [N ...]] [--trunks X [X ...]]"
     echo
     echo "  FAMILY_PREFIX  EXP2_VALIDATION | EXP2_DECAY | EXP2_RESEED | EXP3 | EXP4"
     echo "                 Matched as a prefix, so EXP2 runs all three exp2"
@@ -21,6 +22,12 @@ usage() {
     echo "  --seeds        restrict to these seeds; disjoint subsets can be run in"
     echo "                 parallel on different GPUs (seeds are part of weights_key,"
     echo "                 so the adapters they train never collide)"
+    echo "  --trunks       restrict to these exp2 trunks (a b c), trunk and branches"
+    echo "                 alike. One trunk per GPU is the natural split for"
+    echo "                 EXP2_DECAY: the trunks share no step prefix, so"
+    echo "                 concurrent runs neither collide nor duplicate work."
+    echo "                 Only families whose configs carry a trunk label"
+    echo "                 (EXP2_DECAY, EXP2_RESEED) can be filtered this way."
     echo
     echo "Examples:"
     echo "  bash scripts/run_family.sh EXP2_VALIDATION"
@@ -28,6 +35,8 @@ usage() {
     echo "  bash scripts/run_family.sh EXP3 LOCAL MOCK --seeds 0"
     echo "  CUDA_VISIBLE_DEVICES=0 bash scripts/run_family.sh EXP3 --seeds 0 1 2"
     echo "  CUDA_VISIBLE_DEVICES=1 bash scripts/run_family.sh EXP3 --seeds 3 4"
+    echo "  CUDA_VISIBLE_DEVICES=0 bash scripts/run_family.sh EXP2_DECAY --trunks a"
+    echo "  CUDA_VISIBLE_DEVICES=1 bash scripts/run_family.sh EXP2_DECAY --trunks b c"
 }
 
 if [ -z "$1" ]; then
@@ -42,6 +51,7 @@ shift
 LOCAL=0
 MOCK=0
 SEEDS=()
+TRUNKS=()
 while [ $# -gt 0 ]; do
     case "$1" in
         LOCAL|--local)
@@ -57,6 +67,21 @@ while [ $# -gt 0 ]; do
                 SEEDS+=("$1")
                 shift
             done
+            continue
+            ;;
+        --trunks)
+            shift
+            # Trunk names are single letters, which is what keeps this from
+            # swallowing a following LOCAL or MOCK.
+            while [ $# -gt 0 ] && [[ "$1" =~ ^[A-Za-z]$ ]]; do
+                TRUNKS+=("${1,,}")
+                shift
+            done
+            if [ ${#TRUNKS[@]} -eq 0 ]; then
+                echo "Error: --trunks needs at least one trunk name (a, b or c)."
+                usage
+                exit 1
+            fi
             continue
             ;;
         *)
@@ -84,31 +109,62 @@ if [ ${#SEEDS[@]} -gt 0 ]; then
     echo ">>> Restricted to seeds: ${SEEDS[*]}"
 fi
 
+if [ ${#TRUNKS[@]} -gt 0 ]; then
+    echo ">>> Restricted to trunks: ${TRUNKS[*]}"
+fi
+
 echo ">>> Fetching configurations..."
 
 # Generate the list of configs dynamically using the inline Python script.
 # Registry keys are "<config name>_SEED<n>" (see experiments._register), so the
-# seed filter is an exact suffix match -- _SEED1 does not select _SEED10.
-CONFIGS=$(FAMILY="$FAMILY" LOCAL="$LOCAL" SEEDS="${SEEDS[*]}" poetry run python -c '
+# seed filter is an exact suffix match -- _SEED1 does not select _SEED10. The
+# trunk filter reads the config's "trunk" label rather than its name, so a
+# branch is selected by the trunk it hangs off regardless of how it is spelled.
+CONFIGS=$(FAMILY="$FAMILY" LOCAL="$LOCAL" SEEDS="${SEEDS[*]}" TRUNKS="${TRUNKS[*]}" \
+    poetry run python -c '
 import os
+import sys
 
 from method import experiments as E
 
 family = os.environ["FAMILY"] + "_"
 local = os.environ["LOCAL"] == "1"
 suffixes = tuple(f"_SEED{s}" for s in os.environ["SEEDS"].split())
+trunks = set(os.environ["TRUNKS"].split())
+
+unknown = trunks - set(E.EXP2_TRUNKS)
+if unknown:
+    sys.exit(
+        f"Error: unknown trunk(s) {sorted(unknown)}; "
+        f"known: {sorted(E.EXP2_TRUNKS)}"
+    )
+
+def order(item):
+    # Trunks first. A trunk carries all the per-checkpoint measurement the
+    # branches hanging off it are read against, so it has to be trained first
+    # for the family to be interpretable partway through -- and plain sorted
+    # order puts every BRANCH key ahead of the first TRUNK key. Families
+    # without a role label all tie here and stay in key order.
+    key, cfg = item
+    return (cfg.label_map.get("role") != "trunk", key)
+
 
 print("\n".join(
-    k for k in sorted(E.REGISTRY)
+    k for k, cfg in sorted(E.REGISTRY.items(), key=order)
     if k.startswith(family)
     and ("_LOCAL_" in k) == local
     and (not suffixes or k.endswith(suffixes))
+    and (not trunks or cfg.label_map.get("trunk") in trunks)
 ))
 ')
 
 if [ -z "$CONFIGS" ]; then
     echo "Error: No configurations in experiments.REGISTRY match prefix '${FAMILY}_'" \
-         "(local=$LOCAL, seeds='${SEEDS[*]}')."
+         "(local=$LOCAL, seeds='${SEEDS[*]}', trunks='${TRUNKS[*]}')."
+    if [ ${#TRUNKS[@]} -gt 0 ]; then
+        echo "Note: --trunks only selects families whose configs carry a trunk" \
+             "label (EXP2_DECAY, EXP2_RESEED)."
+    fi
     exit 1
 fi
 
