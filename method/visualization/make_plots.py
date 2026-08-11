@@ -52,7 +52,6 @@ from method.visualization.collect import (
 from method.visualization.labels import (
     DIVERSITY_CONDITION_LABELS,
     DIVERSITY_CONDITIONS,
-    HYSTERESIS_CONDITION_LABELS,
     HYSTERESIS_CONDITIONS,
     TRUNKS,
     display_dataset_name,
@@ -218,13 +217,11 @@ def build_exp2(
         )
     )
     for trait in traits:
-        pretty = display_trait_name(trait)
         prefix = f"exp2_{trait}"
-        saved += _validation_figure(fan, trait, pretty, prefix, out_dir)
+        saved += _validation_figure(fan, trait, prefix, out_dir)
         saved += _decay_figures(
             rows[rows["trait"] == trait],
             trait,
-            pretty,
             prefix,
             out_dir,
             sigma_seed=sigma_seed.get(trait),
@@ -233,7 +230,6 @@ def build_exp2(
         saved += _drift_figures(
             ratios[ratios["trait"] == trait],
             latents[latents["trait"] == trait],
-            pretty,
             prefix,
             out_dir,
         )
@@ -241,7 +237,7 @@ def build_exp2(
 
 
 def _validation_figure(
-    fan: pd.DataFrame, trait: str, pretty: str, prefix: str, out_dir: Path
+    fan: pd.DataFrame, trait: str, prefix: str, out_dir: Path
 ) -> list[Path]:
     """Plot 1: the 24-dataset replication of the persona-vectors correlation."""
     saved: list[Path] = []
@@ -261,10 +257,6 @@ def _validation_figure(
         subset["delta_b"],
         datasets=list(subset["dataset"]),
         yerr=subset["se_delta_b"],
-        title=(
-            f"{pretty}: projection difference predicts behaviour change "
-            f"at $M_0$ ({len(subset)} datasets)"
-        ),
     )
     _emit(fig, f"{prefix}_validation", out_dir, saved)
     return saved
@@ -273,7 +265,6 @@ def _validation_figure(
 def _decay_figures(
     rows: pd.DataFrame,
     trait: str,
-    pretty: str,
     prefix: str,
     out_dir: Path,
     *,
@@ -294,15 +285,7 @@ def _decay_figures(
     colors = _trunk_colors(trunks)
     labels = {t: display_trunk_name(t) for t in trunks}
 
-    fig = figures.decay_scatter_grid(
-        rows,
-        trunks=trunks,
-        trunk_labels=labels,
-        title=(
-            rf"{pretty}: does $\Delta P_0$ still predict $\Delta b$ "
-            "as the model drifts?"
-        ),
-    )
+    fig = figures.decay_scatter_grid(rows, trunks=trunks, trunk_labels=labels)
     _emit(fig, f"{prefix}_decay_grid", out_dir, saved)
 
     if sigma_seed is None:
@@ -327,7 +310,6 @@ def _decay_figures(
         trunk_labels=labels,
         trunk_colors=colors,
         ceiling_label=rf"$R^2_{{max}}$ ({ceiling_note})",
-        title=f"{pretty}: predictive accuracy along the trajectory",
     )
     _emit(fig, f"{prefix}_headline", out_dir, saved)
 
@@ -337,7 +319,6 @@ def _decay_figures(
         MECHANISM_PREDICTORS,
         trunk_labels={**labels, "shared": "Shared $M_0$"},
         trunk_colors={**colors, "shared": style.SECONDARY_INK},
-        title=f"{pretty}: what predicts the loss of predictive accuracy",
     )
     _emit(fig, f"{prefix}_mechanism", out_dir, saved)
 
@@ -353,7 +334,6 @@ def _decay_figures(
             pairs,
             series_labels=decay.SERIES_LABELS,
             trunk_colors=colors,
-            title=f"{pretty}: effect of a single re-alignment step on $R^2$",
         )
         _emit(fig, f"{prefix}_phase_contrast", out_dir, saved)
     return saved
@@ -362,7 +342,6 @@ def _decay_figures(
 def _drift_figures(
     ratios: pd.DataFrame,
     latents: pd.DataFrame,
-    pretty: str,
     prefix: str,
     out_dir: Path,
 ) -> list[Path]:
@@ -395,10 +374,6 @@ def _drift_figures(
             ylabel=r"$\Delta P_t$ (% of $\Delta P_0$)",
             reference=100.0,
             reference_label=r"$\Delta P_0$",
-            title=(
-                f"{pretty}, trunk {trunk.upper()}: drift of a fixed dataset's "
-                r"$\Delta P$"
-            ),
         )
         _emit(fig, f"{prefix}_drift_delta_p_trunk_{trunk}", out_dir, saved)
 
@@ -428,12 +403,7 @@ def _drift_figures(
         }
         for component, label in Z_LABELS.items()
     }
-    fig = figures.overlay_grid(
-        panels,
-        replicates,
-        colors=colors,
-        title=f"{pretty}: drift of the latent state along each trunk",
-    )
+    fig = figures.overlay_grid(panels, replicates, colors=colors)
     _emit(fig, f"{prefix}_drift_z", out_dir, saved)
     return saved
 
@@ -508,19 +478,13 @@ def build_exp3(collection: Collection, out_dir: Path) -> list[Path]:
                     len(conditions),
                 )
                 continue
-            realign_pretty = display_trait_name(realign_trait)
             fig = figures.hysteresis_bar(
                 subset,
                 conditions=conditions,
-                condition_labels=[HYSTERESIS_CONDITION_LABELS[c] for c in conditions],
                 start_col="behavior_before",
                 reference=_base_behavior(subset, trait, realign_trait),
                 reference_label=rf"Base model $b_0$ ({pretty})",
                 ylabel=rf"{pretty} score after the final step ($b_T$)",
-                title=(
-                    f"{pretty} after a step onto each dataset, by prior "
-                    f"training (re-aligned on {realign_pretty} Normal)"
-                ),
             )
             _emit(fig, f"exp3_{trait}_realign-{realign_trait}", out_dir, saved)
     return saved
@@ -553,17 +517,11 @@ def build_exp4(collection: Collection, out_dir: Path) -> list[Path]:
                     len(conditions),
                 )
                 continue
-            datasets = sorted(set(subset["dataset"]))
-            trained_on = display_dataset_name(datasets[0]) if datasets else "trait data"
             fig = figures.diversity_bar(
                 subset,
                 order=conditions,
                 labels=DIVERSITY_CONDITION_LABELS,
-                ylabel=r"Residual $b_T - b_0$",
-                title=(
-                    f"{pretty}: residual after re-alignment, "
-                    f"by diversity of prior training on {trained_on}"
-                ),
+                ylabel=rf"{pretty} residual after re-alignment ($b_T - b_0$)",
             )
             _emit(fig, f"exp4_{trait}_realign-{realign_trait}", out_dir, saved)
     return saved

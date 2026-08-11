@@ -537,12 +537,12 @@ class TestDriftLine:
 
 
 class TestHysteresisBar:
-    def test_bar_count_matches_datasets_times_conditions(self) -> None:
+    def test_each_dataset_gets_a_panel_of_one_bar_per_condition(self) -> None:
         df = synthetic.synthetic_hysteresis_frame(("a/normal", "b/normal"), n_seeds=3)
         fig = figures.hysteresis_bar(df)
-        (ax,) = fig.axes
-        assert len(ax.patches) == 2 * len(synthetic.HYSTERESIS_CONDITIONS)
-        assert ax.get_legend() is not None
+        assert len(fig.axes) == 2
+        for ax in fig.axes:
+            assert len(ax.patches) == len(synthetic.HYSTERESIS_CONDITIONS)
 
     def test_a_condition_absent_from_the_frame_is_simply_not_drawn(self) -> None:
         """Plotting a partly-finished sweep must narrow the figure, not raise.
@@ -559,14 +559,25 @@ class TestHysteresisBar:
         assert len(heights) == 2
         assert not any(math.isnan(h) for h in heights)
 
-    def test_xtick_labels_are_pretty_by_default(self) -> None:
+    def test_panel_headers_are_pretty_dataset_names(self) -> None:
         df = synthetic.synthetic_hysteresis_frame(
             ("hallucination/misaligned_1", "mistake_gsm8k/misaligned_2"), n_seeds=2
         )
         fig = figures.hysteresis_bar(df)
+        assert [ax.get_title() for ax in fig.axes] == [
+            "Hallucination (I)",
+            "GSM8K (Mistake II)",
+        ]
+
+    def test_each_arm_is_named_on_its_own_tick_not_only_by_colour(self) -> None:
+        """The schedules are what make the legend colour-free; see the docstring."""
+        df = synthetic.synthetic_hysteresis_frame(("a/normal",), n_seeds=2)
+        fig = figures.hysteresis_bar(df)
         (ax,) = fig.axes
-        tick_text = [t.get_text() for t in ax.get_xticklabels()]
-        assert tick_text == ["Hallucination (I)", "GSM8K (Mistake II)"]
+        assert [t.get_text() for t in ax.get_xticklabels()] == [
+            labels.HYSTERESIS_CONDITION_SEQUENCES[c]
+            for c in synthetic.HYSTERESIS_CONDITIONS
+        ]
 
     def test_reference_line_is_drawn_at_the_base_model_score(self) -> None:
         """The line every bar is read against; without it a level means nothing."""
@@ -578,8 +589,20 @@ class TestHysteresisBar:
         dashed = [ln for ln in ax.lines if ln.get_linestyle() == "--"]
         assert len(dashed) == 1
         assert dashed[0].get_ydata()[0] == 8.0
-        legend_labels = [t.get_text() for t in ax.get_legend().get_texts()]
-        assert r"Base model $b_0$" in legend_labels
+        (legend,) = fig.legends
+        assert r"Base model $b_0$" in [t.get_text() for t in legend.get_texts()]
+
+    def test_the_legend_names_only_the_two_line_marks(self) -> None:
+        """Arm identity lives on the ticks, so a colour must never need a key."""
+        df = synthetic.synthetic_hysteresis_frame(("a/normal",), n_seeds=2)
+        fig = figures.hysteresis_bar(
+            df, reference=8.0, reference_label="Base", start_col="behavior_before"
+        )
+        (legend,) = fig.legends
+        assert [t.get_text() for t in legend.get_texts()] == [
+            "Base",
+            "Before the final step",
+        ]
 
     def test_bars_default_to_levels_not_the_final_step_delta(self) -> None:
         """A re-aligned arm's bar must show where it ended, not how far it
@@ -600,7 +623,7 @@ class TestHysteresisBar:
         df = synthetic.synthetic_hysteresis_frame(("evil/normal",), n_seeds=2)
         fig = figures.hysteresis_bar(df, dataset_labels={"evil/normal": "Custom"})
         (ax,) = fig.axes
-        assert [t.get_text() for t in ax.get_xticklabels()] == ["Custom"]
+        assert ax.get_title() == "Custom"
 
 
 class TestDiversityBar:
@@ -829,7 +852,7 @@ class TestDecayScatterGrid:
         rows.loc[rows["trunk"] == "b", "steps_since_realignment"] = 2
         fig = figures.decay_scatter_grid(rows, trunks=["a", "b"])
         titles = {ax.get_title(loc="right") for ax in fig.axes}
-        assert "s = 2" in titles
+        assert "steps since re-alignment: 2" in titles
 
     def test_a_checkpoint_with_no_runs_is_marked_not_dropped(self) -> None:
         """A half-finished fan must leave its column visibly empty; silently
@@ -840,7 +863,9 @@ class TestDecayScatterGrid:
         )
         empty = [ax for ax in fig.axes if not ax.collections]
         assert len(empty) == 2  # one per trunk
-        assert all("not run" in t.get_text() for ax in empty for t in ax.texts)
+        assert all(
+            any("not run" in text.get_text() for text in ax.texts) for ax in empty
+        )
 
 
 class TestHeadlineCurves:
@@ -879,8 +904,9 @@ class TestMechanismGrid:
         """A point here is a checkpoint: the probes at it were already spent
         producing the single R^2 plotted."""
         rows = _fits()
-        fig = figures.mechanism_grid(rows, self.PREDICTORS, title="Mechanism")
-        assert f"$n$ = {len(rows)} checkpoints" in fig._suptitle.get_text()
+        fig = figures.mechanism_grid(rows, self.PREDICTORS)
+        annotations = [text.get_text() for text in fig.axes[0].texts]
+        assert f"$n$ = {len(rows)} checkpoints" in annotations
 
     def test_colour_identifies_the_trunk(self) -> None:
         fig = figures.mechanism_grid(

@@ -58,6 +58,26 @@ HYSTERESIS_CONDITION_LABELS = {
     "diff": "After realign (other data)",
 }
 
+#: Each arm's training schedule, in the same alphabet the exp2 trunks use:
+#: ``X`` a trait-eliciting step, ``N`` a normal (re-aligning) one, ``X'`` a
+#: *different* trait-eliciting dataset. Steps read left to right in training
+#: order, so the rightmost ``X`` is the final step whose score the bar reports.
+#:
+#: The severity numeral stays out of the sequence on purpose. ``I I N`` and
+#: ``II N`` are the same glyphs, so spelling the version inline would make
+#: exp2's trunk B -- whose whole point is two drivers before each re-alignment
+#: -- ambiguous. The dataset the bars are grouped under already names it
+#: ("GSM8K (Mistake II)"), which is why ``X'`` is the useful thing to mark
+#: instead: in the ``diff`` arm the other dataset's version varies by group
+#: while "some other trait-eliciting set" is what every group has in common.
+HYSTERESIS_CONDITION_SEQUENCES = {
+    "baseline": r"$X$",
+    "normal1": r"$N\,X$",
+    "normal2": r"$N\,N\,X$",
+    "same": r"$X\,N\,X$",
+    "diff": r"$X'\,N\,X$",
+}
+
 DIVERSITY_CONDITIONS = ("baseline", "same2", "diff2", "same3", "diff3")
 DIVERSITY_CONDITION_LABELS = {
     "baseline": "1 dataset",

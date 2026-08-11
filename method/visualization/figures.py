@@ -10,7 +10,7 @@ result with :func:`method.visualization.style.save_figure`.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -18,11 +18,13 @@ from matplotlib.artist import Artist
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 from matplotlib.patches import Patch
+from matplotlib.transforms import Bbox
 from numpy.typing import ArrayLike
 
 from method.visualization import style
 from method.visualization.labels import (
     DATASET_TITLES,
+    HYSTERESIS_CONDITION_SEQUENCES,
     HYSTERESIS_CONDITIONS,
     display_dataset_name,
 )
@@ -160,7 +162,6 @@ def scatter_projection_correlation(
     *,
     xlabel: str = r"Projection difference $\Delta P$",
     ylabel: str = r"Behaviour change $\Delta b_{t+1}$",
-    title: str | None = None,
 ) -> Figure:
     r"""RQ1: does $\Delta P_0$ or $\Delta P_t$ better predict $\Delta b_{t+1}$?
 
@@ -181,8 +182,6 @@ def scatter_projection_correlation(
     ax.axhline(0, color=style.BASELINE, linewidth=0.8, zorder=1)
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
-    if title:
-        ax.set_title(title)
     ax.legend(loc="best")
     fig.tight_layout()
     return fig
@@ -194,7 +193,6 @@ def scatter_metric_grid(
     ylabel: str = r"Behaviour change $\Delta b_{t+1}$",
     color: str = style.BLUE,
     ncols: int = 2,
-    title: str | None = None,
 ) -> Figure:
     r"""Small-multiples version of the same diagnostic for $p$, $q$, $\rho$, $r$.
 
@@ -218,8 +216,6 @@ def scatter_metric_grid(
         ax.legend(loc="best")
     for ax in axes_flat[n:]:
         ax.set_visible(False)
-    if title:
-        fig.suptitle(title)
     fig.tight_layout()
     return fig
 
@@ -231,7 +227,6 @@ def line_with_band(
     xlabel: str = "Step",
     reference: float | None = None,
     reference_label: str | None = None,
-    title: str | None = None,
 ) -> Figure:
     """Mean line + shaded $\\pm 1$ std band per named series, over a shared index.
 
@@ -274,8 +269,6 @@ def line_with_band(
         )
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
-    if title:
-        ax.set_title(title)
     if len(series) > 1 or reference_label:
         ax.legend(loc="best")
     fig.tight_layout()
@@ -287,7 +280,6 @@ def drift_line(
     *,
     ylabel: str,
     xlabel: str = "Step $t$",
-    title: str | None = None,
 ) -> Figure:
     r"""How far a quantity has drifted from its own step-0 value, over time.
 
@@ -308,7 +300,6 @@ def drift_line(
         xlabel=xlabel,
         reference=100.0,
         reference_label="Step-0 value",
-        title=title,
     )
 
 
@@ -325,13 +316,11 @@ def hysteresis_bar(
     reference: float | None = None,
     reference_label: str | None = None,
     ylabel: str = r"Trait score $b_T$",
-    title: str | None = None,
 ) -> Figure:
     r"""RQ2 hysteresis bar chart: is a realigned model easier to re-misalign?
 
-    Grouped bars: one group per dataset, one bar per ``condition`` within a
-    group (colour encodes a second dimension on top of the x-axis identity, so
-    it earns a legend). Error bars show the std across seeds.
+    One panel per dataset, one bar per ``condition`` within it. Error bars show
+    the std across seeds.
 
     Bars are *levels*, not deltas. ``value_col`` defaults to the trait score
     each arm ends at, and ``reference`` draws a dashed line at $M_0$'s own
@@ -346,19 +335,24 @@ def hysteresis_bar(
     alone leaves ambiguous -- an arm that ends low because it moved little
     (plasticity loss) from one that ends low because it started low.
 
-    The figure grows with the number of conditions, and past two the legend
-    moves above the axes: the plasticity-loss arm makes this a four-bar chart
-    (see :data:`~method.visualization.labels.HYSTERESIS_CONDITIONS`), and at
-    that density ``loc="best"`` has nowhere inside the data to sit.
-
     ``dataset_col`` is expected to hold internal ``dataset/version``
-    identifiers (e.g. ``"mistake_gsm8k/misaligned_2"``); tick labels are
-    rendered with :func:`~method.visualization.labels.display_dataset_name`
-    (e.g. ``"GSM8K (Mistake II)"``) unless overridden per-dataset via
-    ``dataset_labels``.
+    identifiers (e.g. ``"mistake_gsm8k/misaligned_2"``); panels are headed with
+    :func:`~method.visualization.labels.display_dataset_name` (e.g. ``"GSM8K
+    (Mistake II)"``) unless overridden per-dataset via ``dataset_labels``.
+
+    Each arm is named on its own tick by its training schedule -- ``$X\,N\,X$``
+    and so on, see
+    :data:`~method.visualization.labels.HYSTERESIS_CONDITION_SEQUENCES` -- so
+    the legend is left to carry only the two things that have no tick of their
+    own: the base-model reference and the start-of-final-step marks. Colour
+    still separates the arms, but nothing is encoded in colour alone.
     """
     style.apply_style()
-    condition_labels = list(condition_labels) if condition_labels else list(conditions)
+    if condition_labels is None:
+        condition_labels = [
+            HYSTERESIS_CONDITION_SEQUENCES.get(c, c) for c in conditions
+        ]
+    condition_labels = list(condition_labels)
     dataset_labels = dataset_labels or {}
     datasets = list(dict.fromkeys(df[dataset_col]))
     stats = df.groupby([dataset_col, condition_col])[value_col].agg(["mean", "std"])
@@ -368,90 +362,86 @@ def hysteresis_bar(
         else None
     )
 
-    n_conditions = len(conditions)
-    width = 0.8 / n_conditions
-    x = np.arange(len(datasets))
+    x = np.arange(len(conditions))
+    width = 0.72
 
-    # 1.4in per dataset group at two conditions, widening by a quarter of that
-    # for each extra bar in the group so the bars stay legible rather than
-    # slivers, and capped so a large pool cannot produce an unprintable figure.
-    group_width = 1.4 * (1 + 0.25 * (n_conditions - 2))
-    width_in = min(9.0, max(4.0, group_width * len(datasets) + 1.5))
-    fig, ax = plt.subplots(figsize=(width_in, 4.2))
-    for i, (condition, label) in enumerate(zip(conditions, condition_labels)):
+    # One panel per dataset rather than one group of bars per dataset. Grouping
+    # left every arm's identity in its colour, because a group has one tick
+    # between it and its neighbour and five arm names will not fit there;
+    # faceting gives each arm a tick of its own and costs only width.
+    # 0.52in per bar keeps the schedule labels from touching, and the cap stops
+    # a large dataset pool producing an unprintable figure.
+    width_in = min(11.0, max(4.0, (0.52 * len(conditions) + 0.5) * len(datasets) + 0.8))
+    fig, axes = plt.subplots(
+        1, len(datasets), figsize=(width_in, 4.4), sharey=True, squeeze=False
+    )
+    for ax, dataset in zip(axes[0], datasets):
         means = [
             (
-                stats.loc[(ds, condition), "mean"]
-                if (ds, condition) in stats.index
+                stats.loc[(dataset, c), "mean"]
+                if (dataset, c) in stats.index
                 else np.nan
             )
-            for ds in datasets
+            for c in conditions
         ]
         stds = [
-            stats.loc[(ds, condition), "std"] if (ds, condition) in stats.index else 0.0
-            for ds in datasets
+            stats.loc[(dataset, c), "std"] if (dataset, c) in stats.index else 0.0
+            for c in conditions
         ]
-        offset = (i - (n_conditions - 1) / 2) * width
         ax.bar(
-            x + offset,
+            x,
             means,
-            width=width * 0.9,
-            color=style.categorical_color(i),
+            width=width,
+            color=[style.categorical_color(i) for i in range(len(conditions))],
             edgecolor=style.SURFACE,
             linewidth=1.2,
-            label=label,
             zorder=3,
         )
         ax.errorbar(
-            x + offset,
-            means,
-            yerr=stds,
-            fmt="none",
-            ecolor=style.MUTED,
-            elinewidth=1.0,
-            capsize=3,
-            zorder=4,
+            x, means, yerr=stds, fmt="none", ecolor=style.MUTED, elinewidth=1.0,
+            capsize=3, zorder=4,
         )
         if starts is not None:
             # Drawn as a tick across the bar rather than a second bar: it marks
             # where this bar's growth began, so it belongs *on* the bar.
             ax.errorbar(
-                x + offset,
-                [starts.get((ds, condition), np.nan) for ds in datasets],
-                xerr=width * 0.45,
+                x,
+                [starts.get((dataset, c), np.nan) for c in conditions],
+                xerr=width / 2,
                 fmt="none",
                 ecolor=style.INK,
                 elinewidth=1.2,
                 zorder=5,
-                label="Before the final step" if i == 0 else None,
             )
+        if reference is not None:
+            ax.axhline(
+                reference,
+                color=style.SECONDARY_INK,
+                linestyle="--",
+                linewidth=1.0,
+                zorder=2,
+            )
+        ax.axhline(0, color=style.BASELINE, linewidth=0.8, zorder=1)
+        ax.set_xticks(x)
+        # Full ink, unlike the muted numeric ticks elsewhere: these names are
+        # what identifies an arm now that the legend no longer does.
+        ax.set_xticklabels(condition_labels, fontsize=10, color=style.INK)
+        ax.set_xlim(-0.5 - (1 - width) / 2, len(conditions) - 0.5 + (1 - width) / 2)
+        ax.set_title(dataset_labels.get(dataset, display_dataset_name(dataset)))
+
+    handles: list[Artist] = []
+    texts: list[str] = []
     if reference is not None:
-        ax.axhline(
-            reference,
-            color=style.SECONDARY_INK,
-            linestyle="--",
-            linewidth=1.0,
-            zorder=2,
-            label=reference_label,
+        handles.append(
+            plt.Line2D([], [], color=style.SECONDARY_INK, linestyle="--", linewidth=1.0)
         )
-    ax.axhline(0, color=style.BASELINE, linewidth=0.8, zorder=1)
-    ax.set_xticks(x)
-    tick_labels = [dataset_labels.get(ds, display_dataset_name(ds)) for ds in datasets]
-    ax.set_xticklabels(tick_labels, rotation=15, ha="right")
-    ax.set_ylabel(ylabel)
-    # Counted from the artists rather than from ``conditions``, since the
-    # reference line and the start ticks add entries of their own.
-    n_entries = len(ax.get_legend_handles_labels()[0])
-    if n_entries > 2:
-        ax.legend(loc="lower center", bbox_to_anchor=(0.5, 1.0), ncol=2)
-        legend_rows = (n_entries + 1) // 2
-        title_pad = 12 * (legend_rows + 1)  # clear the legend, then a gap
-    else:
-        ax.legend(loc="best")
-        title_pad = None
-    if title:
-        ax.set_title(title, pad=title_pad)
-    fig.tight_layout()
+        texts.append(reference_label or "Base model")
+    if starts is not None:
+        handles.append(plt.Line2D([], [], color=style.INK, linewidth=1.2))
+        texts.append("Before the final step")
+    if handles:
+        fig.legend(handles, texts, loc="lower center", ncol=len(handles))
+    _layout_grid(fig, axes.flat, ylabel=ylabel, legend_rows=1 if handles else 0)
     return fig
 
 
@@ -470,9 +460,9 @@ def _corner_text(
     """Stacked ``(text, colour)`` annotations in a panel corner.
 
     Used where a panel is too small for a legend of its own. The text always
-    names the series it reports (``"$\\Delta P_0$: 0.42"``), so colour is
-    redundant reinforcement of an identity the words already carry rather than
-    the only channel encoding it.
+    names both the quantity and the series it reports (``"$R^2(\\Delta P_0)$ =
+    0.42"``), so colour is redundant reinforcement of an identity the words
+    already carry rather than the only channel encoding it.
     """
     for i, (text, color) in enumerate(entries):
         ax.text(
@@ -490,6 +480,57 @@ def _corner_text(
             # chart surface itself, so it reads as clearance, not as a box.
             bbox={"facecolor": style.SURFACE, "edgecolor": "none", "pad": 1.2},
         )
+
+
+#: Vertical space, in inches, that one row of a figure legend and one shared
+#: axis label take up. Used to size the bottom margin a panel grid reserves.
+_LEGEND_ROW_IN = 0.24
+_SHARED_LABEL_IN = 0.30
+
+#: How far a shared axis label sits from the block of axes it names, in inches.
+_SHARED_LABEL_PAD_IN = 0.05
+
+
+def _layout_grid(
+    fig: Figure,
+    axes: Iterable[Axes],
+    *,
+    ylabel: str,
+    legend_rows: int,
+    xlabel: str | None = None,
+    fontsize: float = 10,
+) -> None:
+    """Lay a panel grid out beneath its own legend and label the block as a whole.
+
+    Both halves have to be done here because neither can be done blind.
+    ``tight_layout`` measures the axes but knows nothing of a figure legend, so
+    the bottom margin is sized from the number of rows that legend will take;
+    ``fig.supxlabel`` in turn positions against the *figure*, so a fixed ``y``
+    strands the label in the middle of that margin on one grid shape and drops
+    it onto the legend on another. Measuring the drawn axes afterwards keeps
+    each label the same short distance from the ticks it names.
+
+    ``xlabel`` is optional: a grid whose ticks already name themselves (the
+    hysteresis schedules, say) has nothing left for a shared x-label to add.
+    """
+    width, height = fig.get_size_inches()
+    reserved = legend_rows * _LEGEND_ROW_IN + (_SHARED_LABEL_IN if xlabel else 0.0)
+    fig.tight_layout(rect=(0.0, reserved / height, 1.0, 1.0))
+    drawn = [box for ax in axes if (box := ax.get_tightbbox()) is not None]
+    block = Bbox.union(drawn).transformed(fig.transFigure.inverted())
+    if xlabel:
+        fig.supxlabel(
+            xlabel,
+            fontsize=fontsize,
+            y=block.y0 - _SHARED_LABEL_PAD_IN / height,
+            va="top",
+        )
+    fig.supylabel(
+        ylabel,
+        fontsize=fontsize,
+        x=block.x0 - _SHARED_LABEL_PAD_IN / width,
+        ha="right",
+    )
 
 
 #: Version order for a legend key, matching the ramp's direction.
@@ -559,7 +600,6 @@ def scatter_validation(
     yerr: ArrayLike | None = None,
     xlabel: str = r"Projection difference $\Delta P_0$",
     ylabel: str = r"Behaviour change $\Delta b_1$",
-    title: str | None = None,
 ) -> Figure:
     r"""Plot 1: the $t = 0$ validation fan over all 24 datasets.
 
@@ -600,8 +640,6 @@ def scatter_validation(
     )
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
-    if title:
-        ax.set_title(title)
     if datasets is not None:
         handles, texts = dataset_legend(datasets)
         ax.legend(handles, texts, loc="upper left", bbox_to_anchor=(1.02, 1.0))
@@ -617,7 +655,6 @@ def decay_scatter_grid(
     trunk_labels: Mapping[str, str] | None = None,
     xlabel: str = r"Projection difference $\Delta P$",
     ylabel: str = r"Behaviour change $\Delta b_{t+1}$",
-    title: str | None = None,
 ) -> Figure:
     r"""Plot 2: one scatter panel per ``(trunk, checkpoint)``.
 
@@ -632,8 +669,8 @@ def decay_scatter_grid(
     would let a flattening slope and a shrinking $\Delta b$ range look
     identical, which is the one confusion this figure exists to prevent.
 
-    ``s`` in each panel's corner is ``steps_since_realignment`` (section 4) --
-    marked per panel rather than per column because the three schedules put
+    The steps-since-re-alignment note above each panel is the phase of section
+    4, marked per panel rather than per column because the three schedules put
     their re-alignments at different depths, so the phase of column ``t``
     differs by row.
 
@@ -693,8 +730,8 @@ def decay_scatter_grid(
             _corner_text(
                 ax,
                 [
-                    (rf"$\Delta P_0$: {stale.r2:.2f}", style.BLUE),
-                    (rf"$\Delta P_t$: {fresh.r2:.2f}", style.ORANGE),
+                    (rf"$R^2(\Delta P_0)$ = {stale.r2:.2f}", style.BLUE),
+                    (rf"$R^2(\Delta P_t)$ = {fresh.r2:.2f}", style.ORANGE),
                 ],
             )
             # As a right-hand axes title rather than an in-panel annotation:
@@ -702,13 +739,30 @@ def decay_scatter_grid(
             # that happens to hold a point would otherwise hide it.
             since = int(panel["steps_since_realignment"].iloc[0])
             ax.set_title(
-                f"s = {since}", loc="right", fontsize=7.5, color=style.MUTED, pad=3
+                f"steps since re-alignment: {since}",
+                loc="right",
+                fontsize=6.5,
+                color=style.MUTED,
+                pad=3,
             )
         axes[row][0].set_ylabel(
             trunk_labels.get(trunks[row], f"Trunk {trunks[row]}"), fontsize=9
         )
     for col, t in enumerate(checkpoints):
-        axes[0][col].set_title(f"$t = {t}$", loc="center")
+        # An annotation rather than a centred title: matplotlib lays a panel's
+        # left, centre and right titles on one line, and the top row's right
+        # title is already the phase note. Offsetting the column header above
+        # that line is what keeps both readable, on a row that has to carry
+        # them both.
+        axes[0][col].annotate(
+            f"$t = {t}$",
+            xy=(0.5, 1.0),
+            xycoords="axes fraction",
+            xytext=(0, 15),
+            textcoords="offset points",
+            ha="center",
+            va="bottom",
+        )
 
     # Two keys in one legend: which projection a mark's *outline* means, and
     # which dataset its shape and fill mean.
@@ -721,22 +775,21 @@ def decay_scatter_grid(
         mark_handles, mark_texts = dataset_legend(sorted(set(df["probe"])))
         handles += mark_handles
         texts += mark_texts
+    ncol = min(7, len(handles))
     fig.legend(
         handles,
         texts,
         loc="lower center",
-        ncol=min(7, len(handles)),
+        ncol=ncol,
         bbox_to_anchor=(0.5, 0.0),
     )
-    # The shared labels are placed against the reserved margins rather than
-    # left to tight_layout, which measures the axes and so would drop the x
-    # label straight onto the figure legend. The legend runs to two rows once
-    # the dataset key is in it, so the margin is sized for that.
-    fig.supxlabel(xlabel, fontsize=10, y=0.095)
-    fig.supylabel(ylabel, fontsize=10, x=0.005)
-    if title:
-        fig.suptitle(title)
-    fig.tight_layout(rect=(0.025, 0.14, 1.0, 1.0))
+    _layout_grid(
+        fig,
+        axes.flat,
+        xlabel=xlabel,
+        ylabel=ylabel,
+        legend_rows=-(-len(handles) // ncol),
+    )
     return fig
 
 
@@ -786,7 +839,6 @@ def headline_curves(
     ceiling_column: str | None = "r2_max",
     ceiling_label: str = r"$R^2_{max}$ (noise ceiling)",
     xlabel: str = "Checkpoint $t$",
-    title: str | None = None,
 ) -> Figure:
     r"""Plot 3: $R^2$ and fitted slope against ``t``, one line per trunk.
 
@@ -878,8 +930,6 @@ def headline_curves(
         )
         texts.append(ceiling_label)
     fig.legend(handles, texts, loc="lower center", ncol=2, bbox_to_anchor=(0.5, 0.0))
-    if title:
-        fig.suptitle(title)
     fig.tight_layout(rect=(0.0, 0.09, 1.0, 1.0))
     return fig
 
@@ -893,7 +943,6 @@ def mechanism_grid(
     trunk_colors: Mapping[str, str] | None = None,
     ylabel: str = r"$R^2$ of $\Delta P_0$ at that checkpoint",
     ncols: int = 2,
-    title: str | None = None,
 ) -> Figure:
     r"""Plot 4: the checkpoint-level regression of $R^2$ on what moved.
 
@@ -922,7 +971,7 @@ def mechanism_grid(
     )
     axes_flat = axes.flatten()
 
-    for ax, (column, label) in zip(axes_flat, predictors.items()):
+    for i, (ax, (column, label)) in enumerate(zip(axes_flat, predictors.items())):
         fit = linear_fit(rows[column], rows[value_column])
         if len(rows) >= 2:
             line_x = _fit_line_x(np.asarray(rows[column], dtype=float))
@@ -946,7 +995,15 @@ def mechanism_grid(
                 zorder=3,
                 label=trunk_labels.get(trunk, f"Trunk {trunk}"),
             )
-        _corner_text(ax, [(rf"$R^2$ = {fit.r2:.2f}", style.INK)], fontsize=9)
+        entries = [(rf"$R^2$ = {fit.r2:.2f}", style.INK)]
+        if i == 0:
+            # Every panel regresses the same checkpoints, so ``n`` belongs to
+            # the figure rather than to a panel -- stated once, in the one the
+            # eye reaches first, since it is what stops the level-2 count from
+            # being read as the level-1 one (a point here is a checkpoint, not
+            # a probe dataset).
+            entries.append((rf"$n$ = {len(rows)} checkpoints", style.SECONDARY_INK))
+        _corner_text(ax, entries, fontsize=9)
         ax.set_xlabel(label)
         ax.set_ylabel(ylabel)
     for ax in axes_flat[n:]:
@@ -954,8 +1011,6 @@ def mechanism_grid(
 
     handles, texts = axes_flat[0].get_legend_handles_labels()
     fig.legend(handles, texts, loc="lower center", ncol=len(handles) or 1)
-    if title:
-        fig.suptitle(f"{title} ($n$ = {len(rows)} checkpoints)")
     fig.tight_layout(rect=(0.0, 0.07, 1.0, 1.0))
     return fig
 
@@ -967,7 +1022,6 @@ def phase_contrast(
     series_labels: Mapping[str, str] | None = None,
     trunk_colors: Mapping[str, str] | None = None,
     ylabel: str = r"$R^2$ over the probe set",
-    title: str | None = None,
 ) -> Figure:
     r"""Plot 4b: what one re-alignment step does to predictive accuracy.
 
@@ -1041,8 +1095,6 @@ def phase_contrast(
         ncol=2,
         bbox_to_anchor=(0.5, 0.0),
     )
-    if title:
-        fig.suptitle(title)
     fig.tight_layout(rect=(0.0, 0.08, 1.0, 1.0))
     return fig
 
@@ -1130,7 +1182,6 @@ def overlay_lines(
     reference: float | None = None,
     reference_label: str | None = None,
     replicate_label: str = "Reseeded replicate (dashed)",
-    title: str | None = None,
 ) -> Figure:
     r"""Plot 5: one line per series over ``t``, with a reseeded run overlaid.
 
@@ -1166,8 +1217,6 @@ def overlay_lines(
     )
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
-    if title:
-        ax.set_title(title)
     handles, texts = ax.get_legend_handles_labels()
     if replicate:
         handles.append(
@@ -1188,7 +1237,6 @@ def overlay_grid(
     colors: Mapping[str, str] | None = None,
     replicate_label: str = "Reseeded replicate (dashed)",
     ncols: int = 2,
-    title: str | None = None,
 ) -> Figure:
     r"""Plot 5 for the latent state: one panel per $z_t$ component.
 
@@ -1234,8 +1282,6 @@ def overlay_grid(
         )
         texts.append(replicate_label)
     fig.legend(handles, texts, loc="lower center", ncol=min(4, len(handles) or 1))
-    if title:
-        fig.suptitle(title)
     fig.tight_layout(rect=(0.0, 0.07, 1.0, 1.0))
     return fig
 
@@ -1248,7 +1294,6 @@ def diversity_bar(
     order: Sequence[str] | None = None,
     labels: Mapping[str, str] | None = None,
     ylabel: str = r"Behaviour change $\Delta b$",
-    title: str | None = None,
     color: str = style.BLUE,
 ) -> Figure:
     """RQ2 diversity bar chart: does dataset diversity hinder re-alignment?
@@ -1290,7 +1335,5 @@ def diversity_bar(
     ax.set_xticks(x)
     ax.set_xticklabels(tick_labels, rotation=15, ha="right")
     ax.set_ylabel(ylabel)
-    if title:
-        ax.set_title(title)
     fig.tight_layout()
     return fig

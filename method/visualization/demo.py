@@ -53,7 +53,6 @@ def build_and_save(out_dir: Path = style.PLOTS_DIR, *, n_seeds: int = 5) -> list
         pairs["delta_p_0"],
         pairs["delta_p_t"],
         pairs["delta_behavior"],
-        title="Projection difference vs. behaviour change",
     )
     emit(fig, "projection_correlation")
 
@@ -62,20 +61,14 @@ def build_and_save(out_dir: Path = style.PLOTS_DIR, *, n_seeds: int = 5) -> list
     for component, label in _Z_LABELS.items():
         mp = schema.metric_pairs(trajectories, component)
         metric_data[label] = (mp["value"].to_numpy(), mp["delta_behavior"].to_numpy())
-    fig = figures.scatter_metric_grid(
-        metric_data, title="Latent-state components vs. behaviour change"
-    )
+    fig = figures.scatter_metric_grid(metric_data)
     emit(fig, "latent_metric_grid")
 
     # --- RQ1: drift of rho_t and r_t from their step-0 value ---
     for component in ("rho", "r"):
         label = _Z_LABELS[component]
         runs = schema.z_component_matrix(trajectories, component)
-        fig = figures.drift_line(
-            {label: runs},
-            ylabel=f"{label} (% of step 0)",
-            title=f"Drift of {label} over the trajectory",
-        )
+        fig = figures.drift_line({label: runs}, ylabel=f"{label} (% of step 0)")
         emit(fig, f"drift_{component}")
 
     # --- RQ1: how far Delta P_t drifts (as % of Delta P_0) with step index ---
@@ -87,7 +80,6 @@ def build_and_save(out_dir: Path = style.PLOTS_DIR, *, n_seeds: int = 5) -> list
         xlabel="Step $t$",
         reference=100.0,
         reference_label="Step-0 value",
-        title=r"Drift of $\Delta P_t$ relative to $\Delta P_0$",
     )
     emit(fig, "drift_delta_p")
 
@@ -95,16 +87,12 @@ def build_and_save(out_dir: Path = style.PLOTS_DIR, *, n_seeds: int = 5) -> list
     hysteresis_df = synthetic.synthetic_hysteresis_frame(n_seeds=n_seeds)
     fig = figures.hysteresis_bar(
         hysteresis_df,
-        conditions=synthetic.HYSTERESIS_CONDITIONS,
-        condition_labels=[
-            synthetic.HYSTERESIS_LABELS[c] for c in synthetic.HYSTERESIS_CONDITIONS
-        ],
         # Same arms, same order, same labels as make_plots draws for real runs.
+        conditions=synthetic.HYSTERESIS_CONDITIONS,
         start_col="behavior_before",
         reference=float(hysteresis_df["behavior_base"].mean()),
         reference_label=r"Base model $b_0$",
         ylabel=r"Trait score after the final step ($b_T$)",
-        title="Trait score after a step onto each dataset, by prior training",
     )
     emit(fig, "hysteresis")
 
@@ -114,7 +102,6 @@ def build_and_save(out_dir: Path = style.PLOTS_DIR, *, n_seeds: int = 5) -> list
         diversity_df,
         order=synthetic.DIVERSITY_CONDITIONS,
         labels=synthetic.DIVERSITY_LABELS,
-        title="Residual misalignment after realignment, by training diversity",
     )
     emit(fig, "diversity")
 
