@@ -50,6 +50,19 @@ def base_probes_path(base_weights_id: str, trait: str, *, mock: bool = False) ->
     return root / "base_probes" / f"{base_weights_id}_{trait}.json"
 
 
+def anchor_noise_path(base_weights_id: str, label: str, *, mock: bool = False) -> Path:
+    """Where a replicate sweep of the base anchor writes its summary.
+
+    Keyed by the base ``weights_id`` for the same reason as
+    :func:`base_probes_path` -- the anchor is a property of the base model, and
+    every family reading it shares one -- plus a ``label`` naming the checkpoint
+    span the replicates were carried along (see :mod:`method.anchor_noise`),
+    since the same anchor draw yields a different noise budget on a longer trunk.
+    """
+    root = trajectories_root(mock=mock)
+    return root / "anchor_noise" / f"{base_weights_id}_{label}.json"
+
+
 def model_slug(model_name: str) -> str:
     """Filesystem-safe short form of a model id.
 

@@ -62,7 +62,8 @@ LOCAL_DELTA_P = DeltaPConfig(mode=DeltaPMode.SAMPLE, n_samples=32)
 _EXP1_STEPS = (
     StepConfig(dataset="mistake_gsm8k", version=DatasetVersion.MISALIGNED_2),
     StepConfig(
-        dataset="evil", version=DatasetVersion.NORMAL,
+        dataset="evil",
+        version=DatasetVersion.NORMAL,
     ),
 )
 
@@ -123,6 +124,11 @@ EXP2_DECAY = "exp2_decay"  # sections 3-4: three trunks, each fanned out at ever
 EXP2_RESEED = "exp2_reseed"  # section 6c: trunk A again under another seed
 EXP3 = "exp3"  # "Is a model trained on trait-eliciting data more prone to EM?"
 EXP4 = "exp4"  # "Does Data Diversity Hinder Emergent Realignment or Favor EM?"
+#: Section 6d: how much of z_t is the base measurement rather than the model
+#: (:mod:`method.anchor_noise`). Trains nothing and produces no trajectory --
+#: it re-draws the base anchor and re-reads existing checkpoints against each
+#: draw -- so the tag exists for provenance, not for ``collect_group``.
+ANCHOR_NOISE = "anchor_noise"
 
 MEASURE_TRAITS: tuple[str, ...] = ("evil", "sycophantic")
 #: SFT dataset directory for each trait's "normal" (re-alignment) data. Note
@@ -148,9 +154,7 @@ def _localize_steps(steps: tuple[StepConfig, ...]) -> tuple[StepConfig, ...]:
     )
 
 
-def _probe_steps(
-    probes: Sequence[StepConfig], local: bool
-) -> tuple[StepConfig, ...]:
+def _probe_steps(probes: Sequence[StepConfig], local: bool) -> tuple[StepConfig, ...]:
     """Deduplicate a probe set by dataset and scale it exactly like ``steps``.
 
     Scaling has to match: a probe naming a dataset the trajectory also trains on
@@ -342,7 +346,9 @@ def check_exp2_feasibility(
         trunks = EXP2_TRUNKS
     probe_ids = {p.dataset_id for p in probes}
     if len(probe_ids) != len(probes):
-        raise ValueError(f"duplicate probe datasets in {[p.dataset_id for p in probes]}")
+        raise ValueError(
+            f"duplicate probe datasets in {[p.dataset_id for p in probes]}"
+        )
 
     for name, drivers in trunks.items():
         driver_ids = [d.dataset_id for d in drivers]
@@ -504,9 +510,7 @@ def build_exp2_decay_configs(
                         tag = f"{probe.dataset}_{probe.version.value}"
                         configs.append(
                             _exp2_config(
-                                name=(
-                                    f"exp2_decay_branch_{trunk}_t{t}_{tag}_{trait}"
-                                ),
+                                name=(f"exp2_decay_branch_{trunk}_t{t}_{tag}_{trait}"),
                                 trait=trait,
                                 steps=tuple(drivers[:t]) + (probe,),
                                 seed=seed,
@@ -578,6 +582,54 @@ def build_exp2_reseed_configs(
         )
         for trait in measure_traits
         for seed in seeds
+    ]
+
+
+#: Which of trunk A's checkpoints the anchor replicates are carried to. Chosen
+#: to span the lever rather than to cover it: the anchor error is common-mode,
+#: so what matters is whether it grows between the base model and the deepest
+#: point the decay figure reads, and each extra checkpoint costs a forward pass
+#: over the neutral answers *per replicate*. ``0`` is mandatory -- every $z_t$
+#: is read against that replicate's own $v_0$.
+ANCHOR_NOISE_CHECKPOINTS: tuple[int, ...] = (0, 1, 3, 6)
+
+
+def build_anchor_noise_configs(
+    *,
+    trunk: str = "a",
+    seed: int = EXP2_SEED,
+    measure_traits: Sequence[str] = MEASURE_TRAITS,
+    trunks: Mapping[str, Sequence[StepConfig]] = EXP2_TRUNKS,
+    local: bool = False,
+) -> list[TrajectoryConfig]:
+    """Section 6d: one config per trait over an existing trunk, for re-measuring.
+
+    Deliberately identical to :func:`build_exp2_decay_configs`' trunk in
+    everything ``weights_key`` hashes -- model, seed, steps -- so it resolves to
+    the *same* checkpoints and replays adapters that already exist instead of
+    training anything. ``group``, ``labels`` and ``probes`` are excluded from
+    that hash, which is what lets this differ in them freely;
+    ``tests/test_anchor_noise.py`` pins the equality so a later edit to either
+    builder cannot silently send this one off to train a parallel trunk.
+
+    No probes: :mod:`method.anchor_noise` measures $z_t$ only. DeltaP is read
+    against $v_t$ and so carries an anchor term of its own, but it is a
+    per-dataset quantity measured over thousands of examples and belongs to its
+    own budget rather than being folded in here.
+    """
+    if trunk not in trunks:
+        raise ValueError(f"unknown trunk {trunk!r}; known: {sorted(trunks)}")
+    return [
+        _exp2_config(
+            name=f"anchor_noise_trunk_{trunk}_{trait}",
+            trait=trait,
+            steps=tuple(trunks[trunk]),
+            seed=seed,
+            group=ANCHOR_NOISE,
+            labels=(("role", "trunk"), ("trunk", trunk)),
+            local=local,
+        )
+        for trait in measure_traits
     ]
 
 
@@ -841,9 +893,7 @@ def build_diversity_configs(
                             latent=latent,
                             group=EXP4,
                             probes=_probe_steps(
-                                tuple(probes)
-                                if probes is not None
-                                else (realign, d0),
+                                tuple(probes) if probes is not None else (realign, d0),
                                 local,
                             ),
                             labels=(

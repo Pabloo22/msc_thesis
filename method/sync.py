@@ -695,6 +695,7 @@ _MEASUREMENTS = "store/measurements"
 _SAMPLES = "store/training_samples"
 _RUNS = "trajectories/runs"
 _BASE_PROBES = "trajectories/base_probes"
+_ANCHOR_NOISE = "trajectories/anchor_noise"
 
 
 class Syncer:
@@ -880,6 +881,21 @@ class Syncer:
         for probe in _child_files(self.trajectories / "base_probes"):
             self.push_base_probe(probe)
 
+    def push_anchor_noise(self, path: Path) -> None:
+        """Upload one anchor-noise summary if it has changed.
+
+        Its own remote kind rather than a base probe's, despite both being one
+        JSON file keyed by the base ``weights_id``: they are pulled together for
+        plotting, and sharing a directory would put two unrelated schemas behind
+        one name with only the filename to tell them apart.
+        """
+        self._push_file(path, f"{_ANCHOR_NOISE}/{path.name}", sign=_file_signature)
+
+    def push_anchor_noises(self) -> None:
+        """Push every anchor-noise summary next to the trajectories root."""
+        for summary in _child_files(self.trajectories / "anchor_noise"):
+            self.push_anchor_noise(summary)
+
     def push_after_run(self, run_dir: Path) -> None:
         """Backstop flush once a run finishes: the store, ``run_dir``, probes.
 
@@ -968,6 +984,9 @@ class Syncer:
         )
         self._pull_files(
             _BASE_PROBES, self.trajectories / "base_probes", sign=_file_signature
+        )
+        self._pull_files(
+            _ANCHOR_NOISE, self.trajectories / "anchor_noise", sign=_file_signature
         )
 
     # --- shared machinery ----------------------------------------------- #

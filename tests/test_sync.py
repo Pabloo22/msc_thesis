@@ -1151,6 +1151,23 @@ class TestPlottingPull:
         # No adapters pulled.
         assert not dst.store.has_adapter("t01-abc")
 
+    def test_anchor_noise_summaries_round_trip(self, tmp_path):
+        """They live beside the base probes and are read by the same box, but
+        under their own remote kind so the two schemas stay apart."""
+        src = _syncer(tmp_path)
+        summaries = src.trajectories / "anchor_noise"
+        summaries.mkdir(parents=True)
+        summary = summaries / "t00-x_trunk_a.json"
+        summary.write_text('{"spread": []}', encoding="utf-8")
+        src.push_anchor_noise(summary)
+
+        dst = _syncer(tmp_path, store_name="dst")
+        dst.pull_for_plotting()
+
+        pulled = dst.trajectories / "anchor_noise" / "t00-x_trunk_a.json"
+        assert pulled.read_text() == '{"spread": []}'
+        assert not (dst.trajectories / "base_probes" / "t00-x_trunk_a.json").exists()
+
 
 class TestStoreSelection:
     """The closure a scoped pull is filtered against.
