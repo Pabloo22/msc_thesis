@@ -306,6 +306,10 @@ def drift_line(
 def hysteresis_bar(
     df: pd.DataFrame,
     *,
+    rows: Sequence[str] | None = None,
+    row_col: str = "trait",
+    row_labels: Mapping[str, str] | None = None,
+    row_scales: Mapping[str, str] | None = None,
     dataset_col: str = "dataset",
     condition_col: str = "condition",
     value_col: str = "behavior",
@@ -313,14 +317,32 @@ def hysteresis_bar(
     condition_labels: Sequence[str] | None = None,
     dataset_labels: Mapping[str, str] | None = None,
     start_col: str | None = None,
-    reference: float | None = None,
+    reference: float | Mapping[str, float] | None = None,
     reference_label: str | None = None,
     ylabel: str = r"Trait score $b_T$",
 ) -> Figure:
     r"""RQ2 hysteresis bar chart: is a realigned model easier to re-misalign?
 
-    One panel per dataset, one bar per ``condition`` within it. Error bars show
-    the std across seeds.
+    One column per dataset, one bar per ``condition`` within a panel, and one
+    row per value of ``row_col`` -- the measured trait crossed with the trait
+    whose Normal data did the re-aligning, in the figure this draws for exp3.
+    Error bars show the std across seeds.
+
+    The four combinations belong in one figure because the reading is the
+    comparison between them: whether re-aligning on a *different* trait's
+    Normal data leaves the same residue as re-aligning on the target's own is
+    the control that separates hysteresis from a dataset artefact, and it is
+    not a comparison the reader should have to make across four separately
+    scaled figures.
+
+    ``row_scales`` says which rows are the same quantity and so share a y-axis
+    -- the two re-alignment sources for one measured trait -- because the
+    traits are not: they are different judges on different behaviours, and one
+    trait topping out at a third of the other's range would spend two thirds of
+    its panels on empty space.
+
+    ``reference`` may be one line for the figure or one per row, since $b_0$ is
+    a property of the trait being measured.
 
     Bars are *levels*, not deltas. ``value_col`` defaults to the trait score
     each arm ends at, and ``reference`` draws a dashed line at $M_0$'s own
@@ -355,12 +377,7 @@ def hysteresis_bar(
     condition_labels = list(condition_labels)
     dataset_labels = dataset_labels or {}
     datasets = list(dict.fromkeys(df[dataset_col]))
-    stats = df.groupby([dataset_col, condition_col])[value_col].agg(["mean", "std"])
-    starts = (
-        df.groupby([dataset_col, condition_col])[start_col].mean()
-        if start_col
-        else None
-    )
+    panels = _facets(df, rows, row_labels, column=row_col)
 
     x = np.arange(len(conditions))
     width = 0.72
@@ -373,61 +390,87 @@ def hysteresis_bar(
     # a large dataset pool producing an unprintable figure.
     width_in = min(11.0, max(4.0, (0.52 * len(conditions) + 0.5) * len(datasets) + 0.8))
     fig, axes = plt.subplots(
-        1, len(datasets), figsize=(width_in, 4.4), sharey=True, squeeze=False
+        len(panels),
+        len(datasets),
+        figsize=(width_in, 2.7 * len(panels) + 1.7),
+        squeeze=False,
     )
-    for ax, dataset in zip(axes[0], datasets):
-        means = [
-            (
-                stats.loc[(dataset, c), "mean"]
-                if (dataset, c) in stats.index
-                else np.nan
-            )
-            for c in conditions
-        ]
-        stds = [
-            stats.loc[(dataset, c), "std"] if (dataset, c) in stats.index else 0.0
-            for c in conditions
-        ]
-        ax.bar(
-            x,
-            means,
-            width=width,
-            color=[style.categorical_color(i) for i in range(len(conditions))],
-            edgecolor=style.SURFACE,
-            linewidth=1.2,
-            zorder=3,
+    for row, (key, frame, label) in enumerate(panels):
+        line = reference.get(key) if isinstance(reference, Mapping) else reference
+        stats = frame.groupby([dataset_col, condition_col])[value_col].agg(
+            ["mean", "std"]
         )
-        ax.errorbar(
-            x, means, yerr=stds, fmt="none", ecolor=style.MUTED, elinewidth=1.0,
-            capsize=3, zorder=4,
+        starts = (
+            frame.groupby([dataset_col, condition_col])[start_col].mean()
+            if start_col
+            else None
         )
-        if starts is not None:
-            # Drawn as a tick across the bar rather than a second bar: it marks
-            # where this bar's growth began, so it belongs *on* the bar.
-            ax.errorbar(
+        for ax, dataset in zip(axes[row], datasets):
+            if row == 0:
+                ax.set_title(dataset_labels.get(dataset, display_dataset_name(dataset)))
+            if frame.empty:
+                _mark_empty(ax)
+                continue
+            means = [
+                (
+                    stats.loc[(dataset, c), "mean"]
+                    if (dataset, c) in stats.index
+                    else np.nan
+                )
+                for c in conditions
+            ]
+            stds = [
+                stats.loc[(dataset, c), "std"] if (dataset, c) in stats.index else 0.0
+                for c in conditions
+            ]
+            ax.bar(
                 x,
-                [starts.get((dataset, c), np.nan) for c in conditions],
-                xerr=width / 2,
-                fmt="none",
-                ecolor=style.INK,
-                elinewidth=1.2,
-                zorder=5,
+                means,
+                width=width,
+                color=[style.categorical_color(i) for i in range(len(conditions))],
+                edgecolor=style.SURFACE,
+                linewidth=1.2,
+                zorder=3,
             )
-        if reference is not None:
-            ax.axhline(
-                reference,
-                color=style.SECONDARY_INK,
-                linestyle="--",
-                linewidth=1.0,
-                zorder=2,
+            ax.errorbar(
+                x, means, yerr=stds, fmt="none", ecolor=style.MUTED, elinewidth=1.0,
+                capsize=3, zorder=4,
             )
-        ax.axhline(0, color=style.BASELINE, linewidth=0.8, zorder=1)
-        ax.set_xticks(x)
-        # Full ink, unlike the muted numeric ticks elsewhere: these names are
-        # what identifies an arm now that the legend no longer does.
-        ax.set_xticklabels(condition_labels, fontsize=10, color=style.INK)
-        ax.set_xlim(-0.5 - (1 - width) / 2, len(conditions) - 0.5 + (1 - width) / 2)
-        ax.set_title(dataset_labels.get(dataset, display_dataset_name(dataset)))
+            if starts is not None:
+                # Drawn as a tick across the bar rather than a second bar: it
+                # marks where this bar's growth began, so it belongs *on* it.
+                ax.errorbar(
+                    x,
+                    [starts.get((dataset, c), np.nan) for c in conditions],
+                    xerr=width / 2,
+                    fmt="none",
+                    ecolor=style.INK,
+                    elinewidth=1.2,
+                    zorder=5,
+                )
+            if line is not None:
+                ax.axhline(
+                    line,
+                    color=style.SECONDARY_INK,
+                    linestyle="--",
+                    linewidth=1.0,
+                    zorder=2,
+                )
+            ax.axhline(0, color=style.BASELINE, linewidth=0.8, zorder=1)
+            ax.set_xticks(x)
+            # Full ink, unlike the muted numeric ticks elsewhere: these names
+            # are what identifies an arm now that the legend no longer does.
+            ax.set_xticklabels(condition_labels, fontsize=10, color=style.INK)
+            ax.set_xlim(-0.5 - (1 - width) / 2, len(conditions) - 0.5 + (1 - width) / 2)
+        axes[row][0].set_ylabel(label, fontsize=10)
+
+    scales: dict[str, list[Axes]] = {}
+    for row, (key, _, _) in enumerate(panels):
+        scales.setdefault(row_scales.get(key, key) if row_scales else "", []).extend(
+            axes[row]
+        )
+    _share_blocks(scales.values(), y=True)
+    _label_outer(axes, bottom_rows=[len(panels) - 1])
 
     handles: list[Artist] = []
     texts: list[str] = []
@@ -436,7 +479,7 @@ def hysteresis_bar(
             plt.Line2D([], [], color=style.SECONDARY_INK, linestyle="--", linewidth=1.0)
         )
         texts.append(reference_label or "Base model")
-    if starts is not None:
+    if start_col:
         handles.append(plt.Line2D([], [], color=style.INK, linewidth=1.2))
         texts.append("Before the final step")
     if handles:
@@ -495,8 +538,8 @@ def _layout_grid(
     fig: Figure,
     axes: Iterable[Axes],
     *,
-    ylabel: str,
     legend_rows: int,
+    ylabel: str | None = None,
     xlabel: str | None = None,
     fontsize: float = 10,
 ) -> None:
@@ -510,8 +553,11 @@ def _layout_grid(
     it onto the legend on another. Measuring the drawn axes afterwards keeps
     each label the same short distance from the ticks it names.
 
-    ``xlabel`` is optional: a grid whose ticks already name themselves (the
-    hysteresis schedules, say) has nothing left for a shared x-label to add.
+    Both labels are optional, because a shared label is only meaningful where
+    the panels share the quantity: a grid whose ticks already name themselves
+    (the hysteresis schedules) has nothing for a shared x-label to add, and one
+    whose columns are different quantities in different units (the $z_t$
+    components) has nothing for a shared y-label to name.
     """
     width, height = fig.get_size_inches()
     reserved = legend_rows * _LEGEND_ROW_IN + (_SHARED_LABEL_IN if xlabel else 0.0)
@@ -525,12 +571,13 @@ def _layout_grid(
             y=block.y0 - _SHARED_LABEL_PAD_IN / height,
             va="top",
         )
-    fig.supylabel(
-        ylabel,
-        fontsize=fontsize,
-        x=block.x0 - _SHARED_LABEL_PAD_IN / width,
-        ha="right",
-    )
+    if ylabel:
+        fig.supylabel(
+            ylabel,
+            fontsize=fontsize,
+            x=block.x0 - _SHARED_LABEL_PAD_IN / width,
+            ha="right",
+        )
 
 
 #: Version order for a legend key, matching the ramp's direction.
@@ -592,16 +639,99 @@ def dataset_legend(
     return handles, texts
 
 
-def scatter_validation(
-    delta_p_0: ArrayLike,
-    delta_behavior: ArrayLike,
+def _mark_empty(ax: Axes) -> None:
+    """Mark a panel whose runs have not happened, rather than dropping it.
+
+    A half-finished sweep must leave its panel visibly empty: silently
+    narrowing the grid would hide which cells are still missing, and in a grid
+    whose rows and columns are read against each other it would also break the
+    alignment that makes them comparable.
+    """
+    _corner_text(ax, [("not run", style.MUTED)], x=0.5, y=0.55, ha="center")
+
+
+def _facets(
+    df: pd.DataFrame,
+    keys: Sequence[str] | None,
+    labels: Mapping[str, str] | None,
     *,
-    datasets: Sequence[str] | None = None,
-    yerr: ArrayLike | None = None,
+    column: str,
+) -> list[tuple[str, pd.DataFrame, str]]:
+    """Split a frame along one dimension of a grid: ``(key, rows, label)`` each.
+
+    Used wherever a figure panels the measured trait, which most of them now
+    do: a trait is read against its own persona vector and its own judge, so
+    two traits on one pair of axes would invite a comparison that is not in the
+    same units, while two traits in one figure is exactly the comparison the
+    experiments are for.
+
+    A frame with no such column is one unlabelled facet, so a caller with
+    nothing to split by -- the synthetic fixtures, a single-trait sweep --
+    passes its frame unchanged rather than inventing a column to satisfy the
+    signature.
+    """
+    if column not in df:
+        return [("", df, "")]
+    order = list(keys) if keys else sorted(df[column].unique())
+    labels = labels or {}
+    return [(key, _facet_frame(df, column, key), labels.get(key, key)) for key in order]
+
+
+def _facet_frame(df: pd.DataFrame, column: str, key: str) -> pd.DataFrame:
+    """One facet's rows, or the whole frame where there is no such column."""
+    return df[df[column] == key] if column in df else df
+
+
+def _share_blocks(
+    blocks: Iterable[Sequence[Axes]], *, x: bool = False, y: bool = False
+) -> None:
+    """Join each block of panels onto one scale, leaving the blocks apart.
+
+    ``plt.subplots`` shares everything, or shares by whole row or column, and a
+    grid stacked one trait per block wants neither. Within a trait the panels
+    have to be read against each other -- a flattening slope and a shrinking
+    $\\Delta b$ range look identical on per-panel scales, which is the one
+    confusion these grids exist to prevent -- while across two traits a shared
+    scale would rescale one trait's spread by the other's range.
+    """
+    for block in blocks:
+        anchor, *rest = block
+        for ax in rest:
+            if x:
+                ax.sharex(anchor)
+            if y:
+                ax.sharey(anchor)
+        # Joining takes the anchor's limits as they stand -- which are the
+        # anchor's own data's, since the panels were drawn before the join --
+        # and does not re-run the autoscale over the group. Without this the
+        # block would be scaled to whatever its first panel happened to hold.
+        anchor.autoscale_view()
+
+
+def _label_outer(axes: np.ndarray, *, bottom_rows: Sequence[int]) -> None:
+    """Keep tick labels on the left column and on each block's bottom row.
+
+    The counterpart to :func:`_share_blocks`: sharing an axis is what makes the
+    interior labels redundant, and ``plt.subplots`` only drops them for the
+    sharing it applied itself. ``bottom_rows`` is per block rather than the
+    grid's last row alone, because blocks are on different scales -- the row
+    above a block boundary is the last row of its own axis and has to say what
+    that axis reads.
+    """
+    for r, row in enumerate(axes):
+        for c, ax in enumerate(row):
+            ax.tick_params(labelleft=c == 0, labelbottom=r in bottom_rows)
+
+
+def scatter_validation(
+    df: pd.DataFrame,
+    *,
+    traits: Sequence[str] | None = None,
+    trait_labels: Mapping[str, str] | None = None,
     xlabel: str = r"Projection difference $\Delta P_0$",
     ylabel: str = r"Behaviour change $\Delta b_1$",
 ) -> Figure:
-    r"""Plot 1: the $t = 0$ validation fan over all 24 datasets.
+    r"""Plot 1: the $t = 0$ validation fan over all 24 datasets, one trait per panel.
 
     One point per dataset fine-tuned straight from $M_0$, reproducing Figure 8
     of the persona-vectors paper. This is the pipeline's gate, not part of the
@@ -610,64 +740,91 @@ def scatter_validation(
     restriction and to ``n`` that comparing the two would manufacture a decay
     out of nothing (section 5).
 
-    One fitted series, so its statistics are annotated directly rather than
-    put in a legend. ``datasets`` gives every point its own mark, and the
-    legend then keys the *encoding* -- shape per family, fill per version --
-    which is what makes a 24-point scatter readable without 24 legend entries.
+    The traits share a figure but not a scale. Each is a different persona
+    vector and a different judge, so $\Delta P$ and $\Delta b$ mean different
+    things across panels and a shared axis would invite reading one trait's
+    spread against the other's; what the panels do share is the encoding, so
+    the mark key is stated once for the figure.
+
+    One fitted series per panel, so its statistics are annotated in the panel
+    rather than put in a legend, and the legend keys the *encoding* -- shape
+    per family, fill per version -- which is what makes a 24-point scatter
+    readable without 24 entries.
     """
     style.apply_style()
-    wide = datasets is not None
-    fig, ax = plt.subplots(figsize=(7.4 if wide else 5.5, 4.4))
-    fit = _scatter_with_fit(
-        ax,
-        delta_p_0,
-        delta_behavior,
-        color=style.BLUE,
-        label=r"$\Delta P_0$",
-        yerr=yerr,
-        size=44,
-        datasets=datasets,
+    traits = list(traits) if traits else sorted(df["trait"].unique())
+    trait_labels = trait_labels or {}
+
+    fig, axes = plt.subplots(
+        1, len(traits), figsize=(4.9 * len(traits) + 0.6, 4.6), squeeze=False
     )
-    ax.axhline(0, color=style.BASELINE, linewidth=0.8, zorder=1)
-    n = int(np.asarray(delta_p_0, dtype=float).size)
-    _corner_text(
-        ax,
-        [
-            (rf"$R^2$ = {fit.r2:.2f}   slope = {fit.slope:.2f}", style.INK),
-            (rf"$n$ = {n} datasets", style.SECONDARY_INK),
-        ],
-        fontsize=9,
+    for ax, trait in zip(axes[0], traits):
+        panel = df[df["trait"] == trait]
+        ax.set_title(trait_labels.get(trait, trait))
+        if panel.empty:
+            _mark_empty(ax)
+            continue
+        fit = _scatter_with_fit(
+            ax,
+            panel["delta_p_0"],
+            panel["delta_b"],
+            color=style.BLUE,
+            label=r"$\Delta P_0$",
+            yerr=panel["se_delta_b"] if "se_delta_b" in panel else None,
+            size=44,
+            datasets=list(panel["dataset"]) if "dataset" in panel else None,
+        )
+        ax.axhline(0, color=style.BASELINE, linewidth=0.8, zorder=1)
+        _corner_text(
+            ax,
+            [
+                (rf"$R^2$ = {fit.r2:.2f}   slope = {fit.slope:.2f}", style.INK),
+                (rf"$n$ = {len(panel)} datasets", style.SECONDARY_INK),
+            ],
+            fontsize=9,
+        )
+
+    handles, texts = dataset_legend(list(df["dataset"]) if "dataset" in df else [])
+    ncol = min(6, len(handles))
+    if handles:
+        fig.legend(handles, texts, loc="lower center", ncol=ncol)
+    _layout_grid(
+        fig,
+        axes.flat,
+        xlabel=xlabel,
+        ylabel=ylabel,
+        legend_rows=-(-len(handles) // ncol) if handles else 0,
     )
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel(ylabel)
-    if datasets is not None:
-        handles, texts = dataset_legend(datasets)
-        ax.legend(handles, texts, loc="upper left", bbox_to_anchor=(1.02, 1.0))
-    fig.tight_layout()
     return fig
 
 
 def decay_scatter_grid(
     df: pd.DataFrame,
     *,
+    traits: Sequence[str] | None = None,
+    trait_labels: Mapping[str, str] | None = None,
     trunks: Sequence[str] | None = None,
     checkpoints: Sequence[int] | None = None,
     trunk_labels: Mapping[str, str] | None = None,
     xlabel: str = r"Projection difference $\Delta P$",
     ylabel: str = r"Behaviour change $\Delta b_{t+1}$",
 ) -> Figure:
-    r"""Plot 2: one scatter panel per ``(trunk, checkpoint)``.
+    r"""Plot 2: one scatter panel per ``(trait, trunk, checkpoint)``.
 
     Rows are trunks and columns checkpoints, so a row reads as one trajectory
-    ageing and a column as three trajectories at the same depth. Each panel
-    holds the ``K`` probe datasets twice over: against the frozen $\Delta P_0$
-    in blue and against the recomputed $\Delta P_t$ in orange, with both fits'
-    $R^2$ annotated. The hypothesis is visible as the blue fit flattening
-    left-to-right while the orange one does not.
+    ageing and a column as three trajectories at the same depth; the traits
+    stack as blocks of rows. Each panel holds the ``K`` probe datasets twice
+    over: against the frozen $\Delta P_0$ in blue and against the recomputed
+    $\Delta P_t$ in orange, with both fits' $R^2$ annotated. The hypothesis is
+    visible as the blue fit flattening left-to-right while the orange one does
+    not.
 
-    Axes are shared across the whole grid. Panels drawn on their own scales
-    would let a flattening slope and a shrinking $\Delta b$ range look
-    identical, which is the one confusion this figure exists to prevent.
+    Axes are shared within a trait and not across them (see
+    :func:`_share_blocks`). Within one, panels on their own scales would let a
+    flattening slope and a shrinking $\Delta b$ range look identical, which is
+    the one confusion this figure exists to prevent; across two, $\Delta P$ and
+    $\Delta b$ are read against different persona vectors and different judges,
+    so a shared scale would compare quantities that are not the same quantity.
 
     The steps-since-re-alignment note above each panel is the phase of section
     4, marked per panel rather than per column because the three schedules put
@@ -683,24 +840,30 @@ def decay_scatter_grid(
         list(checkpoints) if checkpoints is not None else sorted(df["t"].unique())
     )
     trunk_labels = trunk_labels or {}
-    nrows, ncols = max(1, len(trunks)), max(1, len(checkpoints))
+    blocks = _facets(df, traits, trait_labels, column="trait")
+    # A row is a (trait, trunk) pair, flattened here so the drawing loop stays
+    # one level deep and the trait blocks stay contiguous.
+    panels: list[tuple[pd.DataFrame, str, str]] = []
+    for _, frame, trait_label in blocks:
+        for trunk in trunks:
+            name = trunk_labels.get(trunk, f"Trunk {trunk}")
+            panels.append(
+                (frame, trunk, f"{trait_label}\n{name}" if trait_label else name)
+            )
+    nrows, ncols = max(1, len(panels)), max(1, len(checkpoints))
 
     fig, axes = plt.subplots(
         nrows,
         ncols,
-        figsize=(1.75 * ncols + 1.4, 2.0 * nrows + 1.3),
-        sharex=True,
-        sharey=True,
+        figsize=(1.75 * ncols + 1.6, 2.0 * nrows + 1.3),
         squeeze=False,
     )
-    for row, trunk in enumerate(trunks):
+    for row, (frame, trunk, name) in enumerate(panels):
         for col, t in enumerate(checkpoints):
             ax = axes[row][col]
-            panel = df[(df["trunk"] == trunk) & (df["t"] == t)]
+            panel = frame[(frame["trunk"] == trunk) & (frame["t"] == t)]
             if panel.empty:
-                _corner_text(
-                    ax, [("not run", style.MUTED)], x=0.5, y=0.55, ha="center"
-                )
+                _mark_empty(ax)
                 continue
             ax.axhline(0, color=style.BASELINE, linewidth=0.8, zorder=1)
             errors = panel["se_delta_b"] if "se_delta_b" in panel else None
@@ -745,9 +908,18 @@ def decay_scatter_grid(
                 color=style.MUTED,
                 pad=3,
             )
-        axes[row][0].set_ylabel(
-            trunk_labels.get(trunks[row], f"Trunk {trunks[row]}"), fontsize=9
-        )
+        axes[row][0].set_ylabel(name, fontsize=9)
+
+    stride = len(trunks) or 1
+    _share_blocks(
+        [
+            [ax for row in axes[start:start + stride] for ax in row]
+            for start in range(0, len(panels), stride)
+        ],
+        x=True,
+        y=True,
+    )
+    _label_outer(axes, bottom_rows=range(stride - 1, len(panels), stride))
     for col, t in enumerate(checkpoints):
         # An annotation rather than a centred title: matplotlib lays a panel's
         # left, centre and right titles on one line, and the top row's right
@@ -831,6 +1003,8 @@ def _band(
 def headline_curves(
     fits: pd.DataFrame,
     *,
+    traits: Sequence[str] | None = None,
+    trait_labels: Mapping[str, str] | None = None,
     series: Sequence[str] = ("p0", "pt"),
     series_labels: Mapping[str, str] | None = None,
     trunks: Sequence[str] | None = None,
@@ -842,11 +1016,11 @@ def headline_curves(
 ) -> Figure:
     r"""Plot 3: $R^2$ and fitted slope against ``t``, one line per trunk.
 
-    Two rows and one column per projection series. Slope is reported beside
-    $R^2$ rather than inside it because staleness has two signatures that imply
-    different fixes: a fit that loses its ordering (falling $R^2$) and one that
-    keeps the ordering but shrinks the magnitude (falling slope at unchanged
-    $R^2$).
+    Two rows per trait and one column per projection series. Slope is reported
+    beside $R^2$ rather than inside it because staleness has two signatures
+    that imply different fixes: a fit that loses its ordering (falling $R^2$)
+    and one that keeps the ordering but shrinks the magnitude (falling slope at
+    unchanged $R^2$).
 
     The dashed ceiling is what makes the $R^2$ panels a claim rather than an
     observation. $\Delta b$ carries noise no predictor can explain, so a
@@ -861,7 +1035,10 @@ def headline_curves(
     Two measures on two rows rather than two y-scales on one: the alignment of
     a shared axis between $R^2$ and a slope in trait points per unit
     $\Delta P$ would be arbitrary, and would invent a relationship between
-    them.
+    them. For the same reason the slope rows are not shared across traits --
+    the slope is in points of *that* trait's judge per unit of *that* trait's
+    persona vector, so its absolute value is not comparable between them, while
+    its trend in ``t`` is exactly what the figure asks the reader to compare.
     """
     style.apply_style()
     series = list(series)
@@ -869,23 +1046,32 @@ def headline_curves(
     trunk_labels = trunk_labels or {}
     trunk_colors = trunk_colors or {}
     trunks = list(trunks) if trunks else sorted(fits["trunk"].unique())
+    quantities = (
+        ("r2", r"$R^2$ over the probe set"),
+        ("slope", r"Fitted slope ($\Delta b$ per unit $\Delta P$)"),
+    )
+    rows = [
+        (frame, quantity, f"{trait_label}\n{name}" if trait_label else name)
+        for _, frame, trait_label in _facets(fits, traits, trait_labels, column="trait")
+        for quantity, name in quantities
+    ]
 
-    # Rows share a y-axis so the two projection series are read against each
-    # other, which is the comparison the figure exists for; the two rows do
-    # not, since $R^2$ and a slope are different quantities.
+    # A row shares a y-axis so the two projection series are read against each
+    # other, which is the comparison the figure exists for. Nothing is shared
+    # between rows: they are different quantities, and different traits.
     fig, axes = plt.subplots(
-        2,
+        len(rows),
         len(series),
-        figsize=(4.4 * len(series), 6.2),
+        figsize=(4.4 * len(series), 2.9 * len(rows) + 0.6),
         sharex=True,
         sharey="row",
         squeeze=False,
     )
-    for col, name in enumerate(series):
-        for row, quantity in enumerate(("r2", "slope")):
+    for row, (frame, quantity, label) in enumerate(rows):
+        for col, name in enumerate(series):
             ax = axes[row][col]
             for trunk in trunks:
-                arm = fits[fits["trunk"] == trunk].sort_values("t")
+                arm = frame[frame["trunk"] == trunk].sort_values("t")
                 if arm.empty:
                     continue
                 color = trunk_colors.get(trunk, style.BLUE)
@@ -910,18 +1096,18 @@ def headline_curves(
                     )
             if quantity == "r2":
                 ax.set_ylim(-0.03, 1.03)
-                ax.set_ylabel(r"$R^2$ over the probe set")
             else:
                 ax.axhline(0, color=style.BASELINE, linewidth=0.8, zorder=1)
-                ax.set_ylabel(r"Fitted slope ($\Delta b$ per unit $\Delta P$)")
-                # Only the bottom row: the columns share an x-axis, so a label
-                # under the top row would name ticks that are not drawn.
-                ax.set_xlabel(xlabel)
+        axes[row][0].set_ylabel(label)
+    for col, name in enumerate(series):
         axes[0][col].set_title(
             series_labels.get(name, name), color=style.SECONDARY_INK
         )
+        # Only the bottom row: every column shares one x-axis, so a label under
+        # any other row would name ticks that are not drawn.
+        axes[-1][col].set_xlabel(xlabel)
 
-    handles, texts = axes[0][0].get_legend_handles_labels()
+    handles, texts = _shared_legend(axes.flat)
     if ceiling_column is not None:
         handles.append(
             plt.Line2D(
@@ -929,28 +1115,30 @@ def headline_curves(
             )
         )
         texts.append(ceiling_label)
-    fig.legend(handles, texts, loc="lower center", ncol=2, bbox_to_anchor=(0.5, 0.0))
-    fig.tight_layout(rect=(0.0, 0.09, 1.0, 1.0))
+    ncol = min(4, len(handles) or 1)
+    fig.legend(handles, texts, loc="lower center", ncol=ncol)
+    _layout_grid(fig, axes.flat, legend_rows=-(-len(handles) // ncol))
     return fig
 
 
 def mechanism_grid(
-    rows: pd.DataFrame,
+    checkpoints: pd.DataFrame,
     predictors: Mapping[str, str],
     *,
+    traits: Sequence[str] | None = None,
+    trait_labels: Mapping[str, str] | None = None,
     value_column: str = "r2_p0",
     trunk_labels: Mapping[str, str] | None = None,
     trunk_colors: Mapping[str, str] | None = None,
     ylabel: str = r"$R^2$ of $\Delta P_0$ at that checkpoint",
-    ncols: int = 2,
 ) -> Figure:
     r"""Plot 4: the checkpoint-level regression of $R^2$ on what moved.
 
     ``predictors`` maps a column to its display label -- the drift components
     $\rho$ and $r$, the current behaviour level $b_t$, and
-    ``steps_since_realignment``. Each panel fits $R^2$ against one of them over
-    every checkpoint in ``rows``, and colour identifies which trunk a
-    checkpoint came from.
+    ``steps_since_realignment``. A column fits $R^2$ against one of them over
+    every checkpoint of one trait, a row is a trait, and colour identifies
+    which trunk a checkpoint came from.
 
     This is the level-2 analysis, so a point is a *checkpoint*, not a probe
     dataset: the eight probes at a checkpoint were already spent producing the
@@ -959,65 +1147,86 @@ def mechanism_grid(
     ``t`` in ``{0, 2, 4, 6}`` would give 10 -- and the varied schedules are
     what stop drift and behaviour level from moving together, which is the
     condition for their contributions to be separable.
+
+    Every panel shares one y-axis, unlike the other grids here: $R^2$ is
+    unitless and bounded, so it is the one quantity in this set that means the
+    same thing for both traits. The x-axes are not shared, in either direction
+    -- the columns are different quantities, and a rotation that runs over
+    $[0.88, 1]$ for one trait and $[0.97, 1]$ for the other would have the
+    tighter trait's whole spread squeezed into a corner.
     """
     style.apply_style()
     trunk_labels = trunk_labels or {}
     trunk_colors = trunk_colors or {}
-    n = len(predictors)
-    ncols = max(1, min(ncols, n))
-    nrows = -(-n // ncols)
+    rows = _facets(checkpoints, traits, trait_labels, column="trait")
+    ncols = max(1, len(predictors))
     fig, axes = plt.subplots(
-        nrows, ncols, figsize=(4.4 * ncols, 3.5 * nrows), squeeze=False
+        len(rows),
+        ncols,
+        figsize=(3.3 * ncols + 1.0, 3.0 * len(rows) + 1.0),
+        sharey=True,
+        squeeze=False,
     )
-    axes_flat = axes.flatten()
 
-    for i, (ax, (column, label)) in enumerate(zip(axes_flat, predictors.items())):
-        fit = linear_fit(rows[column], rows[value_column])
-        if len(rows) >= 2:
-            line_x = _fit_line_x(np.asarray(rows[column], dtype=float))
-            ax.plot(
-                line_x,
-                fit.predict(line_x),
-                color=style.SECONDARY_INK,
-                linewidth=1.5,
-                zorder=2,
-            )
-        for key, group in rows.groupby("trunk", sort=True):
-            trunk = str(key)
-            ax.scatter(
-                group[column],
-                group[value_column],
-                s=30,
-                color=trunk_colors.get(trunk, style.BLUE),
-                alpha=0.85,
-                edgecolor=style.SURFACE,
-                linewidth=0.8,
-                zorder=3,
-                label=trunk_labels.get(trunk, f"Trunk {trunk}"),
-            )
-        entries = [(rf"$R^2$ = {fit.r2:.2f}", style.INK)]
-        if i == 0:
-            # Every panel regresses the same checkpoints, so ``n`` belongs to
-            # the figure rather than to a panel -- stated once, in the one the
-            # eye reaches first, since it is what stops the level-2 count from
-            # being read as the level-1 one (a point here is a checkpoint, not
-            # a probe dataset).
-            entries.append((rf"$n$ = {len(rows)} checkpoints", style.SECONDARY_INK))
-        _corner_text(ax, entries, fontsize=9)
-        ax.set_xlabel(label)
-        ax.set_ylabel(ylabel)
-    for ax in axes_flat[n:]:
-        ax.set_visible(False)
+    for row, (_, frame, trait_label) in enumerate(rows):
+        for col, (column, label) in enumerate(predictors.items()):
+            ax = axes[row][col]
+            if row == 0:
+                ax.set_title(label, fontsize=9.5, color=style.SECONDARY_INK)
+            if frame.empty:
+                _mark_empty(ax)
+                continue
+            fit = linear_fit(frame[column], frame[value_column])
+            if len(frame) >= 2:
+                line_x = _fit_line_x(np.asarray(frame[column], dtype=float))
+                ax.plot(
+                    line_x,
+                    fit.predict(line_x),
+                    color=style.SECONDARY_INK,
+                    linewidth=1.5,
+                    zorder=2,
+                )
+            for key, group in frame.groupby("trunk", sort=True):
+                trunk = str(key)
+                ax.scatter(
+                    group[column],
+                    group[value_column],
+                    s=30,
+                    color=trunk_colors.get(trunk, style.BLUE),
+                    alpha=0.85,
+                    edgecolor=style.SURFACE,
+                    linewidth=0.8,
+                    zorder=3,
+                    label=trunk_labels.get(trunk, f"Trunk {trunk}"),
+                )
+            entries = [(rf"$R^2$ = {fit.r2:.2f}", style.INK)]
+            if col == 0:
+                # Every panel of a row regresses the same checkpoints, so ``n``
+                # belongs to the row rather than to a panel -- stated once, in
+                # the one the eye reaches first, since it is what stops the
+                # level-2 count from being read as the level-1 one (a point
+                # here is a checkpoint, not a probe dataset). Once per row and
+                # not once per figure, because each trait has its own ``n``.
+                entries.append(
+                    (rf"$n$ = {len(frame)} checkpoints", style.SECONDARY_INK)
+                )
+            _corner_text(ax, entries, fontsize=9)
+        axes[row][0].set_ylabel(trait_label, fontsize=10)
 
-    handles, texts = axes_flat[0].get_legend_handles_labels()
-    fig.legend(handles, texts, loc="lower center", ncol=len(handles) or 1)
-    fig.tight_layout(rect=(0.0, 0.07, 1.0, 1.0))
+    handles, texts = _shared_legend(axes.flat)
+    ncol = min(4, len(handles) or 1)
+    fig.legend(handles, texts, loc="lower center", ncol=ncol)
+    _layout_grid(
+        fig, axes.flat, ylabel=ylabel, legend_rows=-(-len(handles) // ncol)
+    )
     return fig
 
 
 def phase_contrast(
     pairs: pd.DataFrame,
     *,
+    traits: Sequence[str] | None = None,
+    trait_labels: Mapping[str, str] | None = None,
     series: Sequence[str] = ("p0", "pt"),
     series_labels: Mapping[str, str] | None = None,
     trunk_colors: Mapping[str, str] | None = None,
@@ -1034,49 +1243,67 @@ def phase_contrast(
     Drawn as a before/after pair rather than as a bar of the difference so that
     the *level* stays visible: a drop from 0.9 to 0.6 and one from 0.4 to 0.1
     are the same bar and very different findings.
+
+    A row per trait, on one shared pair of axes: $R^2$ is unitless and every
+    row is read against the same list of re-alignment steps, so a step whose
+    fit collapses for one trait and holds for the other is a difference the
+    grid shows directly. The x positions come from the whole frame rather than
+    from each row, so a pair that only one trait has measured leaves a gap
+    instead of shifting that row's steps out of line with the other's.
     """
     style.apply_style()
     series = list(series)
     series_labels = series_labels or {}
     trunk_colors = trunk_colors or {}
-    ordered = pairs.sort_values(["trunk", "t_before"]).to_dict("records")
+    ordered = list(
+        pairs.sort_values(["trunk", "t_before"])["pair"].drop_duplicates()
+    )
+    position = {pair: i for i, pair in enumerate(ordered)}
+    rows = _facets(pairs, traits, trait_labels, column="trait")
     x = np.arange(len(ordered))
 
     fig, axes = plt.subplots(
-        1, len(series), figsize=(3.2 * len(series) + 1.6, 4.4), sharey=True,
+        len(rows),
+        len(series),
+        figsize=(3.2 * len(series) + 1.6, 3.0 * len(rows) + 1.2),
+        sharex=True,
+        sharey=True,
         squeeze=False,
     )
-    for ax, name in zip(axes[0], series):
-        for i, row in enumerate(ordered):
-            color = trunk_colors.get(row["trunk"], style.BLUE)
-            before = row[f"r2_{name}_before"]
-            after = row[f"r2_{name}_after"]
-            ax.plot([i, i], [before, after], color=color, linewidth=1.6, zorder=2)
-            ax.scatter(
-                [i], [before], s=42, facecolor=style.SURFACE, edgecolor=color,
-                linewidth=1.6, zorder=3,
-            )
-            ax.scatter(
-                [i], [after], s=42, color=color, edgecolor=style.SURFACE,
-                linewidth=0.8, zorder=3,
-            )
-            ax.annotate(
-                f"{after - before:+.2f}",
-                (i, max(before, after)),
-                textcoords="offset points",
-                xytext=(0, 7),
-                ha="center",
-                fontsize=8,
-                color=style.SECONDARY_INK,
-            )
-        ax.set_xticks(x)
-        ax.set_xticklabels([row["pair"] for row in ordered], rotation=20, ha="right")
-        # Room for the delta labels on the outermost pairs, which sit above a
-        # marker at the very edge of the data range.
-        ax.set_xlim(-0.7, len(ordered) - 0.3)
-        ax.set_ylim(-0.05, 1.15)
-        ax.set_title(series_labels.get(name, name), color=style.SECONDARY_INK)
-    axes[0][0].set_ylabel(ylabel)
+    for row, (_, frame, trait_label) in enumerate(rows):
+        for ax, name in zip(axes[row], series):
+            for record in frame.to_dict("records"):
+                i = position[record["pair"]]
+                color = trunk_colors.get(record["trunk"], style.BLUE)
+                before = record[f"r2_{name}_before"]
+                after = record[f"r2_{name}_after"]
+                ax.plot([i, i], [before, after], color=color, linewidth=1.6, zorder=2)
+                ax.scatter(
+                    [i], [before], s=42, facecolor=style.SURFACE, edgecolor=color,
+                    linewidth=1.6, zorder=3,
+                )
+                ax.scatter(
+                    [i], [after], s=42, color=color, edgecolor=style.SURFACE,
+                    linewidth=0.8, zorder=3,
+                )
+                ax.annotate(
+                    f"{after - before:+.2f}",
+                    (i, max(before, after)),
+                    textcoords="offset points",
+                    xytext=(0, 7),
+                    ha="center",
+                    fontsize=8,
+                    color=style.SECONDARY_INK,
+                )
+            ax.set_xticks(x)
+            ax.set_xticklabels(ordered, rotation=20, ha="right")
+            # Room for the delta labels on the outermost pairs, which sit above
+            # a marker at the very edge of the data range.
+            ax.set_xlim(-0.7, len(ordered) - 0.3)
+            ax.set_ylim(-0.05, 1.15)
+            if row == 0:
+                ax.set_title(series_labels.get(name, name), color=style.SECONDARY_INK)
+        axes[row][0].set_ylabel(trait_label)
 
     handles = [
         plt.Line2D(
@@ -1093,9 +1320,8 @@ def phase_contrast(
         ["Before the Normal driver", "After it"],
         loc="lower center",
         ncol=2,
-        bbox_to_anchor=(0.5, 0.0),
     )
-    fig.tight_layout(rect=(0.0, 0.08, 1.0, 1.0))
+    _layout_grid(fig, axes.flat, ylabel=ylabel, legend_rows=1)
     return fig
 
 
@@ -1171,19 +1397,45 @@ def _draw_overlay(
         )
 
 
-def overlay_lines(
-    primary: Mapping[str, Sequence[float]],
-    replicate: Mapping[str, Sequence[float]] | None = None,
+def _shared_legend(axes: Iterable[Axes]) -> tuple[list[Artist], list[str]]:
+    """One legend entry per distinct series label across a grid's panels.
+
+    Panels of the same grid draw the same series, so taking the key from the
+    first panel alone would drop anything that panel happens to be missing --
+    a probe dropped from one trunk for a near-zero baseline, say. Deduplicating
+    by label keeps the key complete without repeating an entry per panel.
+    """
+    handles: list[Artist] = []
+    texts: list[str] = []
+    for ax in axes:
+        for handle, text in zip(*ax.get_legend_handles_labels()):
+            if text not in texts:
+                handles.append(handle)
+                texts.append(text)
+    return handles, texts
+
+
+def overlay_grid(
+    panels: Mapping[tuple[str, str], Mapping[str, Sequence[float]]],
+    replicates: Mapping[tuple[str, str], Mapping[str, Sequence[float]]] | None = None,
     *,
-    ylabel: str,
+    rows: Sequence[str] | None = None,
+    cols: Sequence[str] | None = None,
+    ylabel: str | None = None,
     xlabel: str = "Checkpoint $t$",
     colors: Mapping[str, str] | None = None,
     marks: Mapping[str, style.DatasetMark] | None = None,
     reference: float | None = None,
     reference_label: str | None = None,
     replicate_label: str = "Reseeded replicate (dashed)",
+    sharey: bool = False,
 ) -> Figure:
-    r"""Plot 5: one line per series over ``t``, with a reseeded run overlaid.
+    r"""Plot 5: how a quantity drifts over ``t``, panelled by row and column.
+
+    ``panels`` maps a ``(row, col)`` pair of display labels to that panel's
+    series, and ``replicates`` the same for the reseeded run. Rows are the
+    measured trait in both of the figures this draws; columns are the trunk for
+    the $\Delta P_t$ figure and the $z_t$ component for the latent one.
 
     ``replicate`` is drawn dashed in each series' own colour, so the reseed
     comparison rides the same colour assignment as the run it replicates and
@@ -1197,98 +1449,80 @@ def overlay_lines(
     dataset-to-colour map; shape-per-family plus the version ramp is
     self-describing and leaves the hues free.
 
+    ``sharey`` is for a grid whose panels are one quantity in one unit -- the
+    $\Delta P_t$ percentages, where the point is that the traits and trunks
+    drift by different amounts, and unshared axes would rescale that difference
+    away. The latent grid must leave it off: its columns are different
+    quantities ($\rho$ starts at 1, $r$ at the persona vector's norm), and even
+    within a column the two traits have their own vectors, so a shared axis
+    would squash one trait's drift into the gap between the two norms.
+
     No error bars: section 8 establishes that $\Delta P_t$ and $z_t$ involve no
     sampling -- fixed prompts, fixed responses, forward passes only -- so the
     quantities on this axis have no measurement error to draw.
     """
     style.apply_style()
-    colors = colors or {
-        label: style.categorical_color(i) for i, label in enumerate(primary)
-    }
-    fig, ax = plt.subplots(figsize=(7.4, 4.2))
-    _draw_overlay(
-        ax,
-        primary,
-        replicate or {},
-        colors=colors,
-        marks=marks,
-        reference=reference,
-        reference_label=reference_label,
-    )
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel(ylabel)
-    handles, texts = ax.get_legend_handles_labels()
-    if replicate:
-        handles.append(
-            plt.Line2D([], [], color=style.MUTED, linestyle=(0, (3, 2)), linewidth=1.3)
-        )
-        texts.append(replicate_label)
-    ax.legend(handles, texts, loc="upper left", bbox_to_anchor=(1.02, 1.0))
-    fig.tight_layout()
-    return fig
-
-
-def overlay_grid(
-    panels: Mapping[str, Mapping[str, Sequence[float]]],
-    replicates: Mapping[str, Mapping[str, Sequence[float]]] | None = None,
-    *,
-    ylabels: Mapping[str, str] | None = None,
-    xlabel: str = "Checkpoint $t$",
-    colors: Mapping[str, str] | None = None,
-    replicate_label: str = "Reseeded replicate (dashed)",
-    ncols: int = 2,
-) -> Figure:
-    r"""Plot 5 for the latent state: one panel per $z_t$ component.
-
-    ``panels`` maps a panel label (e.g. ``r"$\rho_t$"``) to that panel's series,
-    and ``replicates`` the same for the reseeded run. Raw units, one y-axis per
-    panel: $\rho$ starts at 1 and $r$ at the persona vector's norm, but $p$ and
-    $q$ start at essentially zero, so expressing them as a percentage of step 0
-    would be division by noise.
-    """
-    style.apply_style()
     replicates = replicates or {}
-    ylabels = ylabels or {}
-    n = len(panels)
-    ncols = max(1, min(ncols, n))
-    nrows = -(-n // ncols)
-    fig, axes = plt.subplots(
-        nrows, ncols, figsize=(4.4 * ncols, 3.3 * nrows), sharex=True, squeeze=False
-    )
-    axes_flat = axes.flatten()
-    for i, (ax, (label, series)) in enumerate(zip(axes_flat, panels.items())):
-        _draw_overlay(
-            ax,
-            series,
-            replicates.get(label, {}),
-            colors=colors or {},
-            marks=None,
-            reference=None,
-            reference_label=None,
-        )
-        ax.set_ylabel(ylabels.get(label, label))
-        # The panels share an x-axis, so only those actually showing ticks --
-        # the bottom row, plus any panel left exposed by a short final row --
-        # get the label.
-        if i >= n - ncols:
-            ax.set_xlabel(xlabel)
-    for ax in axes_flat[n:]:
-        ax.set_visible(False)
+    rows = list(rows) if rows else list(dict.fromkeys(row for row, _ in panels))
+    cols = list(cols) if cols else list(dict.fromkeys(col for _, col in panels))
 
-    handles, texts = axes_flat[0].get_legend_handles_labels()
+    fig, axes = plt.subplots(
+        len(rows),
+        len(cols),
+        figsize=(2.9 * len(cols) + 1.2, 2.6 * len(rows) + 1.2),
+        sharex=True,
+        sharey=sharey,
+        squeeze=False,
+    )
+    for r, row in enumerate(rows):
+        for c, col in enumerate(cols):
+            ax = axes[r][c]
+            series = panels.get((row, col)) or {}
+            if not series:
+                _mark_empty(ax)
+                continue
+            _draw_overlay(
+                ax,
+                series,
+                replicates.get((row, col)) or {},
+                colors=colors or {},
+                marks=marks,
+                reference=reference,
+                reference_label=reference_label,
+            )
+        # The row's identity, in place of a y-label naming the quantity: that
+        # is what the column header or the shared label carries here.
+        axes[r][0].set_ylabel(row, fontsize=10)
+    for c, col in enumerate(cols):
+        axes[0][c].set_title(col, fontsize=9.5, color=style.SECONDARY_INK)
+
+    handles, texts = _shared_legend(axes.flat)
     if any(replicates.values()):
         handles.append(
             plt.Line2D([], [], color=style.MUTED, linestyle=(0, (3, 2)), linewidth=1.3)
         )
         texts.append(replicate_label)
-    fig.legend(handles, texts, loc="lower center", ncol=min(4, len(handles) or 1))
-    fig.tight_layout(rect=(0.0, 0.07, 1.0, 1.0))
+    ncol = min(4, len(handles) or 1)
+    fig.legend(handles, texts, loc="lower center", ncol=ncol)
+    _layout_grid(
+        fig,
+        axes.flat,
+        xlabel=xlabel,
+        ylabel=ylabel,
+        legend_rows=-(-len(handles) // ncol),
+    )
     return fig
 
 
 def diversity_bar(
     df: pd.DataFrame,
     *,
+    rows: Sequence[str] | None = None,
+    row_col: str = "trait",
+    row_labels: Mapping[str, str] | None = None,
+    cols: Sequence[str] | None = None,
+    col_col: str = "realign_trait",
+    col_labels: Mapping[str, str] | None = None,
     condition_col: str = "condition",
     value_col: str = "delta_behavior",
     order: Sequence[str] | None = None,
@@ -1298,42 +1532,75 @@ def diversity_bar(
 ) -> Figure:
     """RQ2 diversity bar chart: does dataset diversity hinder re-alignment?
 
+    One panel per measured trait (row) and re-alignment source (column), which
+    is the whole design in one figure: the conditions differ only in how many
+    datasets the re-alignment mixed and whether they were the same one twice,
+    so the effect of diversity is the shape of a panel, and whether it
+    generalises is whether that shape repeats across them.
+
     A single colour for every bar -- the conditions are unordered categories
     identified by their x-tick label, not a second grouping dimension, so a
     rainbow or a value ramp would only burn the colour channel on information
     the chart already shows (see the data-viz "value-ramp on nominal
-    categories" anti-pattern).
+    categories" anti-pattern). The rows keep their own y-scales, since a
+    residual is in points of that trait's own judge.
     """
     style.apply_style()
     order = list(order) if order is not None else list(dict.fromkeys(df[condition_col]))
-    stats = df.groupby(condition_col)[value_col].agg(["mean", "std"]).reindex(order)
     labels = labels or {}
     tick_labels = [labels.get(c, c) for c in order]
+    panel_rows = _facets(df, rows, row_labels, column=row_col)
+    panel_cols = _facets(df, cols, col_labels, column=col_col)
 
     x = np.arange(len(order))
-    fig, ax = plt.subplots(figsize=(max(4.0, 1.3 * len(order) + 1.5), 4.2))
-    ax.bar(
-        x,
-        stats["mean"],
-        width=0.6,
-        color=color,
-        edgecolor=style.SURFACE,
-        linewidth=1.2,
-        zorder=3,
+    fig, axes = plt.subplots(
+        len(panel_rows),
+        len(panel_cols),
+        figsize=(
+            max(4.0, 1.3 * len(order) + 1.5) * len(panel_cols),
+            2.9 * len(panel_rows) + 1.3,
+        ),
+        sharex=True,
+        sharey="row",
+        squeeze=False,
     )
-    ax.errorbar(
-        x,
-        stats["mean"],
-        yerr=stats["std"],
-        fmt="none",
-        ecolor=style.MUTED,
-        elinewidth=1.0,
-        capsize=3,
-        zorder=4,
-    )
-    ax.axhline(0, color=style.BASELINE, linewidth=0.8, zorder=1)
-    ax.set_xticks(x)
-    ax.set_xticklabels(tick_labels, rotation=15, ha="right")
-    ax.set_ylabel(ylabel)
-    fig.tight_layout()
+    for r, (_, frame, row_label) in enumerate(panel_rows):
+        for c, (key, _, col_label) in enumerate(panel_cols):
+            ax = axes[r][c]
+            if r == 0:
+                ax.set_title(col_label)
+            panel = _facet_frame(frame, col_col, key)
+            if panel.empty:
+                _mark_empty(ax)
+                continue
+            stats = (
+                panel.groupby(condition_col)[value_col]
+                .agg(["mean", "std"])
+                .reindex(order)
+            )
+            ax.bar(
+                x,
+                stats["mean"],
+                width=0.6,
+                color=color,
+                edgecolor=style.SURFACE,
+                linewidth=1.2,
+                zorder=3,
+            )
+            ax.errorbar(
+                x,
+                stats["mean"],
+                yerr=stats["std"],
+                fmt="none",
+                ecolor=style.MUTED,
+                elinewidth=1.0,
+                capsize=3,
+                zorder=4,
+            )
+            ax.axhline(0, color=style.BASELINE, linewidth=0.8, zorder=1)
+            ax.set_xticks(x)
+            ax.set_xticklabels(tick_labels, rotation=15, ha="right")
+        axes[r][0].set_ylabel(row_label, fontsize=10)
+
+    _layout_grid(fig, axes.flat, ylabel=ylabel, legend_rows=0)
     return fig

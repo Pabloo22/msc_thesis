@@ -625,6 +625,50 @@ class TestHysteresisBar:
         (ax,) = fig.axes
         assert ax.get_title() == "Custom"
 
+    def _two_rows(self) -> pd.DataFrame:
+        """The same arms twice over, the second an order of magnitude higher."""
+        base = synthetic.synthetic_hysteresis_frame(("a/normal",), n_seeds=2)
+        return pd.concat(
+            [
+                base.assign(row="first"),
+                base.assign(row="second", behavior=base["behavior"] * 10),
+            ],
+            ignore_index=True,
+        )
+
+    def test_a_row_per_key_each_with_its_own_reference_line(self) -> None:
+        """$b_0$ is a property of the trait a row measures, not of the figure."""
+        fig = figures.hysteresis_bar(
+            self._two_rows(),
+            rows=["first", "second"],
+            row_col="row",
+            row_labels={"first": "First", "second": "Second"},
+            reference={"first": 8.0, "second": 80.0},
+        )
+        assert [ax.get_ylabel() for ax in fig.axes] == ["First", "Second"]
+        dashed = [
+            ln.get_ydata()[0]
+            for ax in fig.axes
+            for ln in ax.lines
+            if ln.get_linestyle() == "--"
+        ]
+        assert dashed == [8.0, 80.0]
+
+    def test_only_rows_in_one_scale_group_share_a_y_axis(self) -> None:
+        """Two traits on one scale would spend the smaller one's panels on the
+        larger one's empty space; two re-alignment sources for one trait must
+        share, since comparing them is the point."""
+        rows = ["first", "second"]
+        together = figures.hysteresis_bar(self._two_rows(), rows=rows, row_col="row")
+        assert len({ax.get_ylim() for ax in together.axes}) == 1
+        apart = figures.hysteresis_bar(
+            self._two_rows(),
+            rows=rows,
+            row_col="row",
+            row_scales={"first": "a", "second": "b"},
+        )
+        assert len({ax.get_ylim() for ax in apart.axes}) == 2
+
 
 class TestDiversityBar:
     def test_bar_count_matches_conditions(self) -> None:
@@ -634,6 +678,26 @@ class TestDiversityBar:
         )
         (ax,) = fig.axes
         assert len(ax.patches) == len(synthetic.DIVERSITY_CONDITIONS)
+
+    def test_a_panel_per_trait_and_re_alignment_source(self) -> None:
+        base = synthetic.synthetic_diversity_frame(n_seeds=2)
+        df = pd.concat(
+            [
+                base.assign(trait=trait, realign_trait=realign)
+                for trait in ("sycophantic", "evil")
+                for realign in ("sycophantic", "evil")
+            ],
+            ignore_index=True,
+        )
+        fig = figures.diversity_bar(
+            df,
+            rows=["sycophantic", "evil"],
+            row_labels={"sycophantic": "Sycophancy", "evil": "Evil"},
+            cols=["sycophantic", "evil"],
+            order=synthetic.DIVERSITY_CONDITIONS,
+        )
+        assert len(fig.axes) == 4
+        assert [ax.get_ylabel() for ax in fig.axes] == ["Sycophancy", "", "Evil", ""]
 
 
 # --- figures.py: the RQ1 decay set -------------------------------------------
@@ -690,6 +754,23 @@ def _fits(trunks=("a", "b"), checkpoints=range(3)) -> pd.DataFrame:
             for t in checkpoints
         ]
     )
+
+
+def _traited(frame, traits=("sycophantic", "evil"), *, scale=None) -> pd.DataFrame:
+    """``frame`` once per trait, in the shape the merged figures now receive.
+
+    Each trait after the first has its ``scale`` column multiplied by a further
+    factor of ten, which is what makes an axis-sharing assertion mean anything:
+    two copies of the same numbers land on the same scale whether or not the
+    figure joined their axes.
+    """
+    copies = []
+    for i, trait in enumerate(traits):
+        copy = frame.assign(trait=trait)
+        if scale is not None:
+            copy[scale] = copy[scale] * 10**i
+        copies.append(copy)
+    return pd.concat(copies, ignore_index=True)
 
 
 class TestDatasetMarks:
@@ -775,53 +856,89 @@ class TestDatasetLegend:
         assert texts == ["Evil", "Normal"]
 
 
+def _validation_rows(traits=("sycophantic", "evil"), se=0.4) -> pd.DataFrame:
+    """A validation fan in the shape :func:`decay.validation_frame` emits."""
+    return pd.DataFrame(
+        [
+            {
+                "trait": trait,
+                "dataset": dataset,
+                "delta_p_0": float(i),
+                "delta_b": 2.0 * i,
+                "se_delta_b": se,
+            }
+            for trait in traits
+            for i, dataset in enumerate(
+                ["evil/normal", "evil/misaligned_2", "sycophancy/normal"]
+            )
+        ]
+    )
+
+
 class TestScatterValidation:
+    def test_one_panel_per_trait(self) -> None:
+        fig = figures.scatter_validation(_validation_rows())
+        assert len(fig.axes) == 2
+
+    def test_the_traits_keep_their_own_scales(self) -> None:
+        """Each is a different persona vector and a different judge, so a
+        shared axis would invite reading one trait's spread against the
+        other's."""
+        rows = _validation_rows()
+        rows.loc[rows["trait"] == "evil", "delta_b"] *= 20.0
+        fig = figures.scatter_validation(rows, traits=["sycophantic", "evil"])
+        assert fig.axes[0].get_ylim() != fig.axes[1].get_ylim()
+
     def test_marks_are_grouped_into_one_call_per_shape(self) -> None:
         """A scatter takes a single marker, so eight families are eight calls
         over disjoint index sets."""
-        fig = figures.scatter_validation(
-            [0.0, 1.0, 2.0],
-            [0.0, 2.0, 4.0],
-            datasets=["evil/normal", "evil/misaligned_2", "sycophancy/normal"],
-        )
+        fig = figures.scatter_validation(_validation_rows(traits=("evil",)))
         (ax,) = fig.axes
         scatters = [c for c in ax.collections if isinstance(c, PathCollection)]
         assert len(scatters) == 2  # pentagon and triangle
         assert sum(len(c.get_offsets()) for c in scatters) == 3
 
-    def test_naming_the_datasets_adds_the_encoding_key(self) -> None:
-        fig = figures.scatter_validation(
-            [0.0, 1.0], [0.0, 2.0], datasets=["evil/normal", "sycophancy/normal"]
-        )
-        legend = fig.axes[0].get_legend()
+    def test_the_encoding_key_is_stated_once_for_the_figure(self) -> None:
+        """Both panels draw the same 24 datasets, so a key per panel would be
+        the same eleven entries twice."""
+        fig = figures.scatter_validation(_validation_rows())
+        assert all(ax.get_legend() is None for ax in fig.axes)
+        (legend,) = fig.legends
         assert [t.get_text() for t in legend.get_texts()] == [
             "Evil",
             "Sycophancy",
             "Normal",
+            "II",
         ]
 
-    def test_single_series_reports_its_fit_without_a_legend(self) -> None:
-        """One series needs no legend box -- the axes name the quantity -- but
-        the fit's statistics still have to be readable off the figure."""
-        fig = figures.scatter_validation([0.0, 1.0, 2.0], [0.0, 2.0, 4.0])
-        (ax,) = fig.axes
-        assert ax.get_legend() is None
-        annotations = [t.get_text() for t in ax.texts]
-        assert any("R^2" in a or "R$^2$" in a or r"$R^2$" in a for a in annotations)
-        assert any("n$ = 3" in a for a in annotations)
+    def test_each_panel_reports_its_own_fit(self) -> None:
+        """One series per panel, so its statistics are annotated in the panel
+        rather than put in a legend."""
+        fig = figures.scatter_validation(_validation_rows())
+        for ax in fig.axes:
+            annotations = [t.get_text() for t in ax.texts]
+            assert any(r"$R^2$" in a and "slope" in a for a in annotations)
+            assert any("n$ = 3 datasets" in a for a in annotations)
+
+    def test_a_trait_with_no_runs_is_marked_not_dropped(self) -> None:
+        fig = figures.scatter_validation(
+            _validation_rows(traits=("evil",)), traits=["sycophantic", "evil"]
+        )
+        assert any("not run" in t.get_text() for t in fig.axes[0].texts)
 
     def test_error_bars_are_drawn_when_given(self) -> None:
-        plain = figures.scatter_validation([0.0, 1.0], [0.0, 2.0])
-        with_err = figures.scatter_validation([0.0, 1.0], [0.0, 2.0], yerr=[0.5, 0.5])
+        plain = figures.scatter_validation(_validation_rows(traits=("evil",), se=0.0))
+        with_err = figures.scatter_validation(_validation_rows(traits=("evil",)))
         assert len(with_err.axes[0].collections) > len(plain.axes[0].collections)
 
     def test_all_zero_error_bars_are_skipped(self) -> None:
         """A run evaluated with one generation per question has no
         within-question spread; flat caps would imply a measurement it did
         not make."""
-        plain = figures.scatter_validation([0.0, 1.0], [0.0, 2.0])
-        zeroed = figures.scatter_validation([0.0, 1.0], [0.0, 2.0], yerr=[0.0, 0.0])
-        assert len(zeroed.axes[0].collections) == len(plain.axes[0].collections)
+        rows = _validation_rows(traits=("evil",))
+        zeroed = figures.scatter_validation(rows.assign(se_delta_b=0.0))
+        dropped = figures.scatter_validation(rows.drop(columns="se_delta_b"))
+        assert len(zeroed.axes[0].collections) == len(dropped.axes[0].collections)
 
 
 class TestDecayScatterGrid:
@@ -867,6 +984,31 @@ class TestDecayScatterGrid:
             any("not run" in text.get_text() for text in ax.texts) for ax in empty
         )
 
+    def test_each_trait_is_a_block_of_trunk_rows(self) -> None:
+        fig = figures.decay_scatter_grid(
+            _traited(_decay_rows()),
+            traits=["sycophantic", "evil"],
+            trait_labels={"sycophantic": "Sycophancy", "evil": "Evil"},
+        )
+        assert len(fig.axes) == 2 * 2 * 3  # traits x trunks x checkpoints
+        # A row names both halves of what it is; the trunk alone would repeat.
+        assert [ax.get_ylabel() for ax in fig.axes if ax.get_ylabel()] == [
+            "Sycophancy\nTrunk a",
+            "Sycophancy\nTrunk b",
+            "Evil\nTrunk a",
+            "Evil\nTrunk b",
+        ]
+
+    def test_the_traits_are_not_put_on_one_scale(self) -> None:
+        """Delta P and Delta b are read against a different persona vector and
+        a different judge per trait, so one scale would compare numbers that
+        are not the same number -- while within a trait it still must."""
+        fig = figures.decay_scatter_grid(
+            _traited(_decay_rows(), scale="delta_b"),
+            traits=["sycophantic", "evil"],
+        )
+        assert len({ax.get_ylim() for ax in fig.axes}) == 2
+
 
 class TestHeadlineCurves:
     def test_one_column_per_series_and_a_row_each_for_r2_and_slope(self) -> None:
@@ -891,6 +1033,35 @@ class TestHeadlineCurves:
         legend = fig.legends[0]
         assert len([t for t in legend.get_texts() if "Trunk" in t.get_text()]) == 1
 
+    def test_each_trait_gets_an_r2_row_and_a_slope_row(self) -> None:
+        fig = figures.headline_curves(
+            _traited(_fits()),
+            traits=["sycophantic", "evil"],
+            trait_labels={"sycophantic": "Sycophancy", "evil": "Evil"},
+        )
+        assert len(fig.axes) == 4 * 2
+        headings = [ax.get_ylabel() for ax in fig.axes if ax.get_ylabel()]
+        assert [h.split("\n")[0] for h in headings] == [
+            "Sycophancy",
+            "Sycophancy",
+            "Evil",
+            "Evil",
+        ]
+
+    def test_the_slope_is_not_shared_across_traits(self) -> None:
+        """A slope is in points of that trait's judge per unit of that trait's
+        persona vector, so its absolute value is not comparable between them."""
+        fig = figures.headline_curves(
+            _traited(_fits(), scale="slope_p0"), traits=["sycophantic", "evil"]
+        )
+        slope_rows = [fig.axes[2], fig.axes[6]]  # rows 1 and 3, first column
+        assert slope_rows[0].get_ylim() != slope_rows[1].get_ylim()
+
+    def test_the_legend_keys_a_trunk_once_for_the_whole_grid(self) -> None:
+        fig = figures.headline_curves(_traited(_fits()))
+        texts = [t.get_text() for t in fig.legends[0].get_texts()]
+        assert texts.count("Trunk a") == 1
+
 
 class TestMechanismGrid:
     PREDICTORS = {"rho": r"$\rho_t$", "b_t": r"$b_t$"}
@@ -913,6 +1084,38 @@ class TestMechanismGrid:
             _fits(), self.PREDICTORS, trunk_colors={"a": style.BLUE, "b": style.ORANGE}
         )
         assert len(fig.axes[0].collections) == 2
+
+    def test_a_trait_per_row_each_counting_its_own_checkpoints(self) -> None:
+        """``n`` is per row, not per figure: a half-run trait regresses fewer
+        checkpoints than a finished one, and the figure must not claim
+        otherwise."""
+        rows = pd.concat(
+            [
+                _fits().assign(trait="sycophantic"),
+                _fits(trunks=("a",)).assign(trait="evil"),
+            ],
+            ignore_index=True,
+        )
+        fig = figures.mechanism_grid(
+            rows, self.PREDICTORS, traits=["sycophantic", "evil"]
+        )
+        assert len(fig.axes) == 2 * 2
+        first_of_each_row = [fig.axes[0], fig.axes[2]]
+        counts = [
+            [t.get_text() for t in ax.texts if "checkpoints" in t.get_text()]
+            for ax in first_of_each_row
+        ]
+        assert counts == [["$n$ = 6 checkpoints"], ["$n$ = 3 checkpoints"]]
+
+    def test_r2_is_the_one_quantity_the_traits_do_share(self) -> None:
+        fig = figures.mechanism_grid(
+            _traited(_fits(), scale="rho"),
+            self.PREDICTORS,
+            traits=["sycophantic", "evil"],
+        )
+        assert len({ax.get_ylim() for ax in fig.axes}) == 1
+        # ...but the predictor they are regressed on is not.
+        assert fig.axes[0].get_xlim() != fig.axes[2].get_xlim()
 
 
 class TestPhaseContrast:
@@ -952,17 +1155,83 @@ class TestPhaseContrast:
         fig = figures.phase_contrast(self._pairs())
         assert len(fig.axes) == 2
 
-
-class TestOverlayLines:
-    def test_one_line_per_series_plus_the_reference(self) -> None:
-        fig = figures.overlay_lines(
-            {"a": [1.0, 2.0], "b": [3.0, 4.0]},
-            ylabel="y",
-            reference=100.0,
-            reference_label="ref",
+    def test_a_trait_per_row_over_one_shared_list_of_steps(self) -> None:
+        """A pair only one trait has measured must leave a gap in the other's
+        row, not shift its steps out of line."""
+        pairs = pd.concat(
+            [
+                self._pairs().assign(trait="sycophantic"),
+                self._pairs().head(1).assign(trait="evil"),
+            ],
+            ignore_index=True,
         )
-        (ax,) = fig.axes
-        assert len(ax.lines) == 3
+        fig = figures.phase_contrast(
+            pairs,
+            traits=["sycophantic", "evil"],
+            trait_labels={"sycophantic": "Sycophancy", "evil": "Evil"},
+        )
+        assert len(fig.axes) == 2 * 2
+        assert [ax.get_ylabel() for ax in fig.axes] == ["Sycophancy", "", "Evil", ""]
+        # Both rows keep a slot for every step, named once on the bottom row.
+        assert all(list(ax.get_xticks()) == [0, 1] for ax in fig.axes)
+        assert [t.get_text() for t in fig.axes[2].get_xticklabels()] == [
+            "A: 1-2",
+            "B: 2-3",
+        ]
+        # Evil measured one of the two steps, so its row draws one connector.
+        assert len(fig.axes[2].lines) == 1
+
+
+def _overlay_panels(rows=("Sycophancy", "Evil"), cols=("Trunk A", "Trunk B")):
+    """A drift grid: one series per panel, over two checkpoints."""
+    return {
+        (row, col): {"a": [1.0, 2.0], "b": [3.0, 4.0]} for row in rows for col in cols
+    }
+
+
+class TestOverlayGrid:
+    def test_one_panel_per_row_and_column(self) -> None:
+        fig = figures.overlay_grid(_overlay_panels())
+        assert len(fig.axes) == 4
+
+    def test_the_row_names_itself_and_the_column_heads_itself(self) -> None:
+        fig = figures.overlay_grid(_overlay_panels())
+        assert [ax.get_ylabel() for ax in fig.axes] == ["Sycophancy", "", "Evil", ""]
+        assert [ax.get_title() for ax in fig.axes] == ["Trunk A", "Trunk B", "", ""]
+
+    def test_row_and_column_order_is_the_designs_not_the_frames(self) -> None:
+        """A grid whose rows are traits must not reorder them because a
+        collection happened to load one trait's runs first."""
+        fig = figures.overlay_grid(
+            _overlay_panels(), rows=["Evil", "Sycophancy"], cols=["Trunk B", "Trunk A"]
+        )
+        assert fig.axes[0].get_ylabel() == "Evil"
+        assert fig.axes[0].get_title() == "Trunk B"
+
+    def test_a_panel_with_no_runs_is_marked_not_dropped(self) -> None:
+        panels = _overlay_panels()
+        del panels[("Evil", "Trunk B")]
+        fig = figures.overlay_grid(
+            panels, rows=["Sycophancy", "Evil"], cols=["Trunk A", "Trunk B"]
+        )
+        assert not fig.axes[3].lines
+        assert any("not run" in t.get_text() for t in fig.axes[3].texts)
+
+    def test_one_line_per_series_plus_the_reference(self) -> None:
+        fig = figures.overlay_grid(
+            _overlay_panels(), reference=100.0, reference_label="ref"
+        )
+        assert len(fig.axes[0].lines) == 3
+
+    def test_sharing_y_keeps_the_panels_comparable(self) -> None:
+        """Unshared axes would rescale away exactly the difference the grid is
+        drawn to show -- one trunk drifting further than another."""
+        panels = _overlay_panels()
+        panels[("Evil", "Trunk A")] = {"a": [100.0, 900.0]}
+        shared = figures.overlay_grid(panels, sharey=True)
+        free = figures.overlay_grid(panels, sharey=False)
+        assert len({ax.get_ylim() for ax in shared.axes}) == 1
+        assert len({ax.get_ylim() for ax in free.axes}) > 1
 
     def test_dataset_marks_replace_the_categorical_hues(self) -> None:
         """Eight probes would take all eight categorical slots and leave the
@@ -971,9 +1240,8 @@ class TestOverlayLines:
             "Evil (II)": style.dataset_mark("evil/misaligned_2"),
             "Code (Normal)": style.dataset_mark("insecure_code/normal"),
         }
-        fig = figures.overlay_lines(
-            {"Evil (II)": [1.0, 2.0], "Code (Normal)": [3.0, 4.0]},
-            ylabel="y",
+        fig = figures.overlay_grid(
+            {("row", "col"): {"Evil (II)": [1.0, 2.0], "Code (Normal)": [3.0, 4.0]}},
             marks=marks,
         )
         (ax,) = fig.axes
@@ -985,8 +1253,8 @@ class TestOverlayLines:
     def test_a_replicate_shares_its_series_colour_and_is_dashed(self) -> None:
         """The reseed rides the colour of the run it replicates, so n = 2
         costs no extra hue and cannot be read as a fourth condition."""
-        fig = figures.overlay_lines(
-            {"a": [1.0, 2.0]}, {"a": [1.1, 2.1]}, ylabel="y"
+        fig = figures.overlay_grid(
+            {("row", "col"): {"a": [1.0, 2.0]}}, {("row", "col"): {"a": [1.1, 2.1]}}
         )
         (ax,) = fig.axes
         primary, replicate = ax.lines[0], ax.lines[1]
@@ -995,24 +1263,20 @@ class TestOverlayLines:
         assert replicate.get_linestyle() != "-"
 
     def test_the_dashed_convention_is_named_in_the_legend(self) -> None:
-        fig = figures.overlay_lines({"a": [1.0]}, {"a": [1.1]}, ylabel="y")
-        texts = [t.get_text() for t in fig.axes[0].get_legend().get_texts()]
-        assert any("dashed" in t for t in texts)
+        fig = figures.overlay_grid(
+            {("row", "col"): {"a": [1.0]}}, {("row", "col"): {"a": [1.1]}}
+        )
+        (legend,) = fig.legends
+        assert any("dashed" in t.get_text() for t in legend.get_texts())
 
-
-class TestOverlayGrid:
-    def test_one_panel_per_component(self) -> None:
-        panels = {r"$\rho_t$": {"a": [1.0, 0.9]}, r"$r_t$": {"a": [30.0, 31.0]}}
+    def test_the_key_covers_a_series_missing_from_the_first_panel(self) -> None:
+        """A probe dropped from one trunk for a near-zero baseline still has to
+        appear in the key of the panels that do draw it."""
+        panels = _overlay_panels(rows=("Sycophancy",))
+        panels[("Sycophancy", "Trunk A")] = {"a": [1.0, 2.0]}
         fig = figures.overlay_grid(panels)
-        assert len(fig.axes) == 2
-        assert [ax.get_ylabel() for ax in fig.axes] == list(panels)
-
-    def test_only_the_bottom_row_is_labelled(self) -> None:
-        """The panels share an x-axis, so a label under the top row would name
-        ticks that are not drawn."""
-        panels = {f"p{i}": {"a": [1.0, 2.0]} for i in range(4)}
-        fig = figures.overlay_grid(panels, ncols=2)
-        assert [bool(ax.get_xlabel()) for ax in fig.axes] == [False, False, True, True]
+        (legend,) = fig.legends
+        assert [t.get_text() for t in legend.get_texts()] == ["a", "b"]
 
 
 # --- style.py --------------------------------------------------------------

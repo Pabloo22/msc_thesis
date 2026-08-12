@@ -136,8 +136,9 @@ poetry run python -m method.visualization.make_plots --experiment exp2_decay --m
 nohup bash scripts/run_family.sh EXP2_VALIDATION > exp2_validation.log 2>&1 &
 poetry run python -m method.visualization.make_plots --experiment exp2_validation
 ```
-Read `plots/real/exp2/exp2_<trait>_validation.png`: 24 points of $\Delta P_0$ against
-$\Delta b_1$. If the correlation is not there, nothing downstream is interpretable.
+Read `plots/real/exp2/exp2_validation.png`: 24 points of $\Delta P_0$ against
+$\Delta b_1$, one panel per trait. If the correlation is not there, nothing downstream is
+interpretable.
 
 **Phase 2 — pick the probe set (no GPU).** `EXP2_PROBES` in
 [`method/experiments.py`](method/experiments.py) is currently a *stratified guess*
@@ -173,9 +174,9 @@ because only $\Delta b$ needs training.
 ```bash
 nohup bash scripts/run_family.sh EXP2_RESEED > exp2_reseed.log 2>&1 &
 ```
-Check it on `exp2_<trait>_drift_z.png` and `exp2_<trait>_drift_delta_p_trunk_a.png`:
-if A and A′ diverge sharply in $\rho$ or $r$, `n = 2` is not enough and 3-5 trunk seeds
-become necessary.
+Check it on `exp2_drift_z.png` and `exp2_drift_delta_p.png` (A′ is the dashed overlay on
+trunk A's column): if A and A′ diverge sharply in $\rho$ or $r$, `n = 2` is not enough and
+3-5 trunk seeds become necessary.
 
 **Phase 5 — trunk A's fan.** 48 branches, and the first real decay curve. This is also
 where the hysteresis assumption gets checked: look at $\rho$ and $r$ at $M_2$ on trunk A.
@@ -209,10 +210,13 @@ overlaid on the trunk it replicates:
 ```bash
 poetry run python -m method.visualization.make_plots --experiment exp2_decay
 ```
-Per trait, this writes section 9's figures into `plots/real/exp2/`:
-`exp2_<trait>_validation` (plot 1), `_decay_grid` (2), `_headline` (3),
-`_mechanism` (4), `_phase_contrast` (4b), `_drift_delta_p_trunk_<a|b|c>` and `_drift_z`
-(5).
+This writes section 9's figures into `plots/real/exp2/`. Every one of them panels both
+traits, so nothing is emitted per trait: `exp2_validation` (plot 1, a trait per panel),
+`exp2_decay_grid` (2, a trait-and-trunk per row, a checkpoint per column), `exp2_headline`
+(3, two rows per trait), `exp2_mechanism` (4, a trait per row, a predictor per column),
+`exp2_phase_contrast` (4b, a trait per row) and `exp2_drift_delta_p` / `exp2_drift_z`
+(both plot 5, a trait per row). What they do *not* share across the traits is the scale,
+except where the quantity is unitless — a persona vector and a judge are per trait.
 
 ### 5. Experiments 3 and 4
 Both are seed sweeps, so `--seeds` is the axis that splits them:
@@ -220,6 +224,11 @@ Both are seed sweeps, so `--seeds` is the axis that splits them:
 nohup bash scripts/run_family.sh EXP3 > exp3.log 2>&1 &
 nohup bash scripts/run_family.sh EXP4 > exp4.log 2>&1 &
 ```
+Each family plots to a single figure: `exp3_hysteresis` puts a (measured trait,
+re-alignment source) pair on each row and a dataset in each column, and `exp4_diversity`
+a measured trait per row and a re-alignment source per column. In both, the two rows of
+one measured trait share a y-axis — that comparison is the control the design is for —
+and the two traits do not.
 
 ## Base-model DeltaP Probes
 $\Delta P_0$ (DeltaP frozen at the base model) is what the exp3/exp4 scatter plots need
@@ -256,6 +265,7 @@ Plots are written to one directory per run source — `plots/real`, `plots/real-
 *synthetic* ones drawn from fixtures by `method.visualization.demo`; they do not change
 when runs finish.
 
+<!-- 
 ## Auditing $z_t$ Before Reading It
 $p_t$ and $\rho_t$ are defined against the base model's persona vector $v_0$, and $v_0$
 is a *measurement* — extracted from sampled generations, cached in the store under the
@@ -277,3 +287,46 @@ a component as a result. Four figures land next to the family's own, in
 
 See [`docs/exp3_latents.md`](docs/exp3_latents.md) for what the audit found on the
 exp3 runs currently on disk.
+
+**A zero here is not a precision claim.** Every measurement is memoized by content, so a
+checkpoint reached twice reads its `latent.json` back verbatim: the audit only ever sees
+disagreement where the *cache* failed. Once the store is consistent it reports 0.0 for
+every component, which says the cache worked and leaves the measurement's own precision
+unmeasured. That is what the next section is for. -->
+
+## Measuring the Anchor Term in $z_t$
+`method.anchor_noise` measures the same quantity on
+purpose, by re-drawing the two artifacts every $z_t$ is anchored to — $v_0$'s pos/neg
+generations and $M_0$'s answers to the neutral prompts — and carrying each draw along an
+already-trained trunk:
+```bash
+poetry run python -m method.anchor_noise --replicates 3
+poetry run python -m method.anchor_noise --trunk a --checkpoints 0 1 3 6 --replicates 5
+poetry run python -m method.anchor_noise --backend mock --local --checkpoints 0
+```
+It trains nothing: the trunk's adapters must already exist, and every checkpoint is
+replayed from them. Replicate 0 *is* the production bundle — the artifacts exp2 and exp3
+actually used — so it costs no generation and the spread says where the published numbers
+sit inside their own sampling distribution. Fresh draws are quarantined in
+`anchor_replicates/` inside each checkpoint's measurement bundle, so nothing already on
+disk is touched. Budget generation, not training: per fresh draw, ~500 neutral answers
+(shared across traits) plus a judged pos/neg extraction per trait, then a forward pass
+over each at every checkpoint.
+
+Two spreads are reported per component, and they answer different questions:
+
+- `sigma_level` — the error on a reported $z_t$.
+- `sigma_delta` — the error on $z_t - z_0$ *within* a draw. The anchor is common-mode, so
+  a bad draw shifts the whole series together and largely cancels in a difference. Quote
+  this one for the decay and drift figures, which read changes rather than levels.
+
+`against_drift` puts both beside the drift measured on the production replicate over the
+same checkpoints; at a ratio $\ge 1$ the component carries no usable signal over that
+span. The summary lands in `trajectories/anchor_noise/` and syncs with the trajectories
+root, so a plotting box needs no store to read it.
+
+This is a different quantity from `method.seed_noise` and the `EXP2_RESEED` trunk, which
+vary the *fine-tuning* seed. Those bound measurement noise from above but cannot isolate
+it — and because `weights_key` normalizes the seed away at $t = 0$, every seed in them
+reads one cached anchor, so the anchor's own error contributes nothing to what they
+measure. The two are complements, not substitutes.

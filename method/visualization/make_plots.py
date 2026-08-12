@@ -17,6 +17,11 @@ scatter grid (2), the headline $R^2$ and slope curves with their noise ceiling
 drift plots (5). Its analysis lives in :mod:`method.visualization.decay`; this
 module only chooses what to draw and what to name it.
 
+Every figure panels the measured traits together and is named
+``exp2_<figure>``; nothing here is emitted once per trait (see
+:func:`build_exp2`). exp3 and exp4 do the same, one figure each, with the
+measured trait and the re-alignment source as two dimensions of the grid.
+
 ``--local`` selects the small-model variants of each design (the ones a mock
 or laptop run produces); without it, the paper-scale configs are used. Each
 combination writes to its own directory (see :func:`default_out_dir`), so a
@@ -35,7 +40,7 @@ from __future__ import annotations
 
 import argparse
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 
 import pandas as pd
@@ -53,10 +58,12 @@ from method.visualization.labels import (
     DIVERSITY_CONDITION_LABELS,
     DIVERSITY_CONDITIONS,
     HYSTERESIS_CONDITIONS,
+    TRAITS,
     TRUNKS,
     display_dataset_name,
     display_trait_name,
     display_trunk_name,
+    display_trunk_title,
     trunk_index,
 )
 
@@ -102,10 +109,25 @@ def _trunk_colors(trunks: Sequence[str]) -> dict[str, str]:
     return {trunk: style.categorical_color(trunk_index(trunk)) for trunk in trunks}
 
 
+def _present(found: Iterable[str], order: Sequence[str]) -> list[str]:
+    """The values in ``found``, in the design's fixed order.
+
+    Anything the design does not name is kept, sorted, at the end rather than
+    dropped: an unexpected trunk or trait is a figure worth seeing, and one
+    silently omitted is not.
+    """
+    seen = set(found)
+    return [value for value in order if value in seen] + sorted(seen - set(order))
+
+
 def _present_trunks(frame: pd.DataFrame) -> list[str]:
     """Trunks with rows in ``frame``, in the ladder's order (section 4)."""
-    found = set(frame["trunk"])
-    return [t for t in TRUNKS if t in found] + sorted(found - set(TRUNKS))
+    return _present(frame["trunk"], TRUNKS)
+
+
+def _present_traits(frame: pd.DataFrame) -> list[str]:
+    """Traits with rows in ``frame``, primary (sycophancy) first."""
+    return _present(frame["trait"], TRAITS)
 
 
 #: Families that sweep seeds over a fixed step sequence, most preferred first.
@@ -177,7 +199,7 @@ def build_exp2(
     sigma_seed: Mapping[str, float] | None = None,
     n_resamples: int = 2000,
 ) -> list[Path]:
-    r"""Every figure of the RQ1 decay experiment, one set per measured trait.
+    r"""Every figure of the RQ1 decay experiment, over every measured trait.
 
     ``collections`` holds the three exp2 families keyed by group name. They are
     passed together because the figures cross them: the decay family supplies
@@ -189,6 +211,15 @@ def build_exp2(
     missing the ceiling on plot 3 accounts for eval noise alone, which makes it
     an upper bound on the true ceiling; the figure is still drawn, and the
     shortfall is logged rather than silently absorbed.
+
+    Every figure panels both traits, none is emitted per trait. Whether
+    $\Delta P_0$ goes stale at the same rate for sycophancy and for evil is one
+    of the things the experiment is for, and it is not a comparison the reader
+    should have to make across two separately scaled figures. What each figure
+    does *not* share across the traits is its scale, except where the quantity
+    is unitless: a persona vector and a judge are per trait, so a shared
+    $\Delta P$ or $\Delta b$ axis would compare numbers that are not the same
+    number.
     """
     saved: list[Path] = []
     decay_runs = collections.get(experiments.EXP2_DECAY) or Collection(
@@ -211,200 +242,260 @@ def build_exp2(
     ratios = decay.probe_drift_frame(drift_runs, stat=stat, source=source)
     latents = decay.latent_frame(drift_runs, stat=stat, source=source)
 
-    traits = list(
-        dict.fromkeys(
-            [*validation.values("trait"), *decay_runs.values("trait")]
-        )
+    traits = _present(
+        [*validation.values("trait"), *decay_runs.values("trait")], TRAITS
     )
-    for trait in traits:
-        prefix = f"exp2_{trait}"
-        saved += _validation_figure(fan, trait, prefix, out_dir)
-        saved += _decay_figures(
-            rows[rows["trait"] == trait],
-            trait,
-            prefix,
-            out_dir,
-            sigma_seed=sigma_seed.get(trait),
-            n_resamples=n_resamples,
-        )
-        saved += _drift_figures(
-            ratios[ratios["trait"] == trait],
-            latents[latents["trait"] == trait],
-            prefix,
-            out_dir,
-        )
+    saved += _validation_figure(fan, traits, out_dir)
+    saved += _decay_figures(
+        rows, out_dir, sigma_seed=sigma_seed, n_resamples=n_resamples
+    )
+    saved += _drift_delta_p_figure(ratios, out_dir)
+    saved += _drift_latent_figure(latents, out_dir)
     return saved
 
 
 def _validation_figure(
-    fan: pd.DataFrame, trait: str, prefix: str, out_dir: Path
+    fan: pd.DataFrame, traits: Sequence[str], out_dir: Path
 ) -> list[Path]:
-    """Plot 1: the 24-dataset replication of the persona-vectors correlation."""
+    """Plot 1: the 24-dataset replication of the persona-vectors correlation.
+
+    One panel per trait. A trait with no fan is left out of the figure rather
+    than panelled empty: unlike the drift grids, these panels are not read
+    against each other cell by cell, so a missing one costs alignment nothing
+    and only wastes half the width.
+    """
     saved: list[Path] = []
-    subset = fan[fan["trait"] == trait]
-    if subset.empty:
-        logger.warning(
-            "exp2/%s: no validation runs, so the t=0 fan (plot 1) and the t=0 "
-            "column of the decay grid are both unavailable. Run the "
-            "%r family first -- section 10 makes it phase 1 precisely because "
-            "it gates everything downstream",
-            trait,
-            experiments.EXP2_VALIDATION,
-        )
+    measured = [trait for trait in traits if not fan[fan["trait"] == trait].empty]
+    for trait in traits:
+        if trait not in measured:
+            logger.warning(
+                "exp2/%s: no validation runs, so the t=0 fan (plot 1) and the "
+                "t=0 column of the decay grid are both unavailable. Run the "
+                "%r family first -- section 10 makes it phase 1 precisely "
+                "because it gates everything downstream",
+                trait,
+                experiments.EXP2_VALIDATION,
+            )
+    if not measured:
         return saved
     fig = figures.scatter_validation(
-        subset["delta_p_0"],
-        subset["delta_b"],
-        datasets=list(subset["dataset"]),
-        yerr=subset["se_delta_b"],
+        fan[fan["trait"].isin(measured)],
+        traits=measured,
+        trait_labels={trait: display_trait_name(trait) for trait in measured},
     )
-    _emit(fig, f"{prefix}_validation", out_dir, saved)
+    _emit(fig, "exp2_validation", out_dir, saved)
     return saved
+
+
+def _ceiling_note(traits: Sequence[str], sigma_seed: Mapping[str, float]) -> str:
+    r"""What plot 3's dashed ceiling accounts for, given what was measured.
+
+    One figure now carries both traits' ceilings, and $\sigma_{seed}$ is
+    per-trait, so the legend names the *ingredients* rather than a number that
+    would have to be one trait's. The values themselves are logged, where they
+    can be quoted per trait without implying a figure-wide constant.
+    """
+    measured = [trait for trait in traits if trait in sigma_seed]
+    if not measured:
+        return "eval noise only"
+    if len(measured) < len(traits):
+        return r"eval noise + $\sigma_{seed}$ where measured"
+    return r"eval noise + $\sigma_{seed}$"
 
 
 def _decay_figures(
     rows: pd.DataFrame,
-    trait: str,
-    prefix: str,
     out_dir: Path,
     *,
-    sigma_seed: float | None,
+    sigma_seed: Mapping[str, float],
     n_resamples: int,
 ) -> list[Path]:
-    """Plots 2, 3, 4 and 4b, all read off the same ``(trunk, t, probe)`` rows."""
+    """Plots 2, 3, 4 and 4b, off the same ``(trait, trunk, t, probe)`` rows."""
     saved: list[Path] = []
     if rows.empty:
         logger.warning(
-            "exp2/%s: no checkpoint has both a Delta P and a branch endpoint; "
-            "skipping the decay figures",
-            trait,
+            "exp2: no checkpoint has both a Delta P and a branch endpoint; "
+            "skipping the decay figures"
         )
         return saved
 
+    traits = _present_traits(rows)
     trunks = _present_trunks(rows)
     colors = _trunk_colors(trunks)
     labels = {t: display_trunk_name(t) for t in trunks}
+    trait_labels = {trait: display_trait_name(trait) for trait in traits}
 
-    fig = figures.decay_scatter_grid(rows, trunks=trunks, trunk_labels=labels)
-    _emit(fig, f"{prefix}_decay_grid", out_dir, saved)
-
-    if sigma_seed is None:
-        logger.warning(
-            "exp2/%s: no sigma_seed(b) available, so plot 3's noise ceiling "
-            "counts eval noise only and is an upper bound on the true ceiling. "
-            "Run a seed-swept family (exp3) and re-plot, or pass --sigma-seed",
-            trait,
-        )
-    fits = decay.fit_frame(
-        rows, sigma_seed=sigma_seed or 0.0, n_resamples=n_resamples
+    fig = figures.decay_scatter_grid(
+        rows,
+        traits=traits,
+        trait_labels=trait_labels,
+        trunks=trunks,
+        trunk_labels=labels,
     )
-    ceiling_note = (
-        rf"eval noise + $\sigma_{{seed}}$={sigma_seed:.2f}"
-        if sigma_seed is not None
-        else "eval noise only"
+    _emit(fig, "exp2_decay_grid", out_dir, saved)
+
+    for trait in traits:
+        if trait in sigma_seed:
+            logger.info("exp2/%s: sigma_seed(b) = %.2f", trait, sigma_seed[trait])
+        else:
+            logger.warning(
+                "exp2/%s: no sigma_seed(b) available, so plot 3's noise ceiling "
+                "counts eval noise only and is an upper bound on the true "
+                "ceiling. Run a seed-swept family (exp3) and re-plot, or pass "
+                "--sigma-seed",
+                trait,
+            )
+    # Fitted a trait at a time only because the ceiling takes that trait's seed
+    # noise; every figure below reads the concatenation as one frame.
+    fits = pd.concat(
+        [
+            decay.fit_frame(
+                rows[rows["trait"] == trait],
+                sigma_seed=sigma_seed.get(trait, 0.0),
+                n_resamples=n_resamples,
+            )
+            for trait in traits
+        ],
+        ignore_index=True,
     )
     fig = figures.headline_curves(
         fits,
+        traits=traits,
+        trait_labels=trait_labels,
         series_labels=decay.SERIES_LABELS,
         trunks=trunks,
         trunk_labels=labels,
         trunk_colors=colors,
-        ceiling_label=rf"$R^2_{{max}}$ ({ceiling_note})",
+        ceiling_label=rf"$R^2_{{max}}$ ({_ceiling_note(traits, sigma_seed)})",
     )
-    _emit(fig, f"{prefix}_headline", out_dir, saved)
+    _emit(fig, "exp2_headline", out_dir, saved)
 
     checkpoints = decay.mechanism_frame(fits)
     fig = figures.mechanism_grid(
         checkpoints,
         MECHANISM_PREDICTORS,
+        traits=traits,
+        trait_labels=trait_labels,
         trunk_labels={**labels, "shared": "Shared $M_0$"},
         trunk_colors={**colors, "shared": style.SECONDARY_INK},
     )
-    _emit(fig, f"{prefix}_mechanism", out_dir, saved)
+    _emit(fig, "exp2_mechanism", out_dir, saved)
 
     pairs = decay.phase_contrast_frame(fits)
     if pairs.empty:
         logger.info(
-            "exp2/%s: no trunk has a re-alignment step with misalignment to "
-            "undo, so there is no phase contrast to draw",
-            trait,
+            "exp2: no trunk has a re-alignment step with misalignment to undo, "
+            "so there is no phase contrast to draw"
         )
     else:
         fig = figures.phase_contrast(
             pairs,
+            traits=_present_traits(pairs),
+            trait_labels=trait_labels,
             series_labels=decay.SERIES_LABELS,
             trunk_colors=colors,
         )
-        _emit(fig, f"{prefix}_phase_contrast", out_dir, saved)
+        _emit(fig, "exp2_phase_contrast", out_dir, saved)
     return saved
 
 
-def _drift_figures(
-    ratios: pd.DataFrame,
-    latents: pd.DataFrame,
-    prefix: str,
-    out_dir: Path,
-) -> list[Path]:
-    r"""Plot 5: paired drift of $\Delta P_t$ and of $z_t$, with the reseed overlay."""
+def _probe_series(arm: pd.DataFrame) -> dict[str, list[float]]:
+    r"""One trunk-arm's $\Delta P_t$ ratios, keyed by probe display name."""
+    return {
+        display_dataset_name(probe): values
+        for probe, values in _series_by(arm, key="probe", value="ratio").items()
+    }
+
+
+def _trunk_series(
+    arm: pd.DataFrame, component: str, trunks: Sequence[str]
+) -> dict[str, list[float]]:
+    """One trait's ``component`` over ``t``, one entry per trunk."""
+    return {
+        display_trunk_name(trunk): values
+        for trunk in trunks
+        for values in _series_by(
+            arm[arm["trunk"] == trunk], key="trunk", value=component
+        ).values()
+    }
+
+
+def _drift_delta_p_figure(ratios: pd.DataFrame, out_dir: Path) -> list[Path]:
+    r"""Plot 5, the $\Delta P_t$ half: a trait per row, a trunk per column.
+
+    All six panels share both axes, because the whole reading is comparative:
+    how far the probes have drifted under an aggressive schedule against a
+    benign one, and whether the two traits go stale at the same rate. Panels on
+    their own scales would rescale exactly those differences away.
+    """
     saved: list[Path] = []
-    primary_seed = experiments.EXP2_SEED
+    if ratios.empty:
+        return saved
+    traits, trunks = _present_traits(ratios), _present_trunks(ratios)
+    own, replicate = _split_by_seed(ratios, experiments.EXP2_SEED)
 
-    for trunk in _present_trunks(ratios) if not ratios.empty else []:
-        arm = ratios[ratios["trunk"] == trunk]
-        own, replicate = _split_by_seed(arm, primary_seed)
-        series = {
-            display_dataset_name(k): v
-            for k, v in _series_by(own, key="probe", value="ratio").items()
-        }
-        if not series:
-            continue
-        fig = figures.overlay_lines(
-            series,
-            {
-                display_dataset_name(k): v
-                for k, v in _series_by(replicate, key="probe", value="ratio").items()
-            },
-            # Keyed by display name because that is what the legend shows; the
-            # mark itself is derived from the identifier, so the two stay in
-            # step however the display name is spelled.
-            marks={
-                display_dataset_name(probe): style.dataset_mark(probe)
-                for probe in set(arm["probe"])
-            },
-            ylabel=r"$\Delta P_t$ (% of $\Delta P_0$)",
-            reference=100.0,
-            reference_label=r"$\Delta P_0$",
-        )
-        _emit(fig, f"{prefix}_drift_delta_p_trunk_{trunk}", out_dir, saved)
+    def arm(frame: pd.DataFrame, trait: str, trunk: str) -> pd.DataFrame:
+        return frame[(frame["trait"] == trait) & (frame["trunk"] == trunk)]
 
+    panels, replicates = {}, {}
+    for trait in traits:
+        for trunk in trunks:
+            cell = (display_trait_name(trait), display_trunk_title(trunk))
+            panels[cell] = _probe_series(arm(own, trait, trunk))
+            replicates[cell] = _probe_series(arm(replicate, trait, trunk))
+
+    fig = figures.overlay_grid(
+        panels,
+        replicates,
+        rows=[display_trait_name(trait) for trait in traits],
+        cols=[display_trunk_title(trunk) for trunk in trunks],
+        # Keyed by display name because that is what the legend shows; the mark
+        # itself is derived from the identifier, so the two stay in step
+        # however the display name is spelled.
+        marks={
+            display_dataset_name(probe): style.dataset_mark(probe)
+            for probe in set(ratios["probe"])
+        },
+        ylabel=r"$\Delta P_t$ (% of $\Delta P_0$)",
+        reference=100.0,
+        reference_label=r"$\Delta P_0$",
+        sharey=True,
+    )
+    _emit(fig, "exp2_drift_delta_p", out_dir, saved)
+    return saved
+
+
+def _drift_latent_figure(latents: pd.DataFrame, out_dir: Path) -> list[Path]:
+    r"""Plot 5, the $z_t$ half: a trait per row, a component per column."""
+    saved: list[Path] = []
     if latents.empty:
         return saved
-    trunks = _present_trunks(latents)
-    colors = {display_trunk_name(t): style.categorical_color(trunk_index(t))
-              for t in trunks}
-    own, replicate = _split_by_seed(latents, primary_seed)
-    panels = {
-        label: {
-            display_trunk_name(trunk): values
-            for trunk in trunks
-            for values in _series_by(
-                own[own["trunk"] == trunk], key="trunk", value=component
-            ).values()
-        }
-        for component, label in Z_LABELS.items()
+    traits, trunks = _present_traits(latents), _present_trunks(latents)
+    colors = {
+        display_trunk_name(trunk): style.categorical_color(trunk_index(trunk))
+        for trunk in trunks
     }
-    replicates = {
-        label: {
-            display_trunk_name(trunk): values
-            for trunk in trunks
-            for values in _series_by(
-                replicate[replicate["trunk"] == trunk], key="trunk", value=component
-            ).values()
-        }
-        for component, label in Z_LABELS.items()
-    }
-    fig = figures.overlay_grid(panels, replicates, colors=colors)
-    _emit(fig, f"{prefix}_drift_z", out_dir, saved)
+    own, replicate = _split_by_seed(latents, experiments.EXP2_SEED)
+
+    panels, replicates = {}, {}
+    for trait in traits:
+        for component, label in Z_LABELS.items():
+            cell = (display_trait_name(trait), label)
+            panels[cell] = _trunk_series(
+                own[own["trait"] == trait], component, trunks
+            )
+            replicates[cell] = _trunk_series(
+                replicate[replicate["trait"] == trait], component, trunks
+            )
+
+    fig = figures.overlay_grid(
+        panels,
+        replicates,
+        rows=[display_trait_name(trait) for trait in traits],
+        cols=list(Z_LABELS.values()),
+        colors=colors,
+    )
+    _emit(fig, "exp2_drift_z", out_dir, saved)
     return saved
 
 
@@ -448,13 +539,27 @@ def _base_behavior(
     return float(values.mean())
 
 
+def _realign_order(trait: str, realign_traits: Sequence[str]) -> list[str]:
+    """A trait's own Normal data first, then any other trait's.
+
+    The same-trait re-alignment is the condition the hysteresis claim is about;
+    another trait's Normal data is the control that says whether the residue is
+    about re-alignment at all or only about that one dataset. Reading the claim
+    before its control is why the order is fixed rather than alphabetical.
+    """
+    return [t for t in realign_traits if t == trait] + [
+        t for t in realign_traits if t != trait
+    ]
+
+
 def build_exp3(collection: Collection, out_dir: Path) -> list[Path]:
-    r"""Hysteresis bar chart, one figure per (measured trait, realign trait).
+    r"""The hysteresis bar chart: one row per (measured trait, realign trait).
 
     Bars are the trait score each arm *ends* at, referenced to a dashed line at
     $M_0$'s own score, so what the eye compares is $b_T - b_0$ -- the same
     origin for every arm. See :func:`~method.visualization.figures.hysteresis_bar`
-    for why the last step's $\Delta b$ is not plotted as the level.
+    for why the last step's $\Delta b$ is not plotted as the level, and why the
+    four rows share a figure but only two y-scales.
     """
     saved: list[Path] = []
     if not collection:
@@ -462,31 +567,53 @@ def build_exp3(collection: Collection, out_dir: Path) -> list[Path]:
         return saved
 
     df = hysteresis_frame(collection)
-    for trait in collection.values("trait"):
-        pretty = display_trait_name(trait)
-        for realign_trait in sorted(set(df["realign_trait"])):
-            subset = df[
-                (df["trait"] == trait) & (df["realign_trait"] == realign_trait)
-            ]
-            present = set(subset["condition"])
-            conditions = [c for c in HYSTERESIS_CONDITIONS if c in present]
-            if len(conditions) < 2:
+    present = set(df["condition"])
+    conditions = [c for c in HYSTERESIS_CONDITIONS if c in present]
+    if len(conditions) < 2:
+        logger.warning("exp3: only %d condition(s) present; skipping", len(conditions))
+        return saved
+
+    # One row per arm of the 2x2, keyed by both traits at once: the row is a
+    # pair, and the frame has a column for each half of it rather than for the
+    # pair itself.
+    keyed = df.assign(row=df["trait"] + "/" + df["realign_trait"])
+    rows, row_labels, row_scales, references = [], {}, {}, {}
+    for trait in _present(df["trait"], TRAITS):
+        for realign_trait in _realign_order(trait, _present(df["realign_trait"], TRAITS)):
+            key = f"{trait}/{realign_trait}"
+            subset = keyed[keyed["row"] == key]
+            if subset.empty:
                 logger.warning(
-                    "exp3/%s/realign=%s: only %d condition(s) present; skipping",
+                    "exp3/%s/realign=%s: no runs on disk; the row is omitted",
                     trait,
                     realign_trait,
-                    len(conditions),
                 )
                 continue
-            fig = figures.hysteresis_bar(
-                subset,
-                conditions=conditions,
-                start_col="behavior_before",
-                reference=_base_behavior(subset, trait, realign_trait),
-                reference_label=rf"Base model $b_0$ ({pretty})",
-                ylabel=rf"{pretty} score after the final step ($b_T$)",
+            rows.append(key)
+            row_labels[key] = (
+                f"{display_trait_name(trait)}\nre-aligned on "
+                f"{display_trait_name(realign_trait)}-Normal"
             )
-            _emit(fig, f"exp3_{trait}_realign-{realign_trait}", out_dir, saved)
+            # The measured trait, so the two re-alignment sources for one trait
+            # are read on one scale and the two traits are not.
+            row_scales[key] = trait
+            base = _base_behavior(subset, trait, realign_trait)
+            if base is not None:
+                references[key] = base
+
+    fig = figures.hysteresis_bar(
+        keyed,
+        rows=rows,
+        row_col="row",
+        row_labels=row_labels,
+        row_scales=row_scales,
+        conditions=conditions,
+        start_col="behavior_before",
+        reference=references,
+        reference_label=r"Base model $b_0$ (that row's trait)",
+        ylabel=r"Trait score after the final step ($b_T$)",
+    )
+    _emit(fig, "exp3_hysteresis", out_dir, saved)
     return saved
 
 
@@ -494,36 +621,35 @@ def build_exp3(collection: Collection, out_dir: Path) -> list[Path]:
 
 
 def build_exp4(collection: Collection, out_dir: Path) -> list[Path]:
-    """Diversity bar chart, one figure per (measured trait, realign trait)."""
+    """The diversity bar chart: a measured trait per row, a realign trait per column."""
     saved: list[Path] = []
     if not collection:
         logger.warning("exp4: no runs on disk; skipping")
         return saved
 
     df = diversity_frame(collection)
-    for trait in collection.values("trait"):
-        pretty = display_trait_name(trait)
-        for realign_trait in collection.values("realign_trait"):
-            subset = df[
-                (df["trait"] == trait) & (df["realign_trait"] == realign_trait)
-            ]
-            present = set(subset["condition"])
-            conditions = [c for c in DIVERSITY_CONDITIONS if c in present]
-            if len(conditions) < 2:
-                logger.warning(
-                    "exp4/%s/realign=%s: only %d condition(s) present; skipping",
-                    trait,
-                    realign_trait,
-                    len(conditions),
-                )
-                continue
-            fig = figures.diversity_bar(
-                subset,
-                order=conditions,
-                labels=DIVERSITY_CONDITION_LABELS,
-                ylabel=rf"{pretty} residual after re-alignment ($b_T - b_0$)",
-            )
-            _emit(fig, f"exp4_{trait}_realign-{realign_trait}", out_dir, saved)
+    present = set(df["condition"])
+    conditions = [c for c in DIVERSITY_CONDITIONS if c in present]
+    if len(conditions) < 2:
+        logger.warning("exp4: only %d condition(s) present; skipping", len(conditions))
+        return saved
+
+    traits = _present(df["trait"], TRAITS)
+    realign_traits = _present(df["realign_trait"], TRAITS)
+    fig = figures.diversity_bar(
+        df,
+        rows=traits,
+        row_labels={trait: display_trait_name(trait) for trait in traits},
+        cols=realign_traits,
+        col_labels={
+            trait: f"Re-aligned on {display_trait_name(trait)}-Normal"
+            for trait in realign_traits
+        },
+        order=conditions,
+        labels=DIVERSITY_CONDITION_LABELS,
+        ylabel=r"Residual after re-alignment ($b_T - b_0$)",
+    )
+    _emit(fig, "exp4_diversity", out_dir, saved)
     return saved
 
 

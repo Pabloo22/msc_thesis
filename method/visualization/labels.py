@@ -87,6 +87,8 @@ DIVERSITY_CONDITION_LABELS = {
     "diff3": r"Diverse $\times$3",
 }
 
+TRAITS = ("sycophantic", "evil")
+
 #: Trait as it should appear in a figure title.
 TRAIT_TITLES = {"evil": "Evil", "sycophantic": "Sycophancy"}
 
@@ -106,6 +108,18 @@ TRUNK_LABELS = {
 def display_trunk_name(trunk: str) -> str:
     """``"a"`` -> the schedule-annotated label, falling back to ``"Trunk a"``."""
     return TRUNK_LABELS.get(trunk, f"Trunk {trunk}")
+
+
+def display_trunk_title(trunk: str) -> str:
+    """:func:`display_trunk_name` broken across two lines, for a panel header.
+
+    A column header sits over about three inches of panel, which the one-line
+    label overruns into its neighbours. The break goes where the label already
+    divides -- the trunk's name from its schedule -- so the two lines each stay
+    a complete thought, and the control (which has no schedule to name) is left
+    on one line.
+    """
+    return display_trunk_name(trunk).replace(", ", ",\n")
 
 
 def trunk_index(trunk: str) -> int:
