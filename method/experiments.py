@@ -567,32 +567,18 @@ def build_exp2_reseed_configs(
     exactly what is expected.
 
     **No probes**, unlike every other builder here, and the default is ``()``
-    rather than :data:`EXP2_PROBES` so that has to be asked for. Two reasons,
-    one per axis of section 9's plot 5:
+    rather than :data:`EXP2_PROBES` so that probing has to be asked for. Two
+    reasons, one per axis of section 9's plot 5: the probes are ~two thirds of a
+    trunk's wall clock and ``z`` never touches them, and exp3's five seeds
+    already show ``Delta P`` reproducing to ~1% without compounding in ``t``.
+    The measurements behind both, their limits, and how to re-derive them are in
+    ``docs/reseed_probes.md``; that file is the authority on the numbers, and
+    reverting this default without reading it would quadruple the family's cost
+    to re-measure a quantity already known to be stable.
 
-    *The probes are the entire cost.* On the seed-0 trunk (``timings.jsonl``)
-    probing eight datasets takes ~92 min per checkpoint -- ~13.5 h of the ~20 h
-    trunk pair -- while the ``latent`` stage that actually produces ``z`` is
-    derived from ``v_t`` and ``h_neutral`` and costs minutes. Probing one
-    replicate costs about what four probe-free ones do.
-
-    *``Delta P`` is already known to be seed-stable.* exp3 sweeps five seeds
-    over fixed sequences and measures ``Delta P`` at every checkpoint, which is
-    the same quantity a reseeded trunk would re-measure. Over its 138 probed
-    multi-seed cells past ``t = 0`` the cross-seed SD is 0.039 at the median
-    and 0.14 at worst, against ``|Delta P|`` of ~4 -- a coefficient of
-    variation of 0.89% (median), 1.84% (90th percentile), 3.06% (max). Nor
-    does it compound with depth: ~1% flat from ``t = 1`` through ``t = 3``,
-    and exactly 0 at ``t = 0``, where every seed reads the same cached base
-    checkpoint. A probed replicate would spend those 13.5 h drawing a dashed
-    line on top of the solid one. The two limits to state in the write-up
-    rather than paper over: exp3 reaches ``t = 3``, not ``t = 6`` -- though
-    its flatness is evidence against compounding, not merely an absence of it
-    -- and it covers three of the eight probe datasets as non-drivers.
-
-    ``z`` gets the opposite treatment because exp3 bounds it under the same two
-    limits and the question is genuinely open there: nothing says a
-    representational path has to reproduce just because a projection does.
+    ``z`` gets the opposite treatment because the question is genuinely open
+    there: nothing says a representational path has to reproduce just because a
+    projection does.
     """
     if trunk not in trunks:
         raise ValueError(f"unknown trunk {trunk!r}; known: {sorted(trunks)}")
