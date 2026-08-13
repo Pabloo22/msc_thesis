@@ -160,18 +160,18 @@ def _sigma_seed(collections: Mapping[str, Collection]) -> dict[str, float]:
     return estimates
 
 
-def _series_by(
-    frame: pd.DataFrame, *, key: str, value: str
-) -> dict[str, list[float]]:
-    """``key`` -> its ``value`` at each ``t``, ordered by ``t``.
+def _pivot_over_t(
+    frame: pd.DataFrame, *, index: str | list[str], value: str
+) -> pd.DataFrame:
+    """``index`` -> its ``value`` at each ``t``, ordered by ``t``.
 
-    Keys missing any checkpoint are dropped rather than plotted short, for the
+    Rows missing any checkpoint are dropped rather than plotted short, for the
     same reason a ragged seed is: a truncated line reads as a quantity that
     stopped moving, not as a measurement that never happened.
     """
     if frame.empty:
-        return {}
-    wide = frame.pivot_table(index=key, columns="t", values=value).sort_index(axis=1)
+        return pd.DataFrame()
+    wide = frame.pivot_table(index=index, columns="t", values=value).sort_index(axis=1)
     complete = wide.dropna(axis=0, how="any")
     dropped = sorted(set(wide.index) - set(complete.index))
     if dropped:
@@ -180,7 +180,43 @@ def _series_by(
             value,
             ", ".join(str(d) for d in dropped),
         )
-    return {str(k): [float(v) for v in row] for k, row in complete.iterrows()}
+    return complete
+
+
+def _series_by(
+    frame: pd.DataFrame, *, key: str, value: str
+) -> dict[str, list[float]]:
+    """One line per ``key``. For a frame holding a single seed."""
+    return {
+        str(k): [float(v) for v in row]
+        for k, row in _pivot_over_t(frame, index=key, value=value).iterrows()
+    }
+
+
+def _replicates_by(
+    frame: pd.DataFrame, *, key: str, value: str
+) -> dict[str, list[list[float]]]:
+    """One line per ``(key, seed)``, grouped under the ``key`` each replicates.
+
+    Seed has to be in the pivot index, not just the frame: ``pivot_table``
+    aggregates whatever shares an index entry, so pivoting on ``key`` alone
+    would average the replicate seeds together and draw a single line that no
+    seed actually produced. That was invisible while the reseed family was one
+    seed, and silently wrong the moment :data:`EXP2_RESEED_EXTRA_SEEDS` landed.
+
+    Grouped rather than flattened because the caller draws each replicate in
+    the colour of the primary series it replicates, which is what keeps a
+    six-seed overlay from spending six hues on one quantity.
+    """
+    if "seed" not in frame.columns:
+        return {}
+    pivoted = _pivot_over_t(frame, index=[key, "seed"], value=value)
+    if pivoted.empty:
+        return {}
+    return {
+        str(name): [[float(v) for v in row] for _, row in block.iterrows()]
+        for name, block in pivoted.groupby(level=0)
+    }
 
 
 def _split_by_seed(
@@ -287,22 +323,6 @@ def _validation_figure(
     return saved
 
 
-def _ceiling_note(traits: Sequence[str], sigma_seed: Mapping[str, float]) -> str:
-    r"""What plot 3's dashed ceiling accounts for, given what was measured.
-
-    One figure now carries both traits' ceilings, and $\sigma_{seed}$ is
-    per-trait, so the legend names the *ingredients* rather than a number that
-    would have to be one trait's. The values themselves are logged, where they
-    can be quoted per trait without implying a figure-wide constant.
-    """
-    measured = [trait for trait in traits if trait in sigma_seed]
-    if not measured:
-        return "eval noise only"
-    if len(measured) < len(traits):
-        return r"eval noise + $\sigma_{seed}$ where measured"
-    return r"eval noise + $\sigma_{seed}$"
-
-
 def _decay_figures(
     rows: pd.DataFrame,
     out_dir: Path,
@@ -366,7 +386,6 @@ def _decay_figures(
         trunks=trunks,
         trunk_labels=labels,
         trunk_colors=colors,
-        ceiling_label=rf"$R^2_{{max}}$ ({_ceiling_note(traits, sigma_seed)})",
     )
     _emit(fig, "exp2_headline", out_dir, saved)
 
@@ -407,6 +426,14 @@ def _probe_series(arm: pd.DataFrame) -> dict[str, list[float]]:
     }
 
 
+def _probe_replicates(arm: pd.DataFrame) -> dict[str, list[list[float]]]:
+    r"""The same, one series per replicate seed of each probe."""
+    return {
+        display_dataset_name(probe): runs
+        for probe, runs in _replicates_by(arm, key="probe", value="ratio").items()
+    }
+
+
 def _trunk_series(
     arm: pd.DataFrame, component: str, trunks: Sequence[str]
 ) -> dict[str, list[float]]:
@@ -415,6 +442,19 @@ def _trunk_series(
         display_trunk_name(trunk): values
         for trunk in trunks
         for values in _series_by(
+            arm[arm["trunk"] == trunk], key="trunk", value=component
+        ).values()
+    }
+
+
+def _trunk_replicates(
+    arm: pd.DataFrame, component: str, trunks: Sequence[str]
+) -> dict[str, list[list[float]]]:
+    """The same, one series per replicate seed of each trunk."""
+    return {
+        display_trunk_name(trunk): runs
+        for trunk in trunks
+        for runs in _replicates_by(
             arm[arm["trunk"] == trunk], key="trunk", value=component
         ).values()
     }
@@ -442,7 +482,7 @@ def _drift_delta_p_figure(ratios: pd.DataFrame, out_dir: Path) -> list[Path]:
         for trunk in trunks:
             cell = (display_trait_name(trait), display_trunk_title(trunk))
             panels[cell] = _probe_series(arm(own, trait, trunk))
-            replicates[cell] = _probe_series(arm(replicate, trait, trunk))
+            replicates[cell] = _probe_replicates(arm(replicate, trait, trunk))
 
     fig = figures.overlay_grid(
         panels,
@@ -484,7 +524,7 @@ def _drift_latent_figure(latents: pd.DataFrame, out_dir: Path) -> list[Path]:
             panels[cell] = _trunk_series(
                 own[own["trait"] == trait], component, trunks
             )
-            replicates[cell] = _trunk_series(
+            replicates[cell] = _trunk_replicates(
                 replicate[replicate["trait"] == trait], component, trunks
             )
 

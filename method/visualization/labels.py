@@ -87,7 +87,7 @@ DIVERSITY_CONDITION_LABELS = {
     "diff3": r"Diverse $\times$3",
 }
 
-TRAITS = ("sycophantic", "evil")
+TRAITS = ("evil", "sycophantic")
 
 #: Trait as it should appear in a figure title.
 TRAIT_TITLES = {"evil": "Evil", "sycophantic": "Sycophancy"}

@@ -92,18 +92,20 @@ class TestBuilderProbeDefaults:
     """Every family probes the dataset whose figure it has to explain."""
 
     def test_every_builder_gives_every_config_a_probe(self):
-        # Two exceptions, both by design: exp2_validation *is* the Delta P_0
+        # Three exceptions, all by design: exp2_validation *is* the Delta P_0
         # measurement (each config is a single fine-tune from M_0), so it has
-        # no separate checkpoint to probe from; and an ENDPOINT_BEHAVIOR branch
+        # no separate checkpoint to probe from; an ENDPOINT_BEHAVIOR branch
         # is barred from carrying probes at all (TrajectoryConfig rejects it),
         # since the trunk it forked from already probes every checkpoint the
-        # branch shares with it.
+        # branch shares with it; and exp2_reseed is probe-free throughout --
+        # it exists to replicate z, which the probes do not enter, and exp3
+        # already bounds Delta P's own seed noise (see the builder).
         #
         # Each builder is left on its own default seeds -- forcing seeds=(0,)
         # uniformly would trip build_exp2_reseed_configs's guard against
-        # reusing the decay family's seed (see EXP2_SEED / EXP2_RESEED_SEED).
+        # reusing the decay family's seed (see EXP2_SEED / EXP2_RESEED_SEEDS).
         for group, build in E.GROUP_BUILDERS.items():
-            if group == E.EXP2_VALIDATION:
+            if group in (E.EXP2_VALIDATION, E.EXP2_RESEED):
                 continue
             for cfg in build(measure_traits=("evil",)):
                 if cfg.measure is MeasurementLevel.ENDPOINT_BEHAVIOR:

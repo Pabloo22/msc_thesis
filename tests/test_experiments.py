@@ -265,21 +265,54 @@ class TestExp2Design:
             if cfg.label_map["role"] == "branch":
                 assert int(cfg.label_map["t"]) >= 1
 
-    def test_reseed_replicates_trunk_a_under_a_different_seed(self):
+    def test_reseed_replicates_trunk_a_under_different_seeds(self):
         reseed = E.build_exp2_reseed_configs(measure_traits=("evil",))
         trunk, _ = self.trunk_and_branches("a")
-        assert len(reseed) == 1
-        assert reseed[0].steps == trunk.steps
-        assert reseed[0].seed != trunk.seed
-        # Different seed, so every trained checkpoint is genuinely re-run --
-        # only the untouched base model is shared.
-        assert get_weights_id(reseed[0], 0) == get_weights_id(trunk, 0)
-        for t in range(1, len(trunk.steps) + 1):
-            assert get_weights_id(reseed[0], t) != get_weights_id(trunk, t)
+        assert [cfg.seed for cfg in reseed] == list(E.EXP2_RESEED_SEEDS)
+        for cfg in reseed:
+            assert cfg.steps == trunk.steps
+            assert cfg.seed != trunk.seed
+            # Different seed, so every trained checkpoint is genuinely re-run --
+            # only the untouched base model is shared.
+            assert get_weights_id(cfg, 0) == get_weights_id(trunk, 0)
+            for t in range(1, len(trunk.steps) + 1):
+                assert get_weights_id(cfg, t) != get_weights_id(trunk, t)
 
     def test_reseed_refuses_the_decay_seed(self):
         with pytest.raises(ValueError, match="decay family's own seed"):
             E.build_exp2_reseed_configs(seeds=(E.EXP2_SEED,))
+
+    def test_the_reseed_family_is_probe_free(self):
+        """The probes are ~two thirds of a trunk's wall clock, z does not use
+        them, and exp3 already bounds Delta P's seed noise at ~1%. Asking for
+        them has to be explicit, so the default is () rather than EXP2_PROBES."""
+        for cfg in E.build_exp2_reseed_configs(measure_traits=("evil",)):
+            assert cfg.probes == ()
+            # Still FULL: z needs v_t and h_neutral at every checkpoint, so
+            # ENDPOINT_BEHAVIOR would measure nothing these seeds exist for.
+            assert cfg.measure is MeasurementLevel.FULL
+
+    def test_a_probed_replicate_is_still_reachable(self):
+        """Dropping the probes is a budget call on evidence, not a structural
+        bar -- if Delta P's stability is ever in doubt at t > 3, one seed can
+        be probed without touching the builder."""
+        probed = E.build_exp2_reseed_configs(
+            seeds=(E.EXP2_RESEED_SEEDS[0],),
+            probes=E.EXP2_PROBES,
+            measure_traits=("evil",),
+        )
+        assert [p.dataset_id for p in probed[0].probes] == [
+            p.dataset_id for p in E.EXP2_PROBES
+        ]
+
+    def test_every_reseed_seed_is_registered(self):
+        registered = {
+            cfg.seed
+            for key, cfg in E.REGISTRY.items()
+            if cfg.group == E.EXP2_RESEED and "_LOCAL_" not in key
+        }
+        assert registered == set(E.EXP2_RESEED_SEEDS)
+        assert E.EXP2_SEED not in E.EXP2_RESEED_SEEDS
 
     def test_trunks_may_reuse_datasets_across_but_not_within(self):
         """Reuse across trunks is fine -- they are independent trajectories --

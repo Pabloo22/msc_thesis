@@ -1011,42 +1011,49 @@ class TestDecayScatterGrid:
 
 
 class TestHeadlineCurves:
-    def test_one_column_per_series_and_a_row_each_for_r2_and_slope(self) -> None:
+    def test_one_row_each_for_r2_and_slope_with_both_series_overlaid(self) -> None:
         fig = figures.headline_curves(_fits())
-        assert len(fig.axes) == 4
+        assert len(fig.axes) == 2  # no trait facet: one column, two rows
         ylabels = [ax.get_ylabel() for ax in fig.axes]
         assert any("R^2" in label for label in ylabels)
         assert any("slope" in label for label in ylabels)
+        # 2 trunks x (p0 + pt) drawn on the one shared r2 axes.
+        assert len(fig.axes[0].lines) == 4
 
     def test_r2_panels_are_bounded_to_the_unit_interval(self) -> None:
         fig = figures.headline_curves(_fits())
         low, high = fig.axes[0].get_ylim()
         assert low <= 0 and high <= 1.05
 
-    def test_noise_ceiling_is_drawn_once_per_trunk_on_the_r2_row(self) -> None:
-        with_ceiling = figures.headline_curves(_fits())
-        without = figures.headline_curves(_fits(), ceiling_column=None)
-        assert len(with_ceiling.axes[0].lines) == len(without.axes[0].lines) + 2
+    def test_p0_is_solid_and_pt_is_dashed(self) -> None:
+        fig = figures.headline_curves(_fits(trunks=("a",)))
+        linestyles = {line.get_linestyle() for line in fig.axes[0].lines}
+        assert len(linestyles) == 2
+
+    def test_the_r2_max_column_is_no_longer_needed_to_plot(self) -> None:
+        """The noise ceiling is still computed by fit_frame, but this figure
+        no longer draws it -- see docs/r2_max.md -- so it must not require the
+        column to be present."""
+        fits = _fits().drop(columns=["r2_max"])
+        figures.headline_curves(fits)  # must not raise
 
     def test_a_trunk_missing_from_the_frame_is_simply_absent(self) -> None:
         fig = figures.headline_curves(_fits(trunks=("a",)))
         legend = fig.legends[0]
         assert len([t for t in legend.get_texts() if "Trunk" in t.get_text()]) == 1
 
-    def test_each_trait_gets_an_r2_row_and_a_slope_row(self) -> None:
+    def test_one_column_per_trait_two_rows_for_r2_and_slope(self) -> None:
         fig = figures.headline_curves(
             _traited(_fits()),
             traits=["sycophantic", "evil"],
             trait_labels={"sycophantic": "Sycophancy", "evil": "Evil"},
         )
-        assert len(fig.axes) == 4 * 2
-        headings = [ax.get_ylabel() for ax in fig.axes if ax.get_ylabel()]
-        assert [h.split("\n")[0] for h in headings] == [
-            "Sycophancy",
-            "Sycophancy",
-            "Evil",
-            "Evil",
-        ]
+        assert len(fig.axes) == 2 * 2  # 2 quantities x 2 traits
+        titles = [ax.get_title() for ax in fig.axes if ax.get_title()]
+        assert titles == ["Sycophancy", "Evil"]
+        ylabels = [ax.get_ylabel() for ax in fig.axes if ax.get_ylabel()]
+        assert any("R^2" in label for label in ylabels)
+        assert any("slope" in label for label in ylabels)
 
     def test_the_slope_is_not_shared_across_traits(self) -> None:
         """A slope is in points of that trait's judge per unit of that trait's
@@ -1054,13 +1061,20 @@ class TestHeadlineCurves:
         fig = figures.headline_curves(
             _traited(_fits(), scale="slope_p0"), traits=["sycophantic", "evil"]
         )
-        slope_rows = [fig.axes[2], fig.axes[6]]  # rows 1 and 3, first column
-        assert slope_rows[0].get_ylim() != slope_rows[1].get_ylim()
+        slope_row = [fig.axes[2], fig.axes[3]]  # row 1, both trait columns
+        assert slope_row[0].get_ylim() != slope_row[1].get_ylim()
 
     def test_the_legend_keys_a_trunk_once_for_the_whole_grid(self) -> None:
         fig = figures.headline_curves(_traited(_fits()))
         texts = [t.get_text() for t in fig.legends[0].get_texts()]
         assert texts.count("Trunk a") == 1
+
+    def test_the_legend_also_names_the_two_series(self) -> None:
+        fig = figures.headline_curves(
+            _fits(), series_labels={"p0": "P0", "pt": "Pt"}
+        )
+        texts = [t.get_text() for t in fig.legends[0].get_texts()]
+        assert "P0" in texts and "Pt" in texts
 
 
 class TestMechanismGrid:
@@ -1135,29 +1149,34 @@ class TestPhaseContrast:
             ]
         )
 
-    def test_a_connected_pair_per_realignment_step(self) -> None:
+    def test_four_bars_per_realignment_step(self) -> None:
         fig = figures.phase_contrast(self._pairs())
         ax = fig.axes[0]
-        assert len(ax.lines) == 2  # one connector per pair
-        assert len(ax.collections) == 4  # before and after marker per pair
+        # 2 steps x 2 series (p0, pt) x (before + after).
+        assert len(ax.patches) == 2 * 2 * 2
 
     def test_shows_levels_as_well_as_the_difference(self) -> None:
-        """A drop from 0.9 to 0.6 and one from 0.4 to 0.1 are the same bar and
-        very different findings, so the markers carry the level."""
+        """A drop from 0.9 to 0.6 and one from 0.4 to 0.1 are the same
+        difference and very different findings, so the bars carry the
+        level."""
         fig = figures.phase_contrast(self._pairs())
-        ys = np.concatenate(
-            [c.get_offsets()[:, 1] for c in fig.axes[0].collections]
+        heights = [p.get_height() for p in fig.axes[0].patches]
+        assert sorted(heights) == pytest.approx(
+            sorted([0.8, 0.4, 0.8, 0.75, 0.6, 0.5, 0.6, 0.6])
         )
-        assert sorted(ys) == pytest.approx([0.4, 0.5, 0.6, 0.8])
         assert any("-0.40" in t.get_text() for t in fig.axes[0].texts)
 
-    def test_both_projection_series_get_a_panel(self) -> None:
+    def test_both_projection_series_share_one_panel_distinguished_by_hatch(
+        self,
+    ) -> None:
         fig = figures.phase_contrast(self._pairs())
-        assert len(fig.axes) == 2
+        assert len(fig.axes) == 1
+        hatches = {p.get_hatch() for p in fig.axes[0].patches}
+        assert len(hatches) == 2  # p0 plain, pt hatched
 
-    def test_a_trait_per_row_over_one_shared_list_of_steps(self) -> None:
+    def test_a_trait_per_column_over_one_shared_list_of_steps(self) -> None:
         """A pair only one trait has measured must leave a gap in the other's
-        row, not shift its steps out of line."""
+        column, not shift its steps out of line."""
         pairs = pd.concat(
             [
                 self._pairs().assign(trait="sycophantic"),
@@ -1170,16 +1189,17 @@ class TestPhaseContrast:
             traits=["sycophantic", "evil"],
             trait_labels={"sycophantic": "Sycophancy", "evil": "Evil"},
         )
-        assert len(fig.axes) == 2 * 2
-        assert [ax.get_ylabel() for ax in fig.axes] == ["Sycophancy", "", "Evil", ""]
-        # Both rows keep a slot for every step, named once on the bottom row.
+        assert len(fig.axes) == 2
+        assert [ax.get_title() for ax in fig.axes] == ["Sycophancy", "Evil"]
+        # Both columns keep a slot for every step, each naming its own ticks.
         assert all(list(ax.get_xticks()) == [0, 1] for ax in fig.axes)
-        assert [t.get_text() for t in fig.axes[2].get_xticklabels()] == [
+        assert [t.get_text() for t in fig.axes[1].get_xticklabels()] == [
             "A: 1-2",
             "B: 2-3",
         ]
-        # Evil measured one of the two steps, so its row draws one connector.
-        assert len(fig.axes[2].lines) == 1
+        # Evil measured one of the two steps, so its column draws fewer bars.
+        assert len(fig.axes[1].patches) == 1 * 2 * 2
+        assert len(fig.axes[0].patches) == 2 * 2 * 2
 
 
 def _overlay_panels(rows=("Sycophancy", "Evil"), cols=("Trunk A", "Trunk B")):
@@ -1251,10 +1271,10 @@ class TestOverlayGrid:
         assert drawn["Code (Normal)"].get_markerfacecolor() == style.SURFACE
 
     def test_a_replicate_shares_its_series_colour_and_is_dashed(self) -> None:
-        """The reseed rides the colour of the run it replicates, so n = 2
-        costs no extra hue and cannot be read as a fourth condition."""
+        """The reseed rides the colour of the run it replicates, so it costs no
+        extra hue and cannot be read as a further condition."""
         fig = figures.overlay_grid(
-            {("row", "col"): {"a": [1.0, 2.0]}}, {("row", "col"): {"a": [1.1, 2.1]}}
+            {("row", "col"): {"a": [1.0, 2.0]}}, {("row", "col"): {"a": [[1.1, 2.1]]}}
         )
         (ax,) = fig.axes
         primary, replicate = ax.lines[0], ax.lines[1]
@@ -1262,9 +1282,39 @@ class TestOverlayGrid:
         assert primary.get_linestyle() == "-"
         assert replicate.get_linestyle() != "-"
 
+    def test_every_replicate_seed_draws_its_own_line(self) -> None:
+        """The probe-free reseed tier is four extra seeds; collapsing them to
+        one line would plot a trajectory no seed actually took."""
+        fig = figures.overlay_grid(
+            {("row", "col"): {"a": [1.0, 2.0]}},
+            {("row", "col"): {"a": [[1.1, 2.1], [1.2, 2.6], [0.9, 1.7]]}},
+        )
+        (ax,) = fig.axes
+        dashed = [line for line in ax.lines if line.get_linestyle() != "-"]
+        assert len(dashed) == 3
+        assert [list(line.get_ydata()) for line in dashed] == [
+            [1.1, 2.1],
+            [1.2, 2.6],
+            [0.9, 1.7],
+        ]
+
+    def test_a_replicate_keeps_its_colour_when_the_primary_dropped_a_series(
+        self,
+    ) -> None:
+        """Colour comes from the primary's ordering, so a probe dropped from
+        one half of the pair cannot shift the other half's hues."""
+        fig = figures.overlay_grid(
+            {("row", "col"): {"a": [1.0, 2.0], "b": [3.0, 4.0]}},
+            {("row", "col"): {"b": [[3.1, 4.1]]}},
+        )
+        (ax,) = fig.axes
+        by_label = {line.get_label(): line for line in ax.lines}
+        (dashed,) = [line for line in ax.lines if line.get_linestyle() != "-"]
+        assert dashed.get_color() == by_label["b"].get_color()
+
     def test_the_dashed_convention_is_named_in_the_legend(self) -> None:
         fig = figures.overlay_grid(
-            {("row", "col"): {"a": [1.0]}}, {("row", "col"): {"a": [1.1]}}
+            {("row", "col"): {"a": [1.0]}}, {("row", "col"): {"a": [[1.1]]}}
         )
         (legend,) = fig.legends
         assert any("dashed" in t.get_text() for t in legend.get_texts())
@@ -1413,6 +1463,38 @@ class TestExp2Driver:
         own, replicate = make_plots._split_by_seed(frame, 0)
         assert list(own["value"]) == [1.0, 2.0]
         assert list(replicate["value"]) == [3.0]
+
+    def test_replicate_seeds_are_kept_apart_rather_than_averaged(self) -> None:
+        """``pivot_table`` aggregates whatever shares an index entry, so a
+        seed left out of the index silently becomes the mean of the seeds --
+        a line no run produced, and indistinguishable from a real one."""
+        frame = pd.DataFrame(
+            [
+                {"probe": "p", "seed": seed, "t": t, "ratio": float(value)}
+                for seed, values in [(2, [100.0, 10.0]), (3, [100.0, 90.0])]
+                for t, value in enumerate(values)
+            ]
+        )
+        assert make_plots._replicates_by(frame, key="probe", value="ratio") == {
+            "p": [[100.0, 10.0], [100.0, 90.0]]
+        }
+
+    def test_a_replicate_missing_a_checkpoint_drops_only_that_seed(self) -> None:
+        """A ragged seed must not take its siblings' complete series with it."""
+        frame = pd.DataFrame(
+            [
+                {"probe": "p", "seed": 2, "t": 0, "ratio": 100.0},
+                {"probe": "p", "seed": 2, "t": 1, "ratio": 40.0},
+                {"probe": "p", "seed": 3, "t": 0, "ratio": 100.0},
+            ]
+        )
+        assert make_plots._replicates_by(frame, key="probe", value="ratio") == {
+            "p": [[100.0, 40.0]]
+        }
+
+    def test_a_frame_without_seeds_has_no_replicates(self) -> None:
+        frame = pd.DataFrame({"probe": ["p"], "t": [0], "ratio": [1.0]})
+        assert make_plots._replicates_by(frame, key="probe", value="ratio") == {}
 
 
 # --- demo.py -----------------------------------------------------------------

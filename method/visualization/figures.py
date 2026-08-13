@@ -974,6 +974,7 @@ def _band(
     *,
     color: str,
     label: str,
+    linestyle: str | tuple = "solid",
 ) -> None:
     """A line with its confidence band, as used by the headline curves."""
     x_arr = np.asarray(x, dtype=float)
@@ -986,6 +987,7 @@ def _band(
         markeredgecolor=style.SURFACE,
         markeredgewidth=0.8,
         linewidth=1.8,
+        linestyle=linestyle,
         label=label,
         zorder=3,
     )
@@ -1000,6 +1002,12 @@ def _band(
     )
 
 
+#: Line style per series position in ``headline_curves``: $\Delta P_0$ solid,
+#: $\Delta P_t$ dashed. Fixed rather than assigned dynamically so the same
+#: series always reads the same way regardless of which trunks are present.
+_SERIES_LINESTYLES: tuple[str | tuple, ...] = ("solid", (0, (4, 2)))
+
+
 def headline_curves(
     fits: pd.DataFrame,
     *,
@@ -1010,23 +1018,20 @@ def headline_curves(
     trunks: Sequence[str] | None = None,
     trunk_labels: Mapping[str, str] | None = None,
     trunk_colors: Mapping[str, str] | None = None,
-    ceiling_column: str | None = "r2_max",
-    ceiling_label: str = r"$R^2_{max}$ (noise ceiling)",
     xlabel: str = "Checkpoint $t$",
 ) -> Figure:
-    r"""Plot 3: $R^2$ and fitted slope against ``t``, one line per trunk.
+    r"""Plot 3: $R^2$ and fitted slope against ``t``, one panel per trait.
 
-    Two rows per trait and one column per projection series. Slope is reported
-    beside $R^2$ rather than inside it because staleness has two signatures
-    that imply different fixes: a fit that loses its ordering (falling $R^2$)
-    and one that keeps the ordering but shrinks the magnitude (falling slope at
-    unchanged $R^2$).
+    Two rows (one per quantity) and one column per trait. $\Delta P_0$ and
+    $\Delta P_t$ are drawn on the *same* axes within a panel -- solid vs.
+    dashed, sharing the trunk's colour -- rather than split into their own
+    column, so the two series are read directly against each other instead of
+    through a side-by-side comparison across panels.
 
-    The dashed ceiling is what makes the $R^2$ panels a claim rather than an
-    observation. $\Delta b$ carries noise no predictor can explain, so a
-    correlation fitted against it cannot exceed $R^2_{max}$ (section 6b): a
-    blue curve decaying *toward* its ceiling is signal running out, while one
-    dropping clearly below while $\Delta P_t$ stays near it is staleness.
+    Slope is reported beside $R^2$ rather than inside it because staleness has
+    two signatures that imply different fixes: a fit that loses its ordering
+    (falling $R^2$) and one that keeps the ordering but shrinks the magnitude
+    (falling slope at unchanged $R^2$).
 
     Expect a sawtooth in ``t`` and do not smooth it -- it is the phase effect
     the schedules deliberately induce, and :func:`phase_contrast` is what
@@ -1035,10 +1040,15 @@ def headline_curves(
     Two measures on two rows rather than two y-scales on one: the alignment of
     a shared axis between $R^2$ and a slope in trait points per unit
     $\Delta P$ would be arbitrary, and would invent a relationship between
-    them. For the same reason the slope rows are not shared across traits --
-    the slope is in points of *that* trait's judge per unit of *that* trait's
-    persona vector, so its absolute value is not comparable between them, while
-    its trend in ``t`` is exactly what the figure asks the reader to compare.
+    them. For the same reason the slope row's panels do not share a y-scale
+    across traits -- the slope is in points of *that* trait's judge per unit
+    of *that* trait's persona vector, so its absolute value is not comparable
+    between them, while its trend in ``t`` is exactly what the figure asks the
+    reader to compare. (The $R^2$ row is unitless in both traits, so its
+    panels share a fixed ``[0, 1]``-ish range regardless.)
+
+    This panel no longer draws the $R^2_{max}$ noise ceiling; see
+    ``docs/r2_max.md`` for what it means and where to find it instead.
     """
     style.apply_style()
     series = list(series)
@@ -1046,75 +1056,74 @@ def headline_curves(
     trunk_labels = trunk_labels or {}
     trunk_colors = trunk_colors or {}
     trunks = list(trunks) if trunks else sorted(fits["trunk"].unique())
+    linestyles = dict(zip(series, _SERIES_LINESTYLES))
     quantities = (
         ("r2", r"$R^2$ over the probe set"),
         ("slope", r"Fitted slope ($\Delta b$ per unit $\Delta P$)"),
     )
-    rows = [
-        (frame, quantity, f"{trait_label}\n{name}" if trait_label else name)
-        for _, frame, trait_label in _facets(fits, traits, trait_labels, column="trait")
-        for quantity, name in quantities
-    ]
+    cols = _facets(fits, traits, trait_labels, column="trait")
 
-    # A row shares a y-axis so the two projection series are read against each
-    # other, which is the comparison the figure exists for. Nothing is shared
-    # between rows: they are different quantities, and different traits.
     fig, axes = plt.subplots(
-        len(rows),
-        len(series),
-        figsize=(4.4 * len(series), 2.9 * len(rows) + 0.6),
+        len(quantities),
+        len(cols),
+        figsize=(4.4 * len(cols), 2.9 * len(quantities) + 0.6),
         sharex=True,
-        sharey="row",
+        sharey=False,
         squeeze=False,
     )
-    for row, (frame, quantity, label) in enumerate(rows):
-        for col, name in enumerate(series):
+    for row, (quantity, qlabel) in enumerate(quantities):
+        for col, (_, frame, _trait_label) in enumerate(cols):
             ax = axes[row][col]
             for trunk in trunks:
                 arm = frame[frame["trunk"] == trunk].sort_values("t")
                 if arm.empty:
                     continue
                 color = trunk_colors.get(trunk, style.BLUE)
-                _band(
-                    ax,
-                    arm["t"],
-                    arm[f"{quantity}_{name}"],
-                    arm[f"{quantity}_{name}_lo"],
-                    arm[f"{quantity}_{name}_hi"],
-                    color=color,
-                    label=trunk_labels.get(trunk, f"Trunk {trunk}"),
-                )
-                if quantity == "r2" and ceiling_column in arm:
-                    ax.plot(
+                for name in series:
+                    _band(
+                        ax,
                         arm["t"],
-                        arm[ceiling_column],
+                        arm[f"{quantity}_{name}"],
+                        arm[f"{quantity}_{name}_lo"],
+                        arm[f"{quantity}_{name}_hi"],
                         color=color,
-                        linestyle=(0, (4, 2)),
-                        linewidth=1.0,
-                        alpha=0.6,
-                        zorder=1,
+                        label="_nolegend_",
+                        linestyle=linestyles.get(name, "solid"),
                     )
             if quantity == "r2":
                 ax.set_ylim(-0.03, 1.03)
             else:
                 ax.axhline(0, color=style.BASELINE, linewidth=0.8, zorder=1)
-        axes[row][0].set_ylabel(label)
-    for col, name in enumerate(series):
-        axes[0][col].set_title(
-            series_labels.get(name, name), color=style.SECONDARY_INK
-        )
+        axes[row][0].set_ylabel(qlabel)
+    for col, (_, _, trait_label) in enumerate(cols):
+        axes[0][col].set_title(trait_label, color=style.SECONDARY_INK)
         # Only the bottom row: every column shares one x-axis, so a label under
         # any other row would name ticks that are not drawn.
         axes[-1][col].set_xlabel(xlabel)
 
-    handles, texts = _shared_legend(axes.flat)
-    if ceiling_column is not None:
+    # Two channels, two legend keys: colour names the trunk, line style names
+    # the series. A per-line label (as _shared_legend expects) would need one
+    # entry per (trunk, series) combination instead of the sum of the two.
+    handles: list[Artist] = []
+    texts: list[str] = []
+    for trunk in trunks:
         handles.append(
             plt.Line2D(
-                [], [], color=style.MUTED, linestyle=(0, (4, 2)), linewidth=1.0
+                [], [], color=trunk_colors.get(trunk, style.BLUE), linewidth=1.8
             )
         )
-        texts.append(ceiling_label)
+        texts.append(trunk_labels.get(trunk, f"Trunk {trunk}"))
+    for name in series:
+        handles.append(
+            plt.Line2D(
+                [],
+                [],
+                color=style.SECONDARY_INK,
+                linewidth=1.8,
+                linestyle=linestyles.get(name, "solid"),
+            )
+        )
+        texts.append(series_labels.get(name, name))
     ncol = min(4, len(handles) or 1)
     fig.legend(handles, texts, loc="lower center", ncol=ncol)
     _layout_grid(fig, axes.flat, legend_rows=-(-len(handles) // ncol))
@@ -1222,6 +1231,19 @@ def mechanism_grid(
     return fig
 
 
+#: Hatch per series position in ``phase_contrast``: $\Delta P_0$ plain,
+#: $\Delta P_t$ hatched. Colour already carries the trunk and fill carries
+#: before/after, so the series needs a third channel that survives both.
+_SERIES_HATCHES: tuple[str, ...] = ("", "////")
+
+#: Offsets (in x-axis units) of the four bars drawn per re-alignment step:
+#: p0-before, p0-after, pt-before, pt-after. The gap within a series pair is
+#: narrower than the gap between the two series, so the eye groups
+#: before/after together and reads the two series as separate clusters.
+_BAR_OFFSETS: tuple[float, ...] = (-0.32, -0.12, 0.12, 0.32)
+_BAR_WIDTH = 0.18
+
+
 def phase_contrast(
     pairs: pd.DataFrame,
     *,
@@ -1235,92 +1257,99 @@ def phase_contrast(
     r"""Plot 4b: what one re-alignment step does to predictive accuracy.
 
     Each pair of checkpoints straddles a single Normal driver, with the trunk
-    and the probe set held fixed, so the vertical distance between the two
-    markers is attributable to that one step -- unlike a difference read off
-    the trend in ``t``, which also carries everything else that accumulated in
+    and the probe set held fixed, so the vertical distance between a step's
+    bars is attributable to that one step -- unlike a difference read off the
+    trend in ``t``, which also carries everything else that accumulated in
     between.
 
-    Drawn as a before/after pair rather than as a bar of the difference so that
-    the *level* stays visible: a drop from 0.9 to 0.6 and one from 0.4 to 0.1
-    are the same bar and very different findings.
+    Drawn as adjacent before/after bars rather than a bar of the difference so
+    that the *level* stays visible: a drop from 0.9 to 0.6 and one from 0.4 to
+    0.1 are the same difference and very different findings. $\Delta P_0$ and
+    $\Delta P_t$ sit side by side within the same step -- offset just enough
+    not to touch -- rather than in their own panel, so the control comparison
+    (does $\Delta P_t$ move by the same amount?) is a glance sideways instead
+    of a glance across the figure.
 
-    A row per trait, on one shared pair of axes: $R^2$ is unitless and every
-    row is read against the same list of re-alignment steps, so a step whose
-    fit collapses for one trait and holds for the other is a difference the
-    grid shows directly. The x positions come from the whole frame rather than
-    from each row, so a pair that only one trait has measured leaves a gap
-    instead of shifting that row's steps out of line with the other's.
+    One column per trait, on one shared pair of axes: $R^2$ is unitless and
+    every column is read against the same list of re-alignment steps, so a
+    step whose fit collapses for one trait and holds for the other is a
+    difference the grid shows directly. The x positions come from the whole
+    frame rather than from each column, so a pair that only one trait has
+    measured leaves a gap instead of shifting that column's steps out of line
+    with the other's.
     """
     style.apply_style()
     series = list(series)
     series_labels = series_labels or {}
     trunk_colors = trunk_colors or {}
+    hatches = dict(zip(series, _SERIES_HATCHES))
     ordered = list(
         pairs.sort_values(["trunk", "t_before"])["pair"].drop_duplicates()
     )
     position = {pair: i for i, pair in enumerate(ordered)}
-    rows = _facets(pairs, traits, trait_labels, column="trait")
+    cols = _facets(pairs, traits, trait_labels, column="trait")
     x = np.arange(len(ordered))
 
     fig, axes = plt.subplots(
-        len(rows),
-        len(series),
-        figsize=(3.2 * len(series) + 1.6, 3.0 * len(rows) + 1.2),
-        sharex=True,
+        1,
+        len(cols),
+        figsize=(3.6 * len(cols) + 1.2, 3.6),
         sharey=True,
         squeeze=False,
     )
-    for row, (_, frame, trait_label) in enumerate(rows):
-        for ax, name in zip(axes[row], series):
-            for record in frame.to_dict("records"):
-                i = position[record["pair"]]
-                color = trunk_colors.get(record["trunk"], style.BLUE)
+    for col, (_, frame, trait_label) in enumerate(cols):
+        ax = axes[0][col]
+        for record in frame.to_dict("records"):
+            i = position[record["pair"]]
+            color = trunk_colors.get(record["trunk"], style.BLUE)
+            for s_idx, name in enumerate(series):
                 before = record[f"r2_{name}_before"]
                 after = record[f"r2_{name}_after"]
-                ax.plot([i, i], [before, after], color=color, linewidth=1.6, zorder=2)
-                ax.scatter(
-                    [i], [before], s=42, facecolor=style.SURFACE, edgecolor=color,
-                    linewidth=1.6, zorder=3,
+                before_x = i + _BAR_OFFSETS[2 * s_idx]
+                after_x = i + _BAR_OFFSETS[2 * s_idx + 1]
+                ax.bar(
+                    before_x, before, width=_BAR_WIDTH, facecolor=style.SURFACE,
+                    edgecolor=color, linewidth=1.4, hatch=hatches.get(name, ""),
+                    zorder=3,
                 )
-                ax.scatter(
-                    [i], [after], s=42, color=color, edgecolor=style.SURFACE,
-                    linewidth=0.8, zorder=3,
+                ax.bar(
+                    after_x, after, width=_BAR_WIDTH, facecolor=color,
+                    edgecolor=color, linewidth=0.8, hatch=hatches.get(name, ""),
+                    zorder=3,
                 )
                 ax.annotate(
                     f"{after - before:+.2f}",
-                    (i, max(before, after)),
+                    ((before_x + after_x) / 2, max(before, after)),
                     textcoords="offset points",
-                    xytext=(0, 7),
+                    xytext=(0, 4),
                     ha="center",
-                    fontsize=8,
+                    fontsize=7.5,
                     color=style.SECONDARY_INK,
                 )
-            ax.set_xticks(x)
-            ax.set_xticklabels(ordered, rotation=20, ha="right")
-            # Room for the delta labels on the outermost pairs, which sit above
-            # a marker at the very edge of the data range.
-            ax.set_xlim(-0.7, len(ordered) - 0.3)
-            ax.set_ylim(-0.05, 1.15)
-            if row == 0:
-                ax.set_title(series_labels.get(name, name), color=style.SECONDARY_INK)
-        axes[row][0].set_ylabel(trait_label)
+        ax.set_xticks(x)
+        ax.set_xticklabels(ordered, rotation=20, ha="right")
+        # Room for the delta labels on the outermost pairs, which sit above a
+        # bar at the very edge of the data range.
+        ax.set_xlim(-0.7, len(ordered) - 0.3)
+        ax.set_ylim(-0.05, 1.15)
+        ax.set_title(trait_label, color=style.SECONDARY_INK)
 
     handles = [
-        plt.Line2D(
-            [], [], marker="o", linestyle="none", markersize=7,
-            markerfacecolor=style.SURFACE, markeredgecolor=style.SECONDARY_INK,
-        ),
-        plt.Line2D(
-            [], [], marker="o", linestyle="none", markersize=7,
-            color=style.SECONDARY_INK,
+        Patch(facecolor=style.SURFACE, edgecolor=style.SECONDARY_INK, linewidth=1.4),
+        Patch(facecolor=style.SECONDARY_INK, edgecolor=style.SECONDARY_INK),
+        Patch(facecolor=style.SURFACE, edgecolor=style.SECONDARY_INK, hatch=""),
+        Patch(
+            facecolor=style.SURFACE, edgecolor=style.SECONDARY_INK,
+            hatch=hatches.get(series[-1], "////"),
         ),
     ]
-    fig.legend(
-        handles,
-        ["Before the Normal driver", "After it"],
-        loc="lower center",
-        ncol=2,
-    )
+    texts = [
+        "Before the Normal driver",
+        "After it",
+        series_labels.get(series[0], series[0]),
+        series_labels.get(series[-1], series[-1]),
+    ]
+    fig.legend(handles, texts, loc="lower center", ncol=4)
     _layout_grid(fig, axes.flat, ylabel=ylabel, legend_rows=1)
     return fig
 
@@ -1328,7 +1357,7 @@ def phase_contrast(
 def _draw_overlay(
     ax: Axes,
     primary: Mapping[str, Sequence[float]],
-    replicate: Mapping[str, Sequence[float]],
+    replicate: Mapping[str, Sequence[Sequence[float]]],
     *,
     colors: Mapping[str, str],
     marks: Mapping[str, style.DatasetMark] | None,
@@ -1336,6 +1365,10 @@ def _draw_overlay(
     reference_label: str | None,
 ) -> None:
     """One panel of an overlay plot: solid primary lines, dashed replicates.
+
+    ``replicate`` holds *every* replicate of a series, not one, so a family run
+    at several seeds draws a dashed line each rather than one line through
+    their mean.
 
     ``marks`` styles a series as a dataset -- family shape, version fill, and
     the version's line colour. A Normal dataset therefore draws as hollow marks
@@ -1371,9 +1404,10 @@ def _draw_overlay(
             "markeredgewidth": 0.9,
         }
 
-    for i, (label, values) in enumerate(primary.items()):
+    order = {label: i for i, label in enumerate(primary)}
+    for label, values in primary.items():
         y = np.asarray(values, dtype=float)
-        color, marker_style = styling(label, i)
+        color, marker_style = styling(label, order[label])
         ax.plot(
             np.arange(y.size),
             y,
@@ -1383,18 +1417,23 @@ def _draw_overlay(
             zorder=3,
             **marker_style,
         )
-    for i, (label, values) in enumerate(replicate.items()):
-        y = np.asarray(values, dtype=float)
-        color, _ = styling(label, i)
-        ax.plot(
-            np.arange(y.size),
-            y,
-            color=color,
-            linestyle=(0, (3, 2)),
-            linewidth=1.3,
-            alpha=0.85,
-            zorder=2,
-        )
+    # Indexed by the primary's position rather than the replicate's own, so a
+    # replicate keeps the colour of the series it replicates even when the two
+    # sets of keys differ -- a probe dropped from one for a near-zero baseline,
+    # or a probe-free reseed contributing to the latent panels only.
+    for i, (label, runs) in enumerate(replicate.items(), start=len(order)):
+        color, _ = styling(label, order.get(label, i))
+        for values in runs:
+            y = np.asarray(values, dtype=float)
+            ax.plot(
+                np.arange(y.size),
+                y,
+                color=color,
+                linestyle=(0, (3, 2)),
+                linewidth=1.3,
+                alpha=0.85,
+                zorder=2,
+            )
 
 
 def _shared_legend(axes: Iterable[Axes]) -> tuple[list[Artist], list[str]]:
@@ -1417,7 +1456,9 @@ def _shared_legend(axes: Iterable[Axes]) -> tuple[list[Artist], list[str]]:
 
 def overlay_grid(
     panels: Mapping[tuple[str, str], Mapping[str, Sequence[float]]],
-    replicates: Mapping[tuple[str, str], Mapping[str, Sequence[float]]] | None = None,
+    replicates: (
+        Mapping[tuple[str, str], Mapping[str, Sequence[Sequence[float]]]] | None
+    ) = None,
     *,
     rows: Sequence[str] | None = None,
     cols: Sequence[str] | None = None,
@@ -1433,15 +1474,22 @@ def overlay_grid(
     r"""Plot 5: how a quantity drifts over ``t``, panelled by row and column.
 
     ``panels`` maps a ``(row, col)`` pair of display labels to that panel's
-    series, and ``replicates`` the same for the reseeded run. Rows are the
-    measured trait in both of the figures this draws; columns are the trunk for
-    the $\Delta P_t$ figure and the $z_t$ component for the latent one.
+    series, and ``replicates`` the same for the reseeded runs -- mapping a
+    series' label to *every* replicate of it, since section 6c is run at one
+    probed seed and several probe-free ones
+    (:data:`~method.experiments.EXP2_RESEED_EXTRA_SEEDS`). A panel's two halves
+    therefore need not carry the same labels: the probe-free seeds reach the
+    latent columns and not the $\Delta P_t$ ones.
 
-    ``replicate`` is drawn dashed in each series' own colour, so the reseed
-    comparison rides the same colour assignment as the run it replicates and
-    costs no extra hue. Section 6c is explicit that ``n = 2`` detects gross
-    instability and gives no error bars, which is precisely what a visual
-    overlay says and a shaded band would overstate.
+    Replicates are drawn dashed in the colour of the series they replicate, so
+    the comparison rides one colour assignment however many seeds land and
+    costs no extra hue. Still no shaded band: the seeds vary the fine-tuning
+    only, and every one of them reads the same cached $t = 0$ anchor
+    (``weights_key`` normalises the seed away there), so a band drawn from
+    their spread would look like the measurement's error while omitting the
+    common-mode anchor term that :mod:`method.anchor_noise` estimates
+    separately. The overlay says what the spread is and leaves combining the
+    two to the write-up.
 
     ``marks`` identifies each series as a dataset rather than by a hue of its
     own. Eight probes would otherwise take all eight categorical slots, leaving

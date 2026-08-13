@@ -299,10 +299,21 @@ EXP2_TRUNKS: dict[str, tuple[StepConfig, ...]] = {
 #: on three *trunks* rather than three seeds of one trunk, so a second seed here
 #: would buy the thing the design explicitly decided not to buy.
 EXP2_SEED = 0
-#: The paired replicate of trunk A (section 6c), which exists to ask whether the
+#: The replicates of trunk A (section 6c), which exist to ask whether the
 #: *latent* trajectory ``z`` is stable under reseeding -- stability of ``b``,
-#: which exp3 already shows, does not imply it.
-EXP2_RESEED_SEED = 1
+#: which exp3 already shows, does not imply it. With :data:`EXP2_SEED` this is
+#: ``sigma_seed(z)`` at ``n = 5`` on the trunk the decay claim is read off, out
+#: to ``t = 6``: the depth :mod:`method.seed_noise` explicitly cannot reach,
+#: since exp3's five seeds stop at ``t = 3`` and are not this trunk.
+#:
+#: Measured *without* probes (see :func:`build_exp2_reseed_configs`), which is
+#: what makes five of them affordable at all.
+#:
+#: Note what this spread does *not* contain: ``weights_key`` normalises the seed
+#: away at ``t = 0``, so every seed reads one cached anchor (``v_0``,
+#: ``h_neutral_base``) and the anchor's own error contributes nothing. That term
+#: is :mod:`method.anchor_noise`'s to estimate, and the two add.
+EXP2_RESEED_SEEDS: tuple[int, ...] = (1, 2, 3, 4)
 
 
 def steps_since_realignment(drivers: Sequence[StepConfig]) -> tuple[int, ...]:
@@ -535,30 +546,53 @@ def build_exp2_decay_configs(
 
 def build_exp2_reseed_configs(
     *,
-    seeds: Sequence[int] = (EXP2_RESEED_SEED,),
+    seeds: Sequence[int] = EXP2_RESEED_SEEDS,
     measure_traits: Sequence[str] = MEASURE_TRAITS,
     trunk: str = "a",
     trunks: Mapping[str, Sequence[StepConfig]] = EXP2_TRUNKS,
-    probes: Sequence[StepConfig] = EXP2_PROBES,
+    probes: Sequence[StepConfig] = (),
     local: bool = False,
 ) -> list[TrajectoryConfig]:
-    """Section 6c: trunk A again under a different fine-tuning seed, no branches.
+    """Section 6c: trunk A again under other fine-tuning seeds, no branches.
 
-    Six fine-tunings and no fan, because only ``Delta b`` needs training --
-    ``z`` and ``Delta P`` are forward passes, so re-running the trunk alone
-    re-measures the entire x-axis of the mechanism regression.
+    Six fine-tunings per seed and no fan, because only ``Delta b`` needs
+    training -- ``z`` is a forward pass, so re-running the trunk alone
+    re-measures the drift axis of the mechanism regression.
 
-    Worth keeping even though behavioural stability under reseeding is already
-    observed, because that evidence is about ``b`` and this question is about
-    ``z``: two seeds can reach the same behaviour by different representational
-    paths, and under the hysteresis assumption the design leans on -- behaviour
-    re-aligning while drift persists -- that dissociation is exactly what is
-    expected. ``method.seed_noise`` estimates the same quantity with more seeds
-    from exp3, but only out to ``t = 3`` and not on this trunk; the two are
-    complements.
+    Worth paying for even though behavioural stability under reseeding is
+    already observed, because that evidence is about ``b`` and this question is
+    about ``z``: two seeds can reach the same behaviour by different
+    representational paths, and under the hysteresis assumption the design leans
+    on -- behaviour re-aligning while drift persists -- that dissociation is
+    exactly what is expected.
 
-    ``n = 2`` detects gross instability and does not give publishable error
-    bars, which the write-up should say outright.
+    **No probes**, unlike every other builder here, and the default is ``()``
+    rather than :data:`EXP2_PROBES` so that has to be asked for. Two reasons,
+    one per axis of section 9's plot 5:
+
+    *The probes are the entire cost.* On the seed-0 trunk (``timings.jsonl``)
+    probing eight datasets takes ~92 min per checkpoint -- ~13.5 h of the ~20 h
+    trunk pair -- while the ``latent`` stage that actually produces ``z`` is
+    derived from ``v_t`` and ``h_neutral`` and costs minutes. Probing one
+    replicate costs about what four probe-free ones do.
+
+    *``Delta P`` is already known to be seed-stable.* exp3 sweeps five seeds
+    over fixed sequences and measures ``Delta P`` at every checkpoint, which is
+    the same quantity a reseeded trunk would re-measure. Over its 138 probed
+    multi-seed cells past ``t = 0`` the cross-seed SD is 0.039 at the median
+    and 0.14 at worst, against ``|Delta P|`` of ~4 -- a coefficient of
+    variation of 0.89% (median), 1.84% (90th percentile), 3.06% (max). Nor
+    does it compound with depth: ~1% flat from ``t = 1`` through ``t = 3``,
+    and exactly 0 at ``t = 0``, where every seed reads the same cached base
+    checkpoint. A probed replicate would spend those 13.5 h drawing a dashed
+    line on top of the solid one. The two limits to state in the write-up
+    rather than paper over: exp3 reaches ``t = 3``, not ``t = 6`` -- though
+    its flatness is evidence against compounding, not merely an absence of it
+    -- and it covers three of the eight probe datasets as non-drivers.
+
+    ``z`` gets the opposite treatment because exp3 bounds it under the same two
+    limits and the question is genuinely open there: nothing says a
+    representational path has to reproduce just because a projection does.
     """
     if trunk not in trunks:
         raise ValueError(f"unknown trunk {trunk!r}; known: {sorted(trunks)}")

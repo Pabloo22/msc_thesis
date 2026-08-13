@@ -464,9 +464,10 @@ class TestLatentFrame:
         assert row["rho"] == pytest.approx(0.4)
         assert row["r"] == pytest.approx(36.0)
 
-    def test_a_reseeded_trunk_is_a_separate_series(self) -> None:
-        """Trunk A and A' share a name and differ only in seed, which is what
-        makes the section 6c overlay possible without special-casing."""
+    def test_reseeded_trunks_are_separate_series(self) -> None:
+        """Trunk A and its replicates share a name and differ only in seed,
+        which is what makes the section 6c overlay possible without
+        special-casing -- one dashed line per seed, not one per family."""
         configs = E.build_exp2_reseed_configs(
             measure_traits=("evil",), trunks=TRUNKS, probes=PROBES
         )
@@ -475,7 +476,18 @@ class TestLatentFrame:
         runs = [*build_decay().runs, *collect(configs, group=E.EXP2_RESEED).runs]
         latents = decay.latent_frame(runs)
         seeds = set(latents[latents["trunk"] == "a"]["seed"])
-        assert seeds == {E.EXP2_SEED, E.EXP2_RESEED_SEED}
+        assert seeds == {E.EXP2_SEED, *E.EXP2_RESEED_SEEDS}
+
+    def test_a_probe_free_reseed_still_contributes_its_latent_series(self) -> None:
+        """The reseed family carries no probes, so latent_frame is the only
+        route its seeds have into a figure. Dropping rows for want of a probe
+        would make the whole family invisible."""
+        configs = E.build_exp2_reseed_configs(measure_traits=("evil",), trunks=TRUNKS)
+        assert all(cfg.probes == () for cfg in configs)
+        for cfg in configs:
+            write_run(cfg, behaviors=[60.0] * 7, probes={})
+        latents = decay.latent_frame(collect(configs, group=E.EXP2_RESEED).runs)
+        assert set(latents["seed"]) == set(E.EXP2_RESEED_SEEDS)
 
 
 # --- validation fan ---------------------------------------------------------
