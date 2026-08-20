@@ -1,0 +1,37 @@
+\chapter{Methodology} % 4
+\label{ch:methodology}
+% TODO: Introductory paragraph
+
+\section{Problem Setting and Notation}
+\label{sec:problem}
+
+We consider a model $\mathcal{M}_0$ whose internal state $s_t$ (e.g., its parameters or memory) is modified by a planned sequence of update operations $\mathcal{D}_0, \mathcal{D}_1, \dots, \mathcal{D}_{T-1}$. Applying $\mathcal{D}_t$ transforms $\mathcal{M}_t \mapsto \mathcal{M}_{t+1}$ and yields a trajectory $\tau = (\mathcal{M}_t)_{t=0}^{T}$. While we keep the framework general, our experiments consider $\mathcal{M}_0$ as a pretrained, instruction-tuned language model, and each $\mathcal{D}_t$ as a batch of fine-tuning data along with its training settings. Under this framework, the model $\mathcal{M}_t$ can be studied by three types of measurement: 
+\begin{itemize}
+    \item A behaviour measurement returning a behavioural profile $\mathbf{b}_t$. For the experiments, we consider LLM-generated scores between $0$ and $100$ for the traits ``evil'' and ``sycophancy''. This is the behaviour that we are interested in predicting. 
+    \item A mechanistic analysis of $\mathcal{M}_t$, yielding a summary vector $\mathbf{z}_t$. This analysis can help us understand how the model's state is changing. 
+    \item An encoding  $\boldsymbol{\phi}(\mathcal{D}_t;\, \mathcal{M}) \in \mathbb{R}^{d_a}$ of an update operation $\mathcal{D}_t$, computable from a model $\mathcal{M}$ and the planned data. This encoder extracts features of the data as seen by the base model. 
+\end{itemize}
+
+The forecasting problem is then the following: given the present state and the planned updates, predict future behaviour without materialising any intermediate model $\mathcal{M}_{t'}$, $t' > t$.
+
+\section{A Latent World Model for Behavioural Drift}
+\label{sec:framework}
+A world model can be defined as a learned function that maps a state $s_t$ or observation of the world $o_t$ and an action $a_t$ to a prediction of the next state $s_{t+1}$ or observation $o_{t+1}$, respectively \citep{bruce2024genie}. Sometimes, the true observation is too high-dimensional or noisy. For this reason, latent world models use a low-dimensional representation of the state, called a latent state $z_t$ \citep{ha2018world_models, Hafneretal2025dreamerv3}. Thus, the latent world model predicts how this latent variable evolves using a transition function $\hat{z}_{t+1} = T(z_t, a_t)$ and, if needed, uses a learned readout function $o_t = f(z_t)$ to predict the next state or observation from it.
+
+The components of our latent world model are:
+\begin{itemize}
+    \item The \textbf{latent state} $\mathbf{z}_t$ is a low-dimensional summary of a mechanistic analysis of the model $\mathcal{M}_t$.
+    \item The \textbf{observation} $\mathbf{b}_t$ is a behavioral profile that contains scores for a set of cheap evaluations conducted on $\mathcal{M}_t$.
+    \item The \textbf{action} $\mathcal{D}_t$ is the batch of fine-tuning data along with its training setting. The transition does not consume $\mathcal{D}_t$ itself but its action features $\mathbf{a}_t = \boldsymbol{\phi}(\mathcal{D}_t;\, \mathcal{M}_0)$.
+    \item The \textbf{transition} $T$ is a learned function that predicts the next latent state from the current latent state and the action features, $\hat{\mathbf{z}}_{t+1} = T(\mathbf{z}_t, \mathbf{a}_t)$. The dynamics are rolled forward entirely in latent space, so observations are never needed to advance the state.
+    \item The \textbf{readout} $f$ is a learned function that maps a mechanistic latent $\mathbf{z}_{t+1}$ to the behavioral profile $\mathbf{b}_{t+1}$. Optionally, if $\mathbf{z}_{t+1}$ is not a sufficient statistic for $\mathbf{b}_{t+1}$, the readout can be made autoregressive by also conditioning on the previous latent and observation, $f(\mathbf{z}_{t+1}, \mathbf{z}_t, \mathbf{b}_t)$.
+\end{itemize}
+
+A one-step forecast composes these two functions: the transition advances the latent, $\hat{\mathbf{z}}_{t+1} = T(\mathbf{z}_t, \mathbf{a}_t)$, and the readout decodes it, $\hat{\mathbf{b}}_{t+1} = f(\hat{\mathbf{z}}_{t+1})$. Because all action features $\mathbf{a}_t = \boldsymbol{\phi}(\mathcal{D}_t;\, \mathcal{M}_0)$ are computable in advance from the base model and the planned data, a multi-step forecast over a horizon $h$ is obtained by iterating this composition. Starting from the current latent $\hat{\mathbf{z}}_t = \mathbf{z}_t$, for $k = 0, \dots, h-1$:
+\begin{equation}
+  \hat{\mathbf{z}}_{t+k+1} = T(\hat{\mathbf{z}}_{t+k}, \mathbf{a}_{t+k}),
+  \qquad
+  \hat{\mathbf{b}}_{t+k+1} = f(\hat{\mathbf{z}}_{t+k+1}).
+  \label{eq:rollout}
+\end{equation}
+Note that both $T$ and $f$ can be trained with self-supervised learning, and that no intermediate model $\mathcal{M}_{t'}$ is ever instantiated since the latent is advanced by $T$ rather than re-measured, and the actions are precomputed. We only need to measure the true $\mathbf{z}_t$ and $\mathbf{b}_t$ to create the training data for the latent world model.

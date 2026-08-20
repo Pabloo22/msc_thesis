@@ -1,0 +1,95 @@
+\documentclass{report}
+\usepackage{setspace}
+%\usepackage{subfigure}
+\usepackage[round]{natbib}
+
+\pagestyle{plain}
+\usepackage{amssymb,graphicx,color}
+\usepackage{amsfonts}
+\usepackage{latexsym}
+\usepackage{a4wide}
+\usepackage{amsmath}
+\usepackage{cleveref}
+
+\newtheorem{theorem}{THEOREM}
+\newtheorem{lemma}[theorem]{LEMMA}
+\newtheorem{corollary}[theorem]{COROLLARY}
+\newtheorem{proposition}[theorem]{PROPOSITION}
+\newtheorem{remark}[theorem]{REMARK}
+\newtheorem{definition}[theorem]{DEFINITION}
+\newtheorem{fact}[theorem]{FACT}
+
+\newtheorem{problem}[theorem]{PROBLEM}
+\newtheorem{exercise}[theorem]{EXERCISE}
+\def \set#1{\{#1\} }
+
+\newenvironment{proof}{
+PROOF:
+\begin{quotation}}{
+$\Box$ \end{quotation}}
+
+\DeclareMathOperator{\Eval}{Eval}
+
+\newcommand{\nats}{\mbox{\( \mathbb N \)}}
+\newcommand{\rat}{\mbox{\(\mathbb Q\)}}
+\newcommand{\rats}{\mbox{\(\mathbb Q\)}}
+\newcommand{\reals}{\mbox{\(\mathbb R\)}}
+\newcommand{\ints}{\mbox{\(\mathbb Z\)}}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\title{  	{ \includegraphics[scale=.5]{ucl_logo.png}}\\
+{{\Huge Understanding and Predicting Emergent Misalignment on a Sequential Fine-Tuning Setting}}\\
+% {\large Optional Subtitle}\\
+		}
+\date{Submission date: Day Month Year}
+\author{Pablo Ari\~no-Fern\'andez\thanks{
+{\bf Disclaimer:}
+This report is submitted as part requirement for the Machine Learning MSc at UCL. It is
+substantially the result of my own work except where explicitly indicated in the text. The report may be freely copied and distributed provided the source is explicitly acknowledged}
+\\ \\
+MSc in Machine Learning\\ \\
+Zafeirios Fountas \\ Prof. Jun Wang}
+% \title{  	{ \includegraphics[scale=.5]{ucl_logo.png}}\\
+% {{\Huge Project Title}}\\
+% {\large Optional Subtitle}\\
+% 		}
+% \date{Submission date: Day Month Year}
+% \author{Your name\thanks{
+% {\bf Disclaimer:}
+% This report is submitted as part requirement for the MY DEGREE at UCL. It is
+% substantially the result of my own work except where explicitly indicated in the text.
+% \emph{Either:} The report may be freely copied and distributed provided the source is explicitly acknowledged
+% \newline  %% \\ screws it up
+% \emph{Or:}\newline
+% The report will be distributed to the internal and external examiners, but thereafter may not be copied or distrbuted except with permission from the author.}
+% \\ \\
+% Name of your degree\\ \\
+% Supervisor's name}
+
+
+\begin{document}
+ 
+\onehalfspacing
+\maketitle
+\begin{abstract}
+    % TODO
+Continual learning, the ability of AI systems to learn in real time from interactions with an environment, yields pre-deployment model's evaluations unreliable. This work focuses on the problem of emergent misalignment (EM), where fine-tuning on examples containing mistakes or insecure code can produce broad concerning behaviour unrelated to the tasks the network was trained on. This phenomenon occurs by a change in the model's embodied persona during conversations from helpful and benign assistant to evil or sycophantic roles.
+
+Steering vectors representing these personas, named ``persona vectors'', have been shown to be a good tool for predicting future misalignment. However, it is still unclear how sequential fine-tuning changes the dynamics of EM and whether these predictive tools can still be applicable in a continual learning setting. This project attempts to answer these questions.
+
+\end{abstract}
+\tableofcontents
+\setcounter{page}{1}
+
+
+\include{chapters/01-Introduction}
+\include{chapters/02-Background}
+\include{chapters/04-Methodology}
+\include{chapters/06-Results-and-Discussion}
+\include{chapters/07-Conclusions}
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}

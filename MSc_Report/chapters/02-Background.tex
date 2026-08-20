@@ -1,0 +1,67 @@
+\chapter{Background and Related Work}
+\label{ch:background_related_work}
+
+\section{Deep Learning}
+
+\section{Transformers}
+
+\section{Large Language Models}
+
+\section{Mechanistic Interpretability}
+
+\subsection{The Linear Representation Hypothesis}
+The linear representation hypothesis suggests that concepts and features within a model's internal states are organized as linear directions. This implies that one can extract and identify these concepts using simple, linear classifiers (probes). 
+
+Features rotate or get scaled during training
+The paper [2601.22012] Putting a Face to Forgetting: Continual Learning meets Mechanistic Interpretability shows how knowledge changes during CL training. It decomposes the change to a feature into two primitive transformations — rotation and scaling — and separates their consequences into two kinds:
+Readout misalignment. Scaling or rotating a feature without updating the downstream readout makes it read a weaker/stronger or shifted signal. This is recoverable by realigning the readout (as long as the feature's capacity is intact).
+Capacity degradation. The feature's allocated capacity drops, which is irrecoverable. This happens via:
+overlap — a feature rotates toward another, increasing their inner product and forcing them to share capacity;
+fading — a feature's norm shrinks, losing capacity and, in the limit of norm → 0, vanishing entirely. Fading turns out to be the dominant driver of forgetting in the paper’s setup.
+
+
+\subsection{Steering Vectors}
+
+\section{Emergent Misalignment}
+
+Training in new data can have broad consequences
+
+Emergent Misalignment: Training large language models on narrow tasks can lead to broad misalignment | Nature
+
+[2310.03693] Fine-tuning Aligned Language Models Compromises Safety, Even When Users Do Not Intend To! 
+
+\subsection{Emergent Realignment}
+
+[2311.12786] Mechanistically analyzing the effects of fine-tuning on procedurally defined tasks “(i) fine-tuning rarely alters the underlying model capabilities; (ii) a minimal transformation, which we call a 'wrapper', is typically learned on top of the underlying model capabilities, creating the illusion that they have been modified; and (iii) further fine-tuning on a task where such hidden capabilities are relevant leads to sample-efficient 'revival' of the capability, i.e., the model begins reusing these capability after only a few gradient steps.”
+
+More evidence we can cite:
+
+[2402.14811] Fine-Tuning Enhances Existing Mechanisms: A Case Study on Entity Tracking “We observe that the identical circuit exists in the fine-tuned models, which alone can restore at least 88\% of the overall performance of the entire fine-tuned model. However, achieving the full performance of the fine-tuned models requires incorporation of additional components”
+[2212.04089] Editing Models with Task Arithmetic A task vector is a direction in weight space, obtained by subtracting pre-trained weights from fine-tuned weights, that can be negated, added, and composed to steer behavior predictably. The fact that fine-tuning's effect behaves as a small, linear, composable displacement is consistent with modulating existing structure rather than constructing new computation.
+
+\section{Language Models Have Personalities}
+
+
+\section{Related Work}
+
+“Projection differences” predict how training in some data would change the model’s behaviour
+
+“Projection of the last prompt token activation onto persona vectors strongly correlates with trait expression scores in subsequent responses, enabling prediction of behavioral shifts before text generation begins.”
+
+A projection difference is how much a training dataset's responses differ from the base model's responses along a feature (e.g., a personality trait) direction. It can be done by projecting into the weights or the activation’s space. 
+[2507.21509] Persona Vectors: Monitoring and Controlling Character Traits in Language Models It identifies directions in the model's activation space (persona vectors) underlying several traits, such as evil, sycophancy, and propensity to hallucinate, and finds that both intended and unintended personality changes after fine-tuning are strongly correlated with shifts along the relevant persona vectors. The monitoring mechanism is projection onto those activation-space directions.
+ [2406.11717] Refusal in Language Models Is Mediated by a Single Direction and [2502.17420] The Geometry of Refusal in Large Language Models: Concept Cones and Representational Independence suggest that refusal behavior is mediated by a single direction or a “cone, respectively
+[2605.04572] From Parameter Dynamics to Risk Scoring : Quantifying Sample-Level Safety Degradation in LLM Fine-tuning They measure “safety” and “harmful” as linear directions in the gradient of the weights with respect the data. It proposes SQSD, which quantifies each sample's fine-tuning risk by the projection gap of its induced parameter update along danger versus safety directions. Concretely, it computes the sample-induced parameter update via one-step gradient, projects this update onto danger and safety directions for each module, and aggregates the projection gap across all modules.
+
+Note: We can’t use a weight-space projection because it needs the sample- or dataset-induced parameter update: at minimum a backward pass, and the clean multi-epoch definition is the actual cumulative update, i.e. we’d have to run part of the training we're trying to forecast. 
+
+
+Degradation requires studying the data×model interaction, not data content alone
+[2310.03693] Fine-tuning Aligned Language Models Compromises Safety, Even When Users Do Not Intend To! “simply fine-tuning with benign and commonly used datasets can also inadvertently degrade the safety alignment of LLMs”
+Out of Tune: Fine-Tuning Foundation Models Leads to Unpredictable Safety Drift - Center for Democracy and Technology "no single fine-tuning choice or combination of choices consistently explained why models became safer in some cases and less safe in others"; magnitude of model change also failed as a predictor. 
+
+
+Drift accumulates roughly linearly in parameter space (projections onto danger directions sum across updates), but the behavioral readout is a threshold function
+[2605.04572] From Parameter Dynamics to Risk Scoring : Quantifying Sample-Level Safety Degradation in LLM Fine-tuning
+Observation: This means that a predictor model might be easier to build than expected. Although learning the threshold might be complicated.
+Note: SQSD does not tell you (a) how far you currently are from the basin boundary, or (b) when the accumulated trajectory will cross it. Predicting these seems difficult. 
