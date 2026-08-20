@@ -61,7 +61,14 @@ def _behavior(trait: str, value: float, se: float = 0.5) -> dict[str, float]:
 
 
 def write_run(
-    cfg: TrajectoryConfig, *, behaviors, probes=None, se=0.5, delta_p=1.0
+    cfg: TrajectoryConfig,
+    *,
+    behaviors,
+    probes=None,
+    probes_v0=None,
+    probes_current=None,
+    se=0.5,
+    delta_p=1.0,
 ) -> None:
     """Write a schema-faithful ``trajectory.json``.
 
@@ -96,6 +103,14 @@ def write_run(
                 "probes": {
                     dataset: {"mean": series[t], "std": 0.5, "n": 8}
                     for dataset, series in (probes or {}).items()
+                },
+                "probes_v0": {
+                    dataset: {"mean": series[t], "std": 0.5, "n": 8}
+                    for dataset, series in (probes_v0 or {}).items()
+                },
+                "probes_current": {
+                    dataset: {"mean": series[t], "std": 0.5, "n": 8}
+                    for dataset, series in (probes_current or {}).items()
                 },
             }
             if t < n:
@@ -159,6 +174,65 @@ def build_decay(*, drift: float = 0.0, se: float = 0.5) -> Collection:
     return collect(configs, group=E.EXP2_DECAY)
 
 
+def build_axis(*, offset: float = 0.5, trunks=("a", "c")) -> Collection:
+    r"""The base-axis re-measurement, carrying $\Delta \hat{P}_t^{v_0}$ alone.
+
+    Covers every trunk by default, unlike :func:`build_regen`: this view is
+    free to measure, so the realistic case is that it covers whatever the decay
+    family ran. ``offset`` shifts it off $\Delta P_0$ by a constant, which
+    keeps the correlation exactly 1 so an assertion on it is an assertion about
+    the join rather than about a draw.
+    """
+    configs = E.build_exp2_axis_configs(
+        measure_traits=("evil",),
+        trunks={name: TRUNKS[name] for name in trunks},
+        probes=PROBES,
+    )
+    for cfg in configs:
+        write_run(
+            cfg,
+            behaviors=[50.0 + 2 * t for t in range(7)],
+            probes_v0={
+                dataset: [value + offset for value in series]
+                for dataset, series in _probe_series(7).items()
+            },
+        )
+    return collect(configs, group=E.EXP2_AXIS)
+
+
+def build_regen(*, offset: float = 0.0, trunks=("a",)) -> Collection:
+    r"""A re-measurement carrying $\Delta P$ and nothing else.
+
+    ``trunks`` defaults to A alone even though the family emits all of them,
+    because partial coverage is the case worth fixturing: the measurement is
+    paid for per trunk, so a frame that mixes a re-measured trunk with one that
+    was skipped is what the analysis actually receives.
+
+    ``offset`` shifts every probe's $\Delta P$ away from its $\Delta P_0$ by a
+    constant, which is the fixture equivalent of "the checkpoint no longer
+    answers the way $M_0$ did". A constant rather than a per-probe change so
+    the correlation stays exactly 1 and an assertion on it is an assertion
+    about the join, not about a draw.
+    """
+    configs = E.build_exp2_regen_configs(
+        measure_traits=("evil",),
+        trunks={name: TRUNKS[name] for name in trunks},
+        probes=PROBES,
+    )
+    for cfg in configs:
+        write_run(
+            cfg,
+            behaviors=[50.0 + 2 * t for t in range(7)],
+            probes_current=_probe_series(7, drift=0.0)
+            if not offset
+            else {
+                dataset: [value + offset for value in series]
+                for dataset, series in _probe_series(7).items()
+            },
+        )
+    return collect(configs, group=E.EXP2_REGEN)
+
+
 def build_validation(*, se: float = 0.5) -> Collection:
     """The ``t = 0`` fan, restricted to the probe datasets these tests use."""
     configs = E.build_exp2_validation_configs(
@@ -186,12 +260,12 @@ class TestBootstrapFit:
         y = 2.0 * x + rng.normal(0, 1.0, size=30)
         interval = bootstrap_fit(x, y, n_resamples=500)
         assert interval.slope_lo <= interval.fit.slope <= interval.slope_hi
-        assert interval.r2_lo <= interval.fit.r2 <= interval.r2_hi
+        assert interval.corr_lo <= interval.fit.corr <= interval.corr_hi
 
     def test_noiseless_data_gives_a_tight_interval(self) -> None:
         x = np.arange(8, dtype=float)
         interval = bootstrap_fit(x, 3.0 * x, n_resamples=500)
-        assert interval.r2_lo == pytest.approx(1.0)
+        assert interval.corr_lo == pytest.approx(1.0)
         assert interval.slope_lo == pytest.approx(3.0)
         assert interval.slope_hi == pytest.approx(3.0)
 
@@ -203,16 +277,16 @@ class TestBootstrapFit:
 
     def test_degenerate_resamples_are_dropped_not_scored_as_zero(self) -> None:
         """Two points make most resamples a single duplicated point, which
-        carries no fit; counting those as R^2 = 0 would drag the interval down
-        by an artifact of the resampling rather than of the data."""
+        carries no fit; counting those as r = 0 would drag the interval toward
+        zero by an artifact of the resampling rather than of the data."""
         interval = bootstrap_fit([0.0, 1.0], [0.0, 3.0], n_resamples=200)
         assert interval.n_usable < 200
-        assert interval.r2_lo == pytest.approx(1.0)
+        assert interval.corr_lo == pytest.approx(1.0)
 
     def test_single_point_yields_no_interval(self) -> None:
         interval = bootstrap_fit([1.0], [2.0])
         assert interval.n_usable == 0
-        assert np.isnan(interval.r2_lo)
+        assert np.isnan(interval.corr_lo)
 
 
 # --- decay_frame ------------------------------------------------------------
@@ -294,6 +368,161 @@ class TestDecayFrame:
         assert not panel["delta_b"].isna().any()
 
 
+class TestRemeasuredSeries:
+    r"""The two views a family of their own has to measure.
+
+    $\Delta \hat{P}_t^{v_0}$ holds the axis at $v^{(0)}$ while the encoder
+    moves; $\Delta P_t$ additionally lets the checkpoint answer for itself.
+    Each is paid for per trunk, so the interesting cases are the join and what
+    happens to every row a family did not cover.
+    """
+
+    def test_the_base_axis_family_fills_its_own_column(self) -> None:
+        rows = decay.decay_frame(
+            build_decay(), build_validation(), [build_axis()]
+        )
+        assert not rows["delta_p_v0"].isna().any()
+        assert rows["delta_p_v0"].to_numpy() == pytest.approx(
+            (rows["probe"].map(DELTA_P_0) + 0.5).to_numpy()
+        )
+
+    def test_the_two_remeasured_views_do_not_collide(self) -> None:
+        """Different families, different record keys, different columns -- one
+        must never be read into the other's place."""
+        rows = decay.decay_frame(
+            build_decay(), build_validation(), [build_axis(), build_regen()]
+        )
+        trunk_a = rows[rows["trunk"] == "a"]
+        assert not trunk_a["delta_p_v0"].isna().any()
+        assert not trunk_a["delta_p"].isna().any()
+        assert not trunk_a["delta_p_v0"].equals(trunk_a["delta_p"])
+        # Trunk C was covered by the free view only.
+        trunk_c = rows[rows["trunk"] == "c"]
+        assert not trunk_c["delta_p_v0"].isna().any()
+        assert trunk_c["delta_p"].isna().all()
+
+    def test_a_family_with_no_runs_leaves_its_column_untouched(self) -> None:
+        with_axis = decay.decay_frame(
+            build_decay(), build_validation(), [build_axis()]
+        )
+        assert with_axis["delta_p"].isna().all()
+
+    def test_all_four_series_are_fitted_when_all_are_measured(self) -> None:
+        fits = decay.fit_frame(
+            decay.decay_frame(
+                build_decay(), build_validation(), [build_axis(), build_regen()]
+            ),
+            n_resamples=50,
+        )
+        trunk_a = fits[fits["trunk"] == "a"]
+        for series in decay.SERIES:
+            assert trunk_a[f"corr_{series}"].notna().all(), series
+
+    def test_the_column_is_nan_when_the_family_never_ran(self) -> None:
+        rows = decay.decay_frame(build_decay(), build_validation())
+        assert rows["delta_p"].isna().all()
+
+    def test_the_regen_family_fills_the_trunks_it_covers(self) -> None:
+        rows = decay.decay_frame(
+            build_decay(), build_validation(), [build_regen(trunks=("a", "c"))]
+        )
+        assert not rows["delta_p"].isna().any()
+
+    def test_the_regen_family_fills_its_own_trunk(self) -> None:
+        rows = decay.decay_frame(build_decay(), build_validation(), [build_regen()])
+        measured = rows[rows["trunk"] == "a"]
+        assert not measured["delta_p"].isna().any()
+        assert measured["delta_p"].to_numpy() == pytest.approx(
+            measured["probe"].map(DELTA_P_0).to_numpy()
+        )
+
+    def test_a_trunk_it_did_not_cover_stays_nan(self) -> None:
+        """Not measured is not measured-and-small: trunk C keeps a gap rather
+        than borrowing trunk A's numbers."""
+        rows = decay.decay_frame(build_decay(), build_validation(), [build_regen()])
+        assert rows[rows["trunk"] == "c"]["delta_p"].isna().all()
+
+    def test_the_regen_trunk_contributes_no_rows_of_its_own(self) -> None:
+        """It re-measures a trunk that already exists, so it must join onto the
+        decay family's rows rather than double them."""
+        with_regen = decay.decay_frame(
+            build_decay(), build_validation(), [build_regen()]
+        )
+        without = decay.decay_frame(build_decay(), build_validation())
+        assert len(with_regen) == len(without)
+
+    def test_it_is_read_from_probes_current_not_probes(self) -> None:
+        """The regen family asks only for the recomputed source, so its frozen
+        series is empty by design -- reading the wrong key would give a trunk
+        whose probes all look absent."""
+        regen = build_regen()
+        assert all(
+            not step.probes and step.probes_current
+            for run in regen.runs
+            for step in run.trajectory.steps
+        )
+
+    def test_it_is_fitted_where_measured_and_nan_where_not(self) -> None:
+        fits = decay.fit_frame(
+            decay.decay_frame(build_decay(), build_validation(), [build_regen()]),
+            n_resamples=50,
+        )
+        assert fits[fits["trunk"] == "a"]["corr_p"].to_numpy() == pytest.approx(1.0)
+        assert fits[fits["trunk"] == "c"]["corr_p"].isna().all()
+
+    def test_an_offset_moves_the_intercept_not_the_correlation(self) -> None:
+        """The same invariant the drifting frozen series has: a shift common to
+        the probe set is not a loss of predictive accuracy."""
+        fits = decay.fit_frame(
+            decay.decay_frame(
+                build_decay(), build_validation(), [build_regen(offset=1.5)]
+            ),
+            n_resamples=50,
+        )
+        assert fits[fits["trunk"] == "a"]["corr_p"].to_numpy() == pytest.approx(1.0)
+
+    def test_the_fit_columns_exist_whether_or_not_it_ran(self) -> None:
+        """Every figure indexes the same columns whichever families are on
+        disk, so their presence cannot depend on the measurement."""
+        without = decay.fit_frame(
+            decay.decay_frame(build_decay(), build_validation()), n_resamples=50
+        )
+        with_regen = decay.fit_frame(
+            decay.decay_frame(build_decay(), build_validation(), [build_regen()]),
+            n_resamples=50,
+        )
+        assert list(without.columns) == list(with_regen.columns)
+        assert "corr_p" in without and without["corr_p"].isna().all()
+
+    def test_a_partly_measured_scatter_is_not_fitted(self) -> None:
+        """A fit over whichever probes happened to be measured is a correlation
+        over a different probe set than the one beside it -- which is exactly
+        the comparison the figure rests on."""
+        rows = decay.decay_frame(build_decay(), build_validation(), [build_regen()])
+        holed = (
+            (rows["trunk"] == "a")
+            & (rows["t"] == 3)
+            & (rows["probe"] == PROBES[0].dataset_id)
+        )
+        rows.loc[holed, "delta_p"] = np.nan
+        fits = decay.fit_frame(rows, n_resamples=50)
+        partial = fits[(fits["trunk"] == "a") & (fits["t"] == 3)].iloc[0]
+        intact = fits[(fits["trunk"] == "a") & (fits["t"] == 4)].iloc[0]
+        assert np.isnan(partial["corr_p"])
+        assert not np.isnan(intact["corr_p"])
+        # The other series over the same scatter are untouched.
+        assert not np.isnan(partial["corr_p0"])
+
+    def test_the_phase_contrast_carries_it_too(self) -> None:
+        fits = decay.fit_frame(
+            decay.decay_frame(build_decay(), build_validation(), [build_regen()]),
+            n_resamples=50,
+        )
+        pairs = decay.phase_contrast_frame(fits, trunk_drivers=TRUNKS)
+        assert "delta_corr_p" in pairs
+        assert not pairs[pairs["trunk"] == "a"]["delta_corr_p"].isna().any()
+
+
 # --- fit_frame and the noise ceiling ----------------------------------------
 
 
@@ -309,7 +538,7 @@ class TestFitFrame:
         fits = decay.fit_frame(
             decay.decay_frame(build_decay(), build_validation()), n_resamples=50
         )
-        assert fits["r2_p0"].to_numpy() == pytest.approx(1.0)
+        assert fits["corr_p0"].to_numpy() == pytest.approx(1.0)
         assert fits["slope_p0"].to_numpy() == pytest.approx(SLOPE)
 
     def test_a_drifting_delta_p_t_still_fits_after_a_shift(self) -> None:
@@ -320,7 +549,7 @@ class TestFitFrame:
             decay.decay_frame(build_decay(drift=0.5), build_validation()),
             n_resamples=50,
         )
-        assert fits["r2_pt"].to_numpy() == pytest.approx(1.0)
+        assert fits["corr_pt"].to_numpy() == pytest.approx(1.0)
 
     def test_carries_the_checkpoints_drift_and_behaviour(self) -> None:
         fits = decay.fit_frame(
@@ -352,7 +581,7 @@ class TestFitFrame:
 
         fits = decay.fit_frame(pd.DataFrame(columns=["trait"]))
         assert fits.empty
-        assert "r2_p0" in fits.columns
+        assert "corr_p0" in fits.columns
 
 
 # --- mechanism and phase contrast -------------------------------------------
@@ -407,8 +636,8 @@ class TestPhaseContrastFrame:
             decay.decay_frame(build_decay(), build_validation()), n_resamples=10
         )
         pairs = decay.phase_contrast_frame(fits, TRUNKS)
-        assert pairs["delta_r2_p0"].to_numpy() == pytest.approx(
-            (pairs["r2_p0_after"] - pairs["r2_p0_before"]).to_numpy()
+        assert pairs["delta_corr_p0"].to_numpy() == pytest.approx(
+            (pairs["corr_p0_after"] - pairs["corr_p0_before"]).to_numpy()
         )
 
     def test_a_checkpoint_that_has_not_run_drops_its_pair(self) -> None:

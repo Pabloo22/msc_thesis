@@ -78,6 +78,43 @@ class TestStageTimer:
 
 
 class TestEstimation:
+    def test_a_run_expects_its_own_view_stages_not_the_default_ones(self):
+        """A run measuring only a non-default DeltaP view never performs a
+        stage called ``probes``, so enumerating it would leave the ETA counting
+        work that is never going to happen."""
+        stages = {stage for _, stage in timing.expected_units(2, ["current"])}
+        assert "probes_current" in stages and "probes" not in stages
+        assert "delta_p_current" in stages and "delta_p" not in stages
+
+    def test_measuring_several_views_expects_a_sweep_for_each(self):
+        units = timing.expected_units(2, ["", "v0", "current"])
+        for name in ("probes", "probes_v0", "probes_current"):
+            assert sum(stage == name for _, stage in units) == 3, name
+
+    def test_the_default_view_keeps_the_unqualified_stage_names(self):
+        """Every ``timings.jsonl`` on disk was written under these names, and a
+        resumed run has to match the stages it already recorded."""
+        assert timing.expected_units(2) == timing.expected_units(2, [""])
+        assert timing.stage_for("probes", "") == "probes"
+
+    def test_only_the_per_view_stages_are_qualified(self):
+        assert timing.stage_for("behavior", "current") == "behavior"
+        assert timing.stage_for("train", "current") == "train"
+
+    def test_a_non_default_view_estimate_converges(self):
+        """The point of all of the above: once a run has done its own stages,
+        nothing is left over."""
+        done = [
+            stage(t, name, 600) for t, name in timing.expected_units(1, ["current"])
+        ]
+        assert timing.estimate_remaining(done, n_steps=1, views=["current"]) == 0
+
+    def test_a_per_view_stage_sorts_beside_the_stage_it_varies(self):
+        table = timing.format_stage_table(
+            [stage(0, "probes_current", 600), stage(0, "train", 60)]
+        )
+        assert table.index("probes_current") < table.index("train")
+
     def test_expected_units_stop_training_one_checkpoint_early(self):
         """The last checkpoint is measured but never trained from."""
         units = timing.expected_units(2)

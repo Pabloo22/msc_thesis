@@ -6,10 +6,30 @@ r"""How much of $z_t$ is the anchor measurement rather than the model.
 
 $z_t = (p, q, \rho, r)$ is read against two artifacts measured *once* on the base
 model and then reused by every checkpoint of every run: the persona vector
-$v_0$, and ``h_neutral_base`` -- $M_0$'s sampled answers to the neutral prompts,
-which each $M_t$ re-reads. Both come out of sampled generation (and, for $v_0$, a
-judged pos/neg filter), so both are draws, not constants. This script re-draws
-them and measures how far $z_t$ moves when nothing about the weights has changed.
+$v_0$, and ``h_neutral_base`` -- $M_0$'s answers to the neutral prompts, which
+each $M_t$ re-reads. This script re-derives both and measures how far $z_t$ moves
+when nothing about the weights has changed.
+
+Only one of the two is actually a draw, and it is worth being precise about
+which:
+
+$v_0$
+    Extracted from responses sampled at temperature 1 -- the vendored evaluator
+    samples whenever more than one response per question is asked for, and
+    ``extract_n_per_question`` is 10 -- then filtered by a judge. A rerun would
+    have produced different text, different scores, and a slightly different
+    direction. This is the term the experiment measures.
+``h_neutral_base``
+    Generated greedily: :mod:`method._generate_worker` defaults to temperature 0
+    and no caller overrides it. On a fixed $M_0$ the same 500 prompts return the
+    same 500 answers, so this contributes no sampling error to $z_t$ at all.
+
+That asymmetry is deliberate rather than incidental. ``h_neutral_base`` is a
+fixed probe re-read by every checkpoint, and decoding it greedily is what makes
+movement in $p$ and $q$ attributable to the weights instead of to churn in the
+probe; the averaging that multiple samples would buy is already supplied by the
+500 *distinct* prompts. The cost is that re-deriving it per replicate is
+redundant work -- see :func:`ensure_neutral_answers`.
 
 Why nothing else already answers this:
 
@@ -34,21 +54,31 @@ spread of within-replicate *differences* ($z_t - z_0$) beside the spread of the
 levels -- a term that shifts the whole series cancels in the difference, and the
 decay figures read differences.
 
-**A replicate** is one independent draw of the whole base bundle:
+**A replicate** is one independent re-derivation of the whole base bundle:
 ``extract_pos.csv`` / ``extract_neg.csv`` (per trait) and ``neutral_answers.jsonl``
-(shared by both traits, since neither depends on the trait). Replicate 0 *is* the
-production bundle -- the artifacts exp2 and exp3 actually used -- so it costs no
-generation and the reported spread says where the numbers in the thesis sit
-inside their own sampling distribution. Replicates 1..R-1 are fresh draws written
-to a quarantined subdirectory, so nothing already on disk is touched or
-invalidated.
+(shared by both traits, since neither depends on the trait). Per the above, the
+pos/neg halves come back different every time and the neutral answers come back
+identical, so a replicate is in effect a draw of $v_0$ alone.
+
+Replicate 0 *is* the production bundle -- the artifacts exp2 and exp3 actually
+used -- so it costs no generation and the reported spread says where the numbers
+in the thesis sit inside their own sampling distribution. Replicates 1..R-1 are
+fresh draws written to a quarantined subdirectory, so nothing already on disk is
+touched or invalidated.
+
+Replicates are indexed by *location*, not by any seed: replicate 0 is the one
+that reads the ordinary production paths (see :func:`_replicate_dir`), and
+nothing here seeds generation. Raising ``--replicates`` therefore resumes rather
+than restarts -- every existing replicate short-circuits on its artifacts being
+present, and only the new indices are drawn.
 
 No training happens here. Every checkpoint is materialised from adapters that
 must already exist, and each replicate costs generation plus forward passes.
 
 Footprint: each (checkpoint, replicate>=1) pair adds an ``h_neutral_base``
 directory to that checkpoint's measurement bundle, whose per-sample tensor
-dominates at roughly ``n_neutral * d_model`` floats (~7MB at 7B x 500 prompts).
+dominates at roughly ``n_neutral * d_model`` floats (~7MB at 7B x 500 prompts) --
+byte-identical across replicates, for the reason given above.
 Measurement bundles are pushed as whole tars, so a large ``--replicates`` on many
 checkpoints is bandwidth as well as disk.
 """
@@ -165,7 +195,15 @@ def h_neutral_path(store: Store, cfg: TrajectoryConfig, t: int, replicate: int) 
 def ensure_neutral_answers(
     cfg: TrajectoryConfig, store: Store, backend: ExecutionBackend, replicate: int
 ) -> Path:
-    """$M_0$'s answers to the neutral prompts, re-sampled for this replicate."""
+    """$M_0$'s answers to the neutral prompts, re-derived for this replicate.
+
+    Re-*derived*, not re-sampled: decoding is greedy (see the module docstring),
+    so this regenerates text identical to the production bundle's and every
+    replicate's ``h_neutral`` term is the same. The 500 generations it costs per
+    replicate buy nothing, and reusing the production file would be equivalent;
+    it is left as an honest re-derivation so that the zero contribution is
+    something the sweep *measures* rather than something it assumes.
+    """
     base_wid = get_weights_id(cfg, 0)
     out = shared_dir(store, base_wid, replicate) / Artifacts.NEUTRAL_ANSWERS
     if out.exists():
@@ -193,6 +231,9 @@ def ensure_extract_csvs(
     (see :func:`method.steps.extract_persona_vector`): every checkpoint of the
     replicate re-reads this same text, so a replicate varies the *text and its
     judge scores*, never which model produced them.
+
+    This is the half of the bundle that genuinely varies between replicates, and
+    therefore the whole of what the reported spread is a spread *of*.
     """
     base_wid = get_weights_id(cfg, 0)
     directory = trait_dir(store, base_wid, cfg.trait, replicate)

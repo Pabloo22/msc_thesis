@@ -189,7 +189,9 @@ def trajectory_report(
     # number that decides whether to relaunch on the same box or give up on it;
     # on a success it should be zero, and anything else means the run ended
     # with stages outstanding.
-    remaining = timing.estimate_remaining(records, len(cfg.steps))
+    remaining = timing.estimate_remaining(
+        records, len(cfg.steps), [view.suffix for view in cfg.delta_p.views]
+    )
     if remaining:
         parts.append(
             _line("Left to do", format_duration(remaining) + _cost_suffix(remaining))

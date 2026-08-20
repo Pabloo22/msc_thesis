@@ -58,6 +58,160 @@ class DeltaPMode(StrEnum):
     PROMPT_LAST = "prompt_last"
 
 
+class PredictedSource(StrEnum):
+    r"""Whose answers stand in for "what the model would have said" in DeltaP.
+
+    DeltaP subtracts the projection of a *predicted* answer from that of the
+    training set's *target* answer, so it needs a prediction to subtract. The
+    two settings differ in which model produced it, and they are two different
+    questions:
+
+    ``BASE``
+        $M_0$'s answers, generated once and re-read verbatim by every
+        checkpoint. Holds the text fixed, so movement in the series is the
+        model's representation moving and nothing else -- the same rule
+        :class:`HNeutralSource` ``BASE`` applies to ``h_neutral``. This gives
+        $\Delta P_0$ at $t = 0$ and $\Delta P_t$ thereafter: at $t$ the axis
+        $v^{(t)}$ and the encoder are current, but the prediction is stale.
+    ``CURRENT``
+        Each $M_t$ answers the training prompts itself, so the predicted term
+        is what the checkpoint would actually say. This is the projection
+        difference the update really faces, written $\Delta P$ with no
+        subscript because nothing in it is frozen at a time step.
+    ``BOTH``
+        Computes each and stores them side by side, turning the choice into a
+        measurement.
+
+    ``CURRENT`` costs a generation pass over the training prompts at *every*
+    checkpoint, where ``BASE`` pays for one at $t = 0$ and then only forward
+    passes -- which is why ``BASE`` is the default and the recomputed variant
+    is scoped to one trunk (see
+    :func:`method.experiments.build_exp2_regen_configs`).
+
+    At $t = 0$ the two coincide by construction: the current model *is* $M_0$.
+    Both paths resolve to the same cached answers there, so the recomputed
+    series starts from $\Delta P_0$ rather than from an independent draw.
+    """
+
+    BASE = "base"
+    CURRENT = "current"
+    BOTH = "both"
+
+    @property
+    def sources(self) -> tuple[PredictedSource, ...]:
+        """The individual sources this setting expands to."""
+        if self is PredictedSource.BOTH:
+            return (PredictedSource.BASE, PredictedSource.CURRENT)
+        return (self,)
+
+
+class ProjectionAxis(StrEnum):
+    r"""Which persona vector the projection difference is taken along.
+
+    ``CURRENT``
+        $v^{(t)}$, the vector extracted from the checkpoint being measured.
+        What every DeltaP in this project has always used, and therefore the
+        default.
+    ``BASE``
+        $v^{(0)}$, the vector extracted from $M_0$, projected against the
+        *current* checkpoint's activations.
+    ``BOTH``
+        Both, side by side.
+
+    ``BASE`` exists because axis and encoder otherwise move together. DeltaP at
+    checkpoint $t$ refreshes the vector and the activations at once, so the
+    decay from $\Delta P_0$ to $\Delta P_t$ confounds two causes: the persona
+    direction rotating (which $\rho_t$ measures) and the representation
+    drifting. Holding the axis at $v^{(0)}$ while the encoder moves separates
+    them -- it is the DeltaP analogue of $p_t$ in $z_t$, which projects
+    ``h_neutral`` at $t$ onto $v^{(0)}$ for exactly this reason.
+
+    Costs nothing. The activations a checkpoint's DeltaP is taken over are
+    cached per checkpoint and dataset and do not depend on the axis, so this
+    re-reads tensors that already exist and projects them onto another vector.
+    No generation, no forward pass -- see
+    :func:`method.experiments.build_exp2_axis_configs`.
+    """
+
+    CURRENT = "current"
+    BASE = "base"
+    BOTH = "both"
+
+    @property
+    def axes(self) -> tuple[ProjectionAxis, ...]:
+        """The individual axes this setting expands to."""
+        if self is ProjectionAxis.BOTH:
+            return (ProjectionAxis.CURRENT, ProjectionAxis.BASE)
+        return (self,)
+
+
+@dataclass(frozen=True, kw_only=True)
+class DeltaPView:
+    r"""One projection difference: which axis, and whose predicted answers.
+
+    The two settings are independent knobs, but only some combinations are
+    worth measuring, and those that are form a *ladder* rather than a cube --
+    each rung refreshes one more thing than the one before it:
+
+    ===================================  =========  =========  ==========
+    view                                 axis       encoder    answers
+    ===================================  =========  =========  ==========
+    ``DeltaPView()`` at $t = 0$          $v^{(0)}$  $M_0$      $M_0$
+    ``DeltaPView(axis=BASE)``            $v^{(0)}$  $M_t$      $M_0$
+    ``DeltaPView()``                     $v^{(t)}$  $M_t$      $M_0$
+    ``DeltaPView(predicted=CURRENT)``    $v^{(t)}$  $M_t$      $M_t$
+    ===================================  =========  =========  ==========
+
+    Two of the three choices are forced, which is what collapses the cube:
+    $v^{(t)}$ is *extracted from* $M_t$ and $M_t$'s answers require $M_t$, so
+    a current axis or a current prediction each presuppose a current encoder.
+    The one combination this leaves out -- a base axis with regenerated
+    answers -- refreshes the expensive half while leaving the free half stale,
+    which is nobody's measurement.
+
+    The default view is the one every existing measurement took, so it names
+    its artifacts and record keys without any qualifier at all.
+    """
+
+    axis: ProjectionAxis = ProjectionAxis.CURRENT
+    predicted: PredictedSource = PredictedSource.BASE
+
+    def __post_init__(self) -> None:
+        for setting in (self.axis, self.predicted):
+            if setting in (ProjectionAxis.BOTH, PredictedSource.BOTH):
+                raise ValueError(
+                    f"{setting!r} names no single view; expand it through "
+                    "DeltaPConfig.views"
+                )
+
+    @property
+    def suffix(self) -> str:
+        """Name fragment distinguishing this view, empty for the default one.
+
+        ``v0`` rather than ``base`` for the axis, because ``base`` already
+        means "$M_0$'s answers" on the other setting and one artifact name
+        should not use the same word for two things.
+        """
+        parts = []
+        if self.axis is ProjectionAxis.BASE:
+            parts.append("v0")
+        if self.predicted is PredictedSource.CURRENT:
+            parts.append(self.predicted.value)
+        return "_".join(parts)
+
+    def key(self, base_key: str) -> str:
+        """``base_key`` qualified for this view.
+
+        The default view keeps the unqualified key it has always had --
+        ``probes``, ``delta_p`` -- so every trajectory already on disk stays
+        readable and no reader of the existing series has to learn that others
+        now exist. The single place this rule lives: the runner writes these
+        keys, :mod:`method.visualization.schema` reads them, and
+        :mod:`method.steps` names artifacts with them.
+        """
+        return f"{base_key}_{self.suffix}" if self.suffix else base_key
+
+
 class HNeutralSource(StrEnum):
     """Whose answers to the neutral prompts h_neutral is read from.
 
@@ -218,12 +372,36 @@ class EvalConfig:
 
 @dataclass(frozen=True, kw_only=True)
 class DeltaPConfig:
+    """How the projection difference is estimated, on two independent axes.
+
+    ``mode`` says which examples are projected, ``predicted`` says whose
+    answers the predicted term uses. They compose: ``SAMPLE`` + ``CURRENT``
+    regenerates answers for the subsample only.
+    """
+
     mode: DeltaPMode = DeltaPMode.FULL
     n_samples: int | None = None  # Only read when mode is SAMPLE.
+    predicted: PredictedSource = PredictedSource.BASE
+    axis: ProjectionAxis = ProjectionAxis.CURRENT
 
     def __post_init__(self) -> None:
         if self.mode is DeltaPMode.SAMPLE and self.n_samples is None:
             raise ValueError("DeltaPConfig.mode=SAMPLE requires n_samples")
+
+    @property
+    def views(self) -> tuple[DeltaPView, ...]:
+        """Every ``(axis, predicted)`` pair this config measures.
+
+        The cross product, so ``BOTH`` on either setting expands here rather
+        than at each call site. A config asking for ``BOTH`` on both settings
+        gets the fourth, uninteresting combination too; nothing in the design
+        does, and rejecting it would be a rule with no case to apply to.
+        """
+        return tuple(
+            DeltaPView(axis=axis, predicted=predicted)
+            for axis in self.axis.axes
+            for predicted in self.predicted.sources
+        )
 
 
 @dataclass(frozen=True, kw_only=True)

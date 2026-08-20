@@ -44,6 +44,50 @@ CHECKPOINT_STAGES = ("behavior", "persona_vector", "h_neutral", "latent", "probe
 #: Stages executed once per *step*, i.e. at every checkpoint but the last.
 STEP_STAGES = ("delta_p", "train")
 
+#: Stages performed once per DeltaP *view* rather than once per checkpoint
+#: (see :class:`method.config.DeltaPView`). They are timed apart because the
+#: views do very different work for the same name: one re-reads answers
+#: generated at ``t = 0``, one generates its own, and one only re-projects
+#: tensors already on disk. Pooling them would price a generation pass at the
+#: median of a projection.
+PER_VIEW_STAGES = ("probes", "delta_p")
+
+#: The view whose stages keep their unqualified names -- the default one, whose
+#: suffix is empty -- so a run recorded before the view axis existed still
+#: matches the stages it will perform.
+_DEFAULT_VIEWS: tuple[str, ...] = ("",)
+
+
+def stage_for(stage: str, view: str) -> str:
+    """``stage`` as recorded for one DeltaP view, named by its suffix.
+
+    The single place the naming rule lives: the runner writes these names and
+    the estimator enumerates them, and a rule spelled out twice is a rule that
+    can disagree with itself.
+    """
+    if stage not in PER_VIEW_STAGES or not view:
+        return stage
+    return f"{stage}_{view}"
+
+
+def base_stage(stage: str) -> str:
+    """The stage a recorded name is a per-view variant of, or itself."""
+    for candidate in PER_VIEW_STAGES:
+        if stage == candidate or stage.startswith(f"{candidate}_"):
+            return candidate
+    return stage
+
+
+def _expand(stages: Sequence[str], views: Sequence[str]) -> list[str]:
+    """``stages`` with the per-view ones repeated once per view."""
+    out: list[str] = []
+    for stage in stages:
+        if stage in PER_VIEW_STAGES:
+            out.extend(stage_for(stage, view) for view in views)
+        else:
+            out.append(stage)
+    return out
+
 #: Below this, a stage cannot have done real work: every genuine stage loads a
 #: model onto the GPU first, which alone costs tens of seconds. What lands
 #: under it is a resumed run's cache hit, skipping straight past an artifact
@@ -249,18 +293,27 @@ def read_runs(path: Path | None = None, *, mock: bool = False) -> list[RunRecord
 # --- estimation -----------------------------------------------------------
 
 
-def expected_units(n_steps: int) -> list[tuple[int, str]]:
+def expected_units(
+    n_steps: int, views: Sequence[str] = _DEFAULT_VIEWS
+) -> list[tuple[int, str]]:
     """Every ``(checkpoint, stage)`` a trajectory of ``n_steps`` will execute.
 
     The last checkpoint is measured but never trained from -- it has no
     successor -- so the step stages stop one checkpoint early, exactly as
     :func:`method.run_trajectory.run` does.
+
+    ``views`` names the DeltaP views the run measures, by suffix. A run that
+    measures only a non-default view never performs a stage called ``probes``
+    at all, so enumerating it would leave the estimate counting work that is
+    never going to happen and an ETA that never converges.
     """
+    checkpoint = _expand(CHECKPOINT_STAGES, views)
+    step = _expand(STEP_STAGES, views)
     units: list[tuple[int, str]] = []
     for t in range(n_steps + 1):
-        units.extend((t, stage) for stage in CHECKPOINT_STAGES)
+        units.extend((t, stage) for stage in checkpoint)
         if t < n_steps:
-            units.extend((t, stage) for stage in STEP_STAGES)
+            units.extend((t, stage) for stage in step)
     return units
 
 
@@ -278,7 +331,11 @@ def typical_seconds(records: Sequence[StageRecord]) -> dict[str, float]:
     return {stage: statistics.median(xs) for stage, xs in by_stage.items()}
 
 
-def estimate_remaining(records: Sequence[StageRecord], n_steps: int) -> float | None:
+def estimate_remaining(
+    records: Sequence[StageRecord],
+    n_steps: int,
+    views: Sequence[str] = _DEFAULT_VIEWS,
+) -> float | None:
     """Seconds of work left in a trajectory, or ``None`` with nothing to go on.
 
     Any stage this run has never performed is priced at the median of the ones
@@ -291,7 +348,7 @@ def estimate_remaining(records: Sequence[StageRecord], n_steps: int) -> float | 
     if not typical:
         return None
     fallback = statistics.median(typical.values())
-    remaining = [unit for unit in expected_units(n_steps) if unit not in done]
+    remaining = [unit for unit in expected_units(n_steps, views) if unit not in done]
     return sum(typical.get(stage, fallback) for _, stage in remaining)
 
 
@@ -392,12 +449,17 @@ def format_stage_table(records: Sequence[StageRecord]) -> str:
     if not records:
         return "(no stages recorded)"
     order = {stage: i for i, stage in enumerate(CHECKPOINT_STAGES + STEP_STAGES)}
+    def rank(stage: str) -> tuple[int, str]:
+        """A per-source variant sorts beside the stage it varies, not after the
+        last one, so the table reads in the order the runner performs them."""
+        return order.get(base_stage(stage), len(order)), stage
+
     by_stage: dict[str, list[StageRecord]] = {}
     for record in records:
         by_stage.setdefault(record.stage, []).append(record)
 
     rows = []
-    for stage in sorted(by_stage, key=lambda s: order.get(s, len(order))):
+    for stage in sorted(by_stage, key=rank):
         group = by_stage[stage]
         worked = [r for r in group if r.did_work]
         total = sum(r.seconds for r in group)

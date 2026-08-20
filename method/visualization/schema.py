@@ -17,6 +17,8 @@ from typing import Any
 
 import pandas as pd
 
+from method.config import DeltaPView, PredictedSource, ProjectionAxis
+
 
 @dataclass(frozen=True)
 class StepRecord:
@@ -43,23 +45,49 @@ class StepRecord:
     #: last, unlike ``delta_p``. Empty for trajectories saved before probing
     #: existed, which is why it defaults rather than being required.
     probes: dict[str, dict[str, float]] = field(default_factory=dict)
+    #: The same two quantities under the other views of the projection
+    #: difference (see :class:`method.config.DeltaPView`): ``_v0`` holds the
+    #: axis at $v^{(0)}$ while the encoder moves, and ``_current`` lets the
+    #: checkpoint answer the prompts itself. Empty on every run that did not
+    #: ask for them, which is all of them but the families scoped to pay.
+    delta_p_v0: dict[str, float] | None = None
+    probes_v0: dict[str, dict[str, float]] = field(default_factory=dict)
+    delta_p_current: dict[str, float] | None = None
+    probes_current: dict[str, dict[str, float]] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> StepRecord:
+        def delta_p(view: DeltaPView) -> dict[str, float] | None:
+            value = payload.get(view.key("delta_p"))
+            return dict(value) if value is not None else None
+
+        def probes(view: DeltaPView) -> dict[str, dict[str, float]]:
+            entries = payload.get(view.key("probes")) or {}
+            return {dataset: dict(stats) for dataset, stats in entries.items()}
+
+        base_axis = DeltaPView(axis=ProjectionAxis.BASE)
+        own_answers = DeltaPView(predicted=PredictedSource.CURRENT)
         return cls(
             t=payload["t"],
             weights_id=payload["weights_id"],
             behavior=dict(payload["behavior"]),
             z={k: dict(v) for k, v in (payload.get("z") or {}).items()},
-            delta_p=(
-                dict(payload["delta_p"]) if payload.get("delta_p") is not None else None
-            ),
+            delta_p=delta_p(DeltaPView()),
             next_dataset=payload.get("next_dataset"),
-            probes={
-                dataset: dict(stats)
-                for dataset, stats in (payload.get("probes") or {}).items()
-            },
+            probes=probes(DeltaPView()),
+            delta_p_v0=delta_p(base_axis),
+            probes_v0=probes(base_axis),
+            delta_p_current=delta_p(own_answers),
+            probes_current=probes(own_answers),
         )
+
+    def probes_by(self, view: DeltaPView) -> dict[str, dict[str, float]]:
+        """This checkpoint's probe DeltaP under one view."""
+        return {
+            "": self.probes,
+            "v0": self.probes_v0,
+            "current": self.probes_current,
+        }[view.suffix]
 
 
 @dataclass(frozen=True)

@@ -103,15 +103,22 @@ def measure_checkpoint(
     # summary written beside them; see steps.behavior_record for why a shared
     # checkpoint makes that cache unsafe.
     behavior = steps.behavior_record(cfg, t, store)
-    with timer.stage("probes", t):
-        probes = steps.measure_probes(cfg, t, store, backend, on_probe_done=push)
-    return {
+    record = {
         "t": t,
         "weights_id": wid,
         "behavior": behavior,
         "z": latent,
-        "probes": probes,
     }
+    # One entry per predicted source, under the key that source owns: the
+    # frozen series keeps "probes" and the recomputed one gets its own, so a
+    # run measuring both writes both and a run measuring neither writes
+    # nothing a reader could mistake for the other.
+    for view in cfg.delta_p.views:
+        with timer.stage(timing.stage_for("probes", view.suffix), t):
+            record[view.key("probes")] = steps.measure_probes(
+                cfg, t, store, backend, view=view, on_probe_done=push
+            )
+    return record
 
 
 def measure_endpoint(
@@ -232,10 +239,11 @@ def run(
             syncer.push_training_sample(sample_id)
 
         if full:
-            with timer.stage("delta_p", t):
-                record[-1]["delta_p"] = steps.compute_delta_p(
-                    cfg, t, store, backend, train_file, sample_id
-                )
+            for view in cfg.delta_p.views:
+                with timer.stage(timing.stage_for("delta_p", view.suffix), t):
+                    record[-1][view.key("delta_p")] = steps.compute_delta_p(
+                        cfg, t, store, backend, train_file, sample_id, view=view
+                    )
             record[-1]["next_dataset"] = step.dataset_id
 
             # DeltaP is the last (and among the most expensive) thing measured

@@ -11,6 +11,7 @@ result with :func:`method.visualization.style.save_figure`.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
@@ -38,6 +39,20 @@ from method.visualization.metrics import (
 
 import matplotlib.pyplot as plt  # noqa: E402  (backend fixed by style import above)
 
+
+#: The judge's own range. Every behaviour score in this project is a 0-100
+#: judge average, so a panel showing one is drawn on the whole of it rather
+#: than on the part its data happens to occupy. These are the ticks: what the
+#: axis claims to span.
+BEHAVIOUR_TICKS = (0.0, 20.0, 40.0, 60.0, 80.0, 100.0)
+
+#: ...and these are the limits it is actually drawn to. The margin is
+#: clearance, not range: a probe scoring 0 is common (an aligned model on an
+#: evil judge) and a mark centred on the spine would be sliced in half by it,
+#: which reads as a smaller, differently-shaped mark rather than as a point at
+#: the floor. Padding the axis fixes that without letting a mark escape its own
+#: panel, which is what turning clipping off would do in a grid this dense.
+BEHAVIOUR_LIMITS = (-5.0, 105.0)
 
 def _fit_line_x(x: np.ndarray) -> np.ndarray:
     """A smooth x-range spanning ``x`` (with a small margin), for a fit line."""
@@ -98,7 +113,7 @@ def _scatter_with_fit(
     datasets: Sequence[str] | None = None,
     mark_edge: str | None = None,
 ) -> LinearFit:
-    """One scatter series plus its least-squares line, labelled with $R^2$.
+    """One scatter series plus its least-squares line, labelled with its $r$.
 
     ``yerr`` draws the per-point error bar section 6a makes available for every
     $\\Delta b$: it is what separates a point that sits off the line because the
@@ -150,7 +165,7 @@ def _scatter_with_fit(
             color=color,
             linewidth=1.8,
             zorder=2,
-            label=rf"{label} ($R^2$={fit.r2:.2f})",
+            label=rf"{label} ($r$={fit.corr:.2f})",
         )
     return fit
 
@@ -168,8 +183,8 @@ def scatter_projection_correlation(
     Two series share one axis: $\Delta P_0$ (blue), frozen at the base model,
     against $\Delta P_t$ (orange), recomputed at the checkpoint about to be
     trained -- both plotted against the behaviour change the step actually
-    caused. The hypothesis under test is that the blue fit's $R^2$ decays
-    with sequence length while the orange one stays high.
+    caused. The hypothesis under test is that the blue fit's correlation
+    decays with sequence length while the orange one stays high.
     """
     style.apply_style()
     fig, ax = plt.subplots(figsize=(5.5, 4.2))
@@ -495,26 +510,40 @@ def _corner_text(
     ax: Axes,
     entries: Sequence[tuple[str, str]],
     *,
-    x: float = 0.04,
-    y: float = 0.96,
+    x: float = 0.96,
+    y: float = 0.04,
     fontsize: float = 7.5,
-    ha: str = "left",
+    ha: str = "right",
+    va: str = "bottom",
 ) -> None:
     """Stacked ``(text, colour)`` annotations in a panel corner.
 
     Used where a panel is too small for a legend of its own. The text always
-    names both the quantity and the series it reports (``"$R^2(\\Delta P_0)$ =
+    names both the quantity and the series it reports (``"$r(\\Delta P_0)$ =
     0.42"``), so colour is redundant reinforcement of an identity the words
     already carry rather than the only channel encoding it.
+
+    Bottom-right by default. A positively correlated scatter runs from the
+    bottom-left to the top-right, so that corner and the top-left are the two
+    the data tends to leave empty; of those, the bottom-right keeps the
+    annotation clear of the column headers and the phase note that share the
+    top of the panel in a grid. Pass ``y``/``va`` to move it where a panel's
+    own cloud makes the default the crowded one -- a strongly *negative*
+    relationship fills exactly that corner.
     """
+    rows = len(entries)
     for i, (text, color) in enumerate(entries):
+        # Entries read top-down whichever corner they sit in, so a stack
+        # anchored at the bottom counts up from the last one rather than down
+        # from the first.
+        level = (rows - 1 - i) if va == "bottom" else -i
         ax.text(
             x,
-            y - 0.105 * i,
+            y + 0.105 * level,
             text,
             transform=ax.transAxes,
             fontsize=fontsize,
-            va="top",
+            va=va,
             ha=ha,
             color=color,
             zorder=5,
@@ -647,7 +676,9 @@ def _mark_empty(ax: Axes) -> None:
     whose rows and columns are read against each other it would also break the
     alignment that makes them comparable.
     """
-    _corner_text(ax, [("not run", style.MUTED)], x=0.5, y=0.55, ha="center")
+    _corner_text(
+        ax, [("not run", style.MUTED)], x=0.5, y=0.5, ha="center", va="center"
+    )
 
 
 def _facets(
@@ -736,7 +767,7 @@ def scatter_validation(
     One point per dataset fine-tuned straight from $M_0$, reproducing Figure 8
     of the persona-vectors paper. This is the pipeline's gate, not part of the
     decay analysis: it is drawn over 24 datasets while the decay curve is drawn
-    over the 8 probes, and $R^2$ estimates are sensitive enough to range
+    over the 8 probes, and correlation estimates are sensitive enough to range
     restriction and to ``n`` that comparing the two would manufacture a decay
     out of nothing (section 5).
 
@@ -778,7 +809,7 @@ def scatter_validation(
         _corner_text(
             ax,
             [
-                (rf"$R^2$ = {fit.r2:.2f}   slope = {fit.slope:.2f}", style.INK),
+                (rf"$r$ = {fit.corr:.2f}   slope = {fit.slope:.2f}", style.INK),
                 (rf"$n$ = {len(panel)} datasets", style.SECONDARY_INK),
             ],
             fontsize=9,
@@ -798,6 +829,59 @@ def scatter_validation(
     return fig
 
 
+@dataclass(frozen=True)
+class _DecaySeries:
+    """One projection-difference series as a decay panel draws it."""
+
+    column: str
+    #: The symbol, without math delimiters, so the figure can set it both on
+    #: its own and inside ``r(...)`` without either spelling it out twice.
+    symbol: str
+    color: str
+    #: What the legend says the series is, beyond its symbol.
+    gloss: str
+
+    @property
+    def label(self) -> str:
+        return f"${self.symbol}$"
+
+    @property
+    def corr_label(self) -> str:
+        return rf"$r({self.symbol})$"
+
+
+#: The series a decay panel can hold, in the order they are layered. Each is a
+#: different rule for what may be current at $M_t$ -- the axis, the encoder,
+#: the prediction -- so they share the panel and differ only in hue. A series
+#: whose column is missing or incomplete for a panel is skipped there (see
+#: :func:`_panel_series`), which is what lets one grid mix a trunk that was
+#: re-measured with two that were not.
+_DECAY_SERIES: tuple[_DecaySeries, ...] = (
+    _DecaySeries("delta_p_0", r"\Delta P_0", style.BLUE, "everything at $M_0$"),
+    _DecaySeries(
+        "delta_p_v0", r"\Delta \hat{P}_t^{v_0}", style.PURPLE, "$M_0$'s axis"
+    ),
+    _DecaySeries(
+        "delta_p_t", r"\Delta \hat{P}_t", style.ORANGE, "$M_0$'s answers"
+    ),
+    _DecaySeries("delta_p", r"\Delta P_t", style.GREEN, "nothing approximated"),
+)
+
+
+def _panel_series(panel: pd.DataFrame) -> list[_DecaySeries]:
+    """The series this panel has a complete column for.
+
+    Incomplete is treated as absent. A fit over whichever probes happened to be
+    measured would be a correlation over a different probe set than the one
+    annotated beside it, and the panels exist to be compared.
+    """
+    return [
+        series
+        for series in _DECAY_SERIES
+        if series.column in panel and not panel[series.column].isna().any()
+    ]
+
+
 def decay_scatter_grid(
     df: pd.DataFrame,
     *,
@@ -807,24 +891,54 @@ def decay_scatter_grid(
     checkpoints: Sequence[int] | None = None,
     trunk_labels: Mapping[str, str] | None = None,
     xlabel: str = r"Projection difference $\Delta P$",
-    ylabel: str = r"Behaviour change $\Delta b_{t+1}$",
+    ylabel: str = r"Behaviour after the step, $b_{t+1}$",
 ) -> Figure:
     r"""Plot 2: one scatter panel per ``(trait, trunk, checkpoint)``.
 
     Rows are trunks and columns checkpoints, so a row reads as one trajectory
     ageing and a column as three trajectories at the same depth; the traits
-    stack as blocks of rows. Each panel holds the ``K`` probe datasets twice
-    over: against the frozen $\Delta P_0$ in blue and against the recomputed
-    $\Delta P_t$ in orange, with both fits' $R^2$ annotated. The hypothesis is
-    visible as the blue fit flattening left-to-right while the orange one does
-    not.
+    stack as blocks of rows. Each panel holds the ``K`` probe datasets once per
+    series it has a complete column for -- against the frozen $\Delta P_0$ in
+    blue, the recomputed $\Delta P_t$ in orange, and, where it was measured,
+    $\Delta P$ in green (:data:`_DECAY_SERIES`) -- with each fit's correlation
+    annotated. The hypothesis is visible as the blue fit flattening
+    left-to-right while the others do not.
 
-    Axes are shared within a trait and not across them (see
+    Panels need not all carry the same series. $\Delta P$ costs a generation
+    pass per checkpoint and is measured on one trunk, so its row has three fits
+    where the others have two. That asymmetry is the point of drawing them in
+    one grid rather than two: the trunk that was re-measured is read in place,
+    against the same axes and the same probes as the trunks that were not.
+
+    The y axis is the behaviour the step actually reached, $b_{t+1}$, with the
+    level it started from, $b_t$, drawn as a black rule across the panel. That
+    is $\Delta b_{t+1}$ shifted by a constant -- $b_t$ is one number per panel,
+    so every fit here has the slope and correlation the differences would give
+    -- but it puts the prediction on the judge's own scale, where a reader can
+    see how far above or below the starting level a probe landed and how much
+    of the axis a whole panel's spread covers. On differences those are both
+    inferences from a number the figure no longer shows.
+
+    Correlation rather than $R^2$ because the panels are read against each
+    other by eye: $r$ carries the sign of the relationship, and it falls off
+    linearly rather than quadratically as the frozen projection goes stale, so
+    the decay down a row is legible at the sizes this grid leaves per panel.
+
+    The y axis is pinned to the judge's full $[0, 100]$ on every panel, trait
+    blocks included (with a margin below and above it -- see
+    :data:`BEHAVIOUR_LIMITS`). It is the one axis here whose bounds are a
+    property of the instrument rather than of the data: both judges score out
+    of 100, so the range is already the same range, and fixing it means the
+    height of a mark means one thing everywhere in the figure -- a trunk that
+    ends up near the ceiling looks near the ceiling, instead of filling its
+    panel the way a trunk that never left the floor also would.
+
+    $\Delta P$ is shared within a trait and not across (see
     :func:`_share_blocks`). Within one, panels on their own scales would let a
-    flattening slope and a shrinking $\Delta b$ range look identical, which is
-    the one confusion this figure exists to prevent; across two, $\Delta P$ and
-    $\Delta b$ are read against different persona vectors and different judges,
-    so a shared scale would compare quantities that are not the same quantity.
+    flattening slope and a shrinking spread look identical, which is the one
+    confusion this figure exists to prevent; across two, $\Delta P$ is read
+    against a different persona vector, so a shared scale would compare
+    quantities that are not the same quantity.
 
     The steps-since-re-alignment note above each panel is the phase of section
     4, marked per panel rather than per column because the three schedules put
@@ -858,6 +972,10 @@ def decay_scatter_grid(
         figsize=(1.75 * ncols + 1.6, 2.0 * nrows + 1.3),
         squeeze=False,
     )
+    # Which series any panel managed to draw, for the legend: a series
+    # measured on one trunk still needs naming, and asking the whole frame
+    # would name one that no panel had a complete column for.
+    drawn: dict[str, _DecaySeries] = {}
     for row, (frame, trunk, name) in enumerate(panels):
         for col, t in enumerate(checkpoints):
             ax = axes[row][col]
@@ -865,36 +983,43 @@ def decay_scatter_grid(
             if panel.empty:
                 _mark_empty(ax)
                 continue
-            ax.axhline(0, color=style.BASELINE, linewidth=0.8, zorder=1)
-            errors = panel["se_delta_b"] if "se_delta_b" in panel else None
+            # The starting level, not zero: on a raw behaviour axis it is the
+            # line a point sitting above means the step made the model *more*
+            # of the trait, and zero is a judge score no probe goes near.
+            ax.axhline(
+                float(panel["b_t"].iloc[0]),
+                color=style.INK,
+                linewidth=1.0,
+                zorder=1,
+            )
+            errors = panel["se_b_next"] if "se_b_next" in panel else None
             probes = list(panel["probe"]) if "probe" in panel else None
-            stale = _scatter_with_fit(
-                ax,
-                panel["delta_p_0"],
-                panel["delta_b"],
-                color=style.BLUE,
-                label=r"$\Delta P_0$",
-                yerr=errors,
-                size=34,
-                datasets=probes,
-                mark_edge=style.BLUE,
-            )
-            fresh = _scatter_with_fit(
-                ax,
-                panel["delta_p_t"],
-                panel["delta_b"],
-                color=style.ORANGE,
-                label=r"$\Delta P_t$",
-                yerr=errors,
-                size=34,
-                datasets=probes,
-                mark_edge=style.ORANGE,
-            )
+            fits = [
+                (
+                    series,
+                    _scatter_with_fit(
+                        ax,
+                        panel[series.column],
+                        panel["b_next"],
+                        color=series.color,
+                        label=series.label,
+                        yerr=errors,
+                        size=34,
+                        datasets=probes,
+                        mark_edge=series.color,
+                    ),
+                )
+                for series in _panel_series(panel)
+            ]
+            drawn.update({series.column: series for series, _ in fits})
+            # A minus sign is printed where there is one; a plus is not,
+            # since it costs width in the narrowest panel of the set to say
+            # what its absence already says.
             _corner_text(
                 ax,
                 [
-                    (rf"$R^2(\Delta P_0)$ = {stale.r2:.2f}", style.BLUE),
-                    (rf"$R^2(\Delta P_t)$ = {fresh.r2:.2f}", style.ORANGE),
+                    (rf"{series.corr_label} = {fit.corr:.2f}", series.color)
+                    for series, fit in fits
                 ],
             )
             # As a right-hand axes title rather than an in-panel annotation:
@@ -917,8 +1042,10 @@ def decay_scatter_grid(
             for start in range(0, len(panels), stride)
         ],
         x=True,
-        y=True,
     )
+    for ax in axes.flat:
+        ax.set_ylim(*BEHAVIOUR_LIMITS)
+        ax.set_yticks(BEHAVIOUR_TICKS)
     _label_outer(axes, bottom_rows=range(stride - 1, len(panels), stride))
     for col, t in enumerate(checkpoints):
         # An annotation rather than a centred title: matplotlib lays a panel's
@@ -936,13 +1063,17 @@ def decay_scatter_grid(
             va="bottom",
         )
 
-    # Two keys in one legend: which projection a mark's *outline* means, and
-    # which dataset its shape and fill mean.
+    # Three keys in one legend: which projection a mark's *outline* means,
+    # which dataset its shape and fill mean, and what the black rule is. The
+    # projection keys are taken from the whole grid rather than from any one
+    # panel, so a series drawn in only some of them still gets named.
+    keys = [series for series in _DECAY_SERIES if series.column in drawn]
     handles: list[Artist] = [
-        plt.Line2D([], [], color=style.BLUE, linewidth=1.8),
-        plt.Line2D([], [], color=style.ORANGE, linewidth=1.8),
+        plt.Line2D([], [], color=series.color, linewidth=1.8) for series in keys
     ]
-    texts = [r"$\Delta P_0$ (frozen at $M_0$)", r"$\Delta P_t$ (recomputed at $M_t$)"]
+    handles.append(plt.Line2D([], [], color=style.INK, linewidth=1.0))
+    texts = [f"{series.label} ({series.gloss})" for series in keys]
+    texts.append(r"$b_t$ (level before the step)")
     if "probe" in df:
         mark_handles, mark_texts = dataset_legend(sorted(set(df["probe"])))
         handles += mark_handles
@@ -1002,10 +1133,42 @@ def _band(
     )
 
 
-#: Line style per series position in ``headline_curves``: $\Delta P_0$ solid,
-#: $\Delta P_t$ dashed. Fixed rather than assigned dynamically so the same
-#: series always reads the same way regardless of which trunks are present.
-_SERIES_LINESTYLES: tuple[str | tuple, ...] = ("solid", (0, (4, 2)))
+#: Line style per series in ``headline_curves``. Keyed by name rather than by
+#: position so the same series always reads the same way regardless of which
+#: others are present -- adding a series must not restyle the ones beside it.
+#: Ordered as the ladder is: more dashes as more of the quantity is
+#: approximated, and solid at both ends where nothing is.
+_SERIES_LINESTYLES: dict[str, str | tuple] = {
+    "p0": "solid",
+    "pv0": "dashdot",
+    "pt": (0, (4, 2)),
+    "p": "dotted",
+}
+
+
+def _correlation_floor(
+    frame: pd.DataFrame, columns: Sequence[str], *, clearance: float
+) -> float:
+    r"""The bottom of a correlation axis: $-1$, or just under zero.
+
+    Fixed rather than fitted to the data, so a panel's height means the same
+    thing wherever it appears and a curve that ends high cannot be mistaken for
+    one that merely ran out of axis. But fixing it at the full $[-1, 1]$ costs
+    half the panel whenever nothing is negative -- which for the RQ1 figures is
+    the usual case, and it is the decay *within* the top half that they exist
+    to show.
+
+    So: down to $-1$ when some drawn value actually goes below zero, and the
+    unit interval when none does. Decided over the whole frame rather than per
+    panel, which is what keeps every panel on one scale -- the property that
+    matters -- while still letting a negative correlation anywhere widen all of
+    them together rather than be clipped out of sight in the one panel that has
+    it. ``clearance`` is the margin below the lowest drawable value, so a mark
+    sitting exactly at the bound is not cut in half by the axis.
+    """
+    present = [column for column in columns if column in frame]
+    floor = min((frame[column].min() for column in present), default=0.0)
+    return -1.0 - clearance if present and floor < 0 else -clearance
 
 
 def headline_curves(
@@ -1020,7 +1183,7 @@ def headline_curves(
     trunk_colors: Mapping[str, str] | None = None,
     xlabel: str = "Checkpoint $t$",
 ) -> Figure:
-    r"""Plot 3: $R^2$ and fitted slope against ``t``, one panel per trait.
+    r"""Plot 3: correlation and fitted slope against ``t``, one panel per trait.
 
     Two rows (one per quantity) and one column per trait. $\Delta P_0$ and
     $\Delta P_t$ are drawn on the *same* axes within a panel -- solid vs.
@@ -1028,27 +1191,30 @@ def headline_curves(
     column, so the two series are read directly against each other instead of
     through a side-by-side comparison across panels.
 
-    Slope is reported beside $R^2$ rather than inside it because staleness has
+    Slope is reported beside $r$ rather than inside it because staleness has
     two signatures that imply different fixes: a fit that loses its ordering
-    (falling $R^2$) and one that keeps the ordering but shrinks the magnitude
-    (falling slope at unchanged $R^2$).
+    (falling $r$) and one that keeps the ordering but shrinks the magnitude
+    (falling slope at unchanged $r$).
 
     Expect a sawtooth in ``t`` and do not smooth it -- it is the phase effect
     the schedules deliberately induce, and :func:`phase_contrast` is what
     separates it from the trend.
 
     Two measures on two rows rather than two y-scales on one: the alignment of
-    a shared axis between $R^2$ and a slope in trait points per unit
+    a shared axis between $r$ and a slope in trait points per unit
     $\Delta P$ would be arbitrary, and would invent a relationship between
     them. For the same reason the slope row's panels do not share a y-scale
     across traits -- the slope is in points of *that* trait's judge per unit
     of *that* trait's persona vector, so its absolute value is not comparable
     between them, while its trend in ``t`` is exactly what the figure asks the
-    reader to compare. (The $R^2$ row is unitless in both traits, so its
-    panels share a fixed ``[0, 1]``-ish range regardless.)
+    reader to compare. (The correlation row is unitless in both traits, so its
+    panels share a fixed range regardless -- see :func:`_correlation_ylim` for
+    which one.)
 
     This panel no longer draws the $R^2_{max}$ noise ceiling; see
-    ``docs/r2_max.md`` for what it means and where to find it instead.
+    ``docs/r2_max.md`` for what it means and where to find it instead. Note it
+    is a variance ratio, so the ceiling on the correlation drawn here is its
+    square root, not the stored number.
     """
     style.apply_style()
     series = list(series)
@@ -1056,9 +1222,9 @@ def headline_curves(
     trunk_labels = trunk_labels or {}
     trunk_colors = trunk_colors or {}
     trunks = list(trunks) if trunks else sorted(fits["trunk"].unique())
-    linestyles = dict(zip(series, _SERIES_LINESTYLES))
+    linestyles = _SERIES_LINESTYLES
     quantities = (
-        ("r2", r"$R^2$ over the probe set"),
+        ("corr", r"Correlation $r$ over the probe set"),
         ("slope", r"Fitted slope ($\Delta b$ per unit $\Delta P$)"),
     )
     cols = _facets(fits, traits, trait_labels, column="trait")
@@ -1070,6 +1236,12 @@ def headline_curves(
         sharex=True,
         sharey=False,
         squeeze=False,
+    )
+    # One floor for the whole correlation row, so its panels stay comparable.
+    corr_floor = _correlation_floor(
+        fits,
+        [f"corr_{name}{suffix}" for name in series for suffix in ("", "_lo")],
+        clearance=0.03,
     )
     for row, (quantity, qlabel) in enumerate(quantities):
         for col, (_, frame, _trait_label) in enumerate(cols):
@@ -1090,9 +1262,12 @@ def headline_curves(
                         label="_nolegend_",
                         linestyle=linestyles.get(name, "solid"),
                     )
-            if quantity == "r2":
-                ax.set_ylim(-0.03, 1.03)
-            else:
+            if quantity == "corr":
+                ax.set_ylim(corr_floor, 1.03)
+            # Zero is a meaningful level for a slope always, and for a
+            # correlation only once the axis is wide enough to have a sign to
+            # read; on a [0, 1] panel the rule would just underline the frame.
+            if quantity == "slope" or corr_floor < -1.0:
                 ax.axhline(0, color=style.BASELINE, linewidth=0.8, zorder=1)
         axes[row][0].set_ylabel(qlabel)
     for col, (_, _, trait_label) in enumerate(cols):
@@ -1136,30 +1311,30 @@ def mechanism_grid(
     *,
     traits: Sequence[str] | None = None,
     trait_labels: Mapping[str, str] | None = None,
-    value_column: str = "r2_p0",
+    value_column: str = "corr_p0",
     trunk_labels: Mapping[str, str] | None = None,
     trunk_colors: Mapping[str, str] | None = None,
-    ylabel: str = r"$R^2$ of $\Delta P_0$ at that checkpoint",
+    ylabel: str = r"Correlation $r$ of $\Delta P_0$ at that checkpoint",
 ) -> Figure:
-    r"""Plot 4: the checkpoint-level regression of $R^2$ on what moved.
+    r"""Plot 4: the checkpoint-level regression of the correlation on what moved.
 
     ``predictors`` maps a column to its display label -- the drift components
     $\rho$ and $r$, the current behaviour level $b_t$, and
-    ``steps_since_realignment``. A column fits $R^2$ against one of them over
+    ``steps_since_realignment``. A column fits $r$ against one of them over
     every checkpoint of one trait, a row is a trait, and colour identifies
     which trunk a checkpoint came from.
 
     This is the level-2 analysis, so a point is a *checkpoint*, not a probe
     dataset: the eight probes at a checkpoint were already spent producing the
-    single $R^2$ plotted here. Dense sampling is what makes the panel
+    single $r$ plotted here. Dense sampling is what makes the panel
     populated at all -- measuring every ``t`` gives 19 rows where measuring
     ``t`` in ``{0, 2, 4, 6}`` would give 10 -- and the varied schedules are
     what stop drift and behaviour level from moving together, which is the
     condition for their contributions to be separable.
 
-    Every panel shares one y-axis, unlike the other grids here: $R^2$ is
-    unitless and bounded, so it is the one quantity in this set that means the
-    same thing for both traits. The x-axes are not shared, in either direction
+    Every panel shares one y-axis, unlike the other grids here: the
+    correlation is unitless and bounded, so it is the one quantity in this set
+    that means the same thing for both traits. The x-axes are not shared, in either direction
     -- the columns are different quantities, and a rotation that runs over
     $[0.88, 1]$ for one trait and $[0.97, 1]$ for the other would have the
     tighter trait's whole spread squeezed into a corner.
@@ -1208,7 +1383,7 @@ def mechanism_grid(
                     zorder=3,
                     label=trunk_labels.get(trunk, f"Trunk {trunk}"),
                 )
-            entries = [(rf"$R^2$ = {fit.r2:.2f}", style.INK)]
+            entries = [(rf"$r$ = {fit.corr:.2f}", style.INK)]
             if col == 0:
                 # Every panel of a row regresses the same checkpoints, so ``n``
                 # belongs to the row rather than to a panel -- stated once, in
@@ -1231,17 +1406,44 @@ def mechanism_grid(
     return fig
 
 
-#: Hatch per series position in ``phase_contrast``: $\Delta P_0$ plain,
-#: $\Delta P_t$ hatched. Colour already carries the trunk and fill carries
-#: before/after, so the series needs a third channel that survives both.
-_SERIES_HATCHES: tuple[str, ...] = ("", "////")
+#: Hatch per series in ``phase_contrast``. Colour already carries the trunk and
+#: fill carries before/after, so the series needs a third channel that survives
+#: both. Keyed by name for the same reason the line styles are.
+_SERIES_HATCHES: dict[str, str] = {
+    "p0": "",
+    "pv0": "....",
+    "pt": "////",
+    "p": "xxxx",
+}
 
-#: Offsets (in x-axis units) of the four bars drawn per re-alignment step:
-#: p0-before, p0-after, pt-before, pt-after. The gap within a series pair is
-#: narrower than the gap between the two series, so the eye groups
-#: before/after together and reads the two series as separate clusters.
-_BAR_OFFSETS: tuple[float, ...] = (-0.32, -0.12, 0.12, 0.32)
-_BAR_WIDTH = 0.18
+#: Bar geometry per re-alignment step, in x-axis units. Two bars per series
+#: (before, after), and the gap *within* a pair is narrower than the gap
+#: between pairs, so the eye groups before/after together and reads each
+#: series as its own cluster. :data:`_BAR_SPAN` is what the whole group is
+#: then scaled to occupy, which is what keeps a third series from colliding
+#: with the neighbouring step's bars.
+_PAIR_GAP = 0.20
+_SERIES_GAP = 0.24
+_BAR_SPAN = 0.82
+
+
+def _bar_layout(n_series: int) -> tuple[list[float], float]:
+    """Centred bar offsets and bar width for ``n_series`` before/after pairs.
+
+    Derived rather than tabulated so the figure keeps working when a series is
+    added: the ratios are fixed and only the scale adapts, so two series lay
+    out exactly as they always have and three simply draw narrower.
+    """
+    width = 0.18
+    offsets = [
+        pair * _PAIR_GAP + index * (_PAIR_GAP + _SERIES_GAP)
+        for index in range(max(n_series, 1))
+        for pair in (0, 1)
+    ]
+    centre = (offsets[0] + offsets[-1]) / 2
+    offsets = [offset - centre for offset in offsets]
+    scale = _BAR_SPAN / (offsets[-1] - offsets[0] + width)
+    return [offset * scale for offset in offsets], width * scale
 
 
 def phase_contrast(
@@ -1252,7 +1454,7 @@ def phase_contrast(
     series: Sequence[str] = ("p0", "pt"),
     series_labels: Mapping[str, str] | None = None,
     trunk_colors: Mapping[str, str] | None = None,
-    ylabel: str = r"$R^2$ over the probe set",
+    ylabel: str = r"Correlation $r$ over the probe set",
 ) -> Figure:
     r"""Plot 4b: what one re-alignment step does to predictive accuracy.
 
@@ -1270,7 +1472,7 @@ def phase_contrast(
     (does $\Delta P_t$ move by the same amount?) is a glance sideways instead
     of a glance across the figure.
 
-    One column per trait, on one shared pair of axes: $R^2$ is unitless and
+    One column per trait, on one shared pair of axes: $r$ is unitless and
     every column is read against the same list of re-alignment steps, so a
     step whose fit collapses for one trait and holds for the other is a
     difference the grid shows directly. The x positions come from the whole
@@ -1282,13 +1484,19 @@ def phase_contrast(
     series = list(series)
     series_labels = series_labels or {}
     trunk_colors = trunk_colors or {}
-    hatches = dict(zip(series, _SERIES_HATCHES))
+    hatches = _SERIES_HATCHES
+    offsets, bar_width = _bar_layout(len(series))
     ordered = list(
         pairs.sort_values(["trunk", "t_before"])["pair"].drop_duplicates()
     )
     position = {pair: i for i, pair in enumerate(ordered)}
     cols = _facets(pairs, traits, trait_labels, column="trait")
     x = np.arange(len(ordered))
+    bar_floor = _correlation_floor(
+        pairs,
+        [f"corr_{name}_{when}" for name in series for when in ("before", "after")],
+        clearance=0.05,
+    )
 
     fig, axes = plt.subplots(
         1,
@@ -1303,17 +1511,22 @@ def phase_contrast(
             i = position[record["pair"]]
             color = trunk_colors.get(record["trunk"], style.BLUE)
             for s_idx, name in enumerate(series):
-                before = record[f"r2_{name}_before"]
-                after = record[f"r2_{name}_after"]
-                before_x = i + _BAR_OFFSETS[2 * s_idx]
-                after_x = i + _BAR_OFFSETS[2 * s_idx + 1]
+                before = record[f"corr_{name}_before"]
+                after = record[f"corr_{name}_after"]
+                if not (np.isfinite(before) and np.isfinite(after)):
+                    # A series this trunk was never re-measured on. Undrawn,
+                    # so the gap reads as "not measured" rather than as a pair
+                    # of zero-height bars reading as "no change".
+                    continue
+                before_x = i + offsets[2 * s_idx]
+                after_x = i + offsets[2 * s_idx + 1]
                 ax.bar(
-                    before_x, before, width=_BAR_WIDTH, facecolor=style.SURFACE,
+                    before_x, before, width=bar_width, facecolor=style.SURFACE,
                     edgecolor=color, linewidth=1.4, hatch=hatches.get(name, ""),
                     zorder=3,
                 )
                 ax.bar(
-                    after_x, after, width=_BAR_WIDTH, facecolor=color,
+                    after_x, after, width=bar_width, facecolor=color,
                     edgecolor=color, linewidth=0.8, hatch=hatches.get(name, ""),
                     zorder=3,
                 )
@@ -1331,26 +1544,30 @@ def phase_contrast(
         # Room for the delta labels on the outermost pairs, which sit above a
         # bar at the very edge of the data range.
         ax.set_xlim(-0.7, len(ordered) - 0.3)
-        ax.set_ylim(-0.05, 1.15)
+        ax.set_ylim(bar_floor, 1.15)
         ax.set_title(trait_label, color=style.SECONDARY_INK)
 
+    # Two keys: fill says before/after, hatch says which series.
     handles = [
         Patch(facecolor=style.SURFACE, edgecolor=style.SECONDARY_INK, linewidth=1.4),
         Patch(facecolor=style.SECONDARY_INK, edgecolor=style.SECONDARY_INK),
-        Patch(facecolor=style.SURFACE, edgecolor=style.SECONDARY_INK, hatch=""),
-        Patch(
-            facecolor=style.SURFACE, edgecolor=style.SECONDARY_INK,
-            hatch=hatches.get(series[-1], "////"),
-        ),
+        *[
+            Patch(
+                facecolor=style.SURFACE,
+                edgecolor=style.SECONDARY_INK,
+                hatch=hatches.get(name, ""),
+            )
+            for name in series
+        ],
     ]
     texts = [
         "Before the Normal driver",
         "After it",
-        series_labels.get(series[0], series[0]),
-        series_labels.get(series[-1], series[-1]),
+        *[series_labels.get(name, name) for name in series],
     ]
-    fig.legend(handles, texts, loc="lower center", ncol=4)
-    _layout_grid(fig, axes.flat, ylabel=ylabel, legend_rows=1)
+    ncol = min(4, len(handles))
+    fig.legend(handles, texts, loc="lower center", ncol=ncol)
+    _layout_grid(fig, axes.flat, ylabel=ylabel, legend_rows=-(-len(handles) // ncol))
     return fig
 
 

@@ -12,7 +12,7 @@ says should exist -- so a partially finished sweep plots what has run and
 reports what has not, rather than silently plotting fewer seeds.
 
 exp2's figures, in the design's numbering: the validation fan (1), the decay
-scatter grid (2), the headline $R^2$ and slope curves with their noise ceiling
+scatter grid (2), the headline correlation and slope curves with their noise ceiling
 (3), the mechanism regression (4), the phase contrast (4b) and the paired
 drift plots (5). Its analysis lives in :mod:`method.visualization.decay`; this
 module only chooses what to draw and what to name it.
@@ -83,16 +83,18 @@ def _emit(fig: plt.Figure, name: str, out_dir: Path, saved: list[Path]) -> None:
 
 # --- experiment 2: the RQ1 decay experiment --------------------------------
 
-#: The three families the decay experiment is split across. They share a base
+#: The families the decay experiment is split across. They share a base
 #: checkpoint and a probe set, and every figure below needs at least two of
 #: them, so they are collected together whichever one was asked for.
 EXP2_GROUPS = (
     experiments.EXP2_VALIDATION,
     experiments.EXP2_DECAY,
     experiments.EXP2_RESEED,
+    experiments.EXP2_AXIS,
+    experiments.EXP2_REGEN,
 )
 
-#: Which checkpoint-level quantities plot 4 regresses $R^2$ on. Drift is what
+#: Which checkpoint-level quantities plot 4 regresses the correlation on. Drift is what
 #: RQ1 claims causes decay; $b_t$ and the phase are the two nuisances that
 #: would otherwise explain it just as well, which is why the schedules in
 #: section 4 are varied enough to tell them apart.
@@ -128,6 +130,21 @@ def _present_trunks(frame: pd.DataFrame) -> list[str]:
 def _present_traits(frame: pd.DataFrame) -> list[str]:
     """Traits with rows in ``frame``, primary (sycophancy) first."""
     return _present(frame["trait"], TRAITS)
+
+
+def _present_series(fits: pd.DataFrame) -> list[str]:
+    r"""Projection series with at least one checkpoint fitted, in design order.
+
+    The re-measured series each need a family of their own, so on a run of the
+    decay family alone their columns are entirely NaN. Dropping them here
+    rather than in the figures is what keeps an unmeasured series out of the
+    legend -- a key for a line nobody drew reads as a line that came out flat.
+    """
+    return [
+        series
+        for series in decay.SERIES
+        if f"corr_{series}" in fits and fits[f"corr_{series}"].notna().any()
+    ]
 
 
 #: Families that sweep seeds over a fixed step sequence, most preferred first.
@@ -237,11 +254,13 @@ def build_exp2(
 ) -> list[Path]:
     r"""Every figure of the RQ1 decay experiment, over every measured trait.
 
-    ``collections`` holds the three exp2 families keyed by group name. They are
+    ``collections`` holds the exp2 families keyed by group name. They are
     passed together because the figures cross them: the decay family supplies
     the trunks and their fans, the validation family supplies the shared
-    $t = 0$ column that the decay family deliberately does not re-emit, and the
-    reseed family supplies the paired replicate plot 5 overlays.
+    $t = 0$ column that the decay family deliberately does not re-emit, the
+    reseed family supplies the paired replicate plot 5 overlays, and the axis
+    and regen families supply the two re-measured projection series for
+    whichever trunks they covered.
 
     ``sigma_seed`` maps a trait to its fine-tune seed noise. Where it is
     missing the ceiling on plot 3 accounts for eval noise alone, which makes it
@@ -267,13 +286,21 @@ def build_exp2(
     reseed = collections.get(experiments.EXP2_RESEED) or Collection(
         experiments.EXP2_RESEED
     )
+    # Families that re-measure trunks the decay family already ran, each
+    # contributing one more projection series to the same rows.
+    remeasured = [
+        collections.get(group) or Collection(group)
+        for group in (experiments.EXP2_AXIS, experiments.EXP2_REGEN)
+    ]
     if not (decay_runs or validation):
         logger.warning("exp2: no decay or validation runs on disk; skipping")
         return saved
 
     sigma_seed = dict(sigma_seed or {})
     fan = decay.validation_frame(validation, stat=stat)
-    rows = decay.decay_frame(decay_runs, validation, stat=stat, source=source)
+    rows = decay.decay_frame(
+        decay_runs, validation, remeasured, stat=stat, source=source
+    )
     drift_runs = [*decay_runs.runs, *reseed.runs]
     ratios = decay.probe_drift_frame(drift_runs, stat=stat, source=source)
     latents = decay.latent_frame(drift_runs, stat=stat, source=source)
@@ -378,10 +405,12 @@ def _decay_figures(
         ],
         ignore_index=True,
     )
+    series = _present_series(fits)
     fig = figures.headline_curves(
         fits,
         traits=traits,
         trait_labels=trait_labels,
+        series=series,
         series_labels=decay.SERIES_LABELS,
         trunks=trunks,
         trunk_labels=labels,
@@ -411,6 +440,7 @@ def _decay_figures(
             pairs,
             traits=_present_traits(pairs),
             trait_labels=trait_labels,
+            series=series,
             series_labels=decay.SERIES_LABELS,
             trunk_colors=colors,
         )
@@ -830,7 +860,7 @@ def main() -> None:
         "--n-resamples",
         type=int,
         default=2000,
-        help="bootstrap resamples behind exp2's R^2 and slope intervals",
+        help="bootstrap resamples behind exp2's correlation and slope intervals",
     )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()

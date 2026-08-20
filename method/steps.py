@@ -11,6 +11,7 @@ here and the resume checks depend on them agreeing.
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import random
@@ -22,7 +23,15 @@ import pandas as pd
 import torch
 
 from method.backends import ExecutionBackend, materialize
-from method.config import DeltaPMode, HNeutralSource, StepConfig, TrajectoryConfig
+from method.config import (
+    DeltaPMode,
+    DeltaPView,
+    HNeutralSource,
+    PredictedSource,
+    ProjectionAxis,
+    StepConfig,
+    TrajectoryConfig,
+)
 from method.latent import compute_latent, delta_projection, summarize
 from method.noise import behavior_summary
 from method.store import (
@@ -53,13 +62,18 @@ class Artifacts:
     # examples the next step trains on. Trajectories sharing a prefix and then
     # diverging land on the same weights_id, and an unkeyed name would make the
     # second one silently read the first one's numbers.
+    # The view joins the name for the same reason, one level up: one
+    # checkpoint can hold the same examples projected onto two axes and
+    # differenced against two sets of answers. The default view keeps the
+    # unqualified name it has always had, so every measurement already in the
+    # store stays a cache hit (see :meth:`method.config.DeltaPView.key`).
     @staticmethod
-    def delta_p_json(sample_id: str) -> str:
-        return f"delta_p_{sample_id}.json"
+    def delta_p_json(sample_id: str, view: DeltaPView) -> str:
+        return f"{view.key('delta_p')}_{sample_id}.json"
 
     @staticmethod
-    def delta_p_csv(sample_id: str) -> str:
-        return f"delta_p_{sample_id}.csv"
+    def delta_p_csv(sample_id: str, view: DeltaPView) -> str:
+        return f"{view.key('delta_p')}_{sample_id}.csv"
 
     @staticmethod
     def persona_vector(trait: str) -> str:
@@ -403,13 +417,25 @@ def compute_delta_p(
     backend: ExecutionBackend,
     train_file: Path,
     sample_id: str,
+    *,
+    view: DeltaPView = DeltaPView(),
 ) -> dict[str, float]:
-    """DeltaP for the dataset step ``t`` is about to train on.
+    r"""DeltaP for the dataset step ``t`` is about to train on.
 
-    Answers are never regenerated: M_0's answers to the training prompts are
-    produced once, and later steps only recompute hidden states over that fixed
-    text. This keeps the measurement comparable across steps and avoids the
-    degenerate case where a drifted model stops producing usable answers.
+    ``view`` selects which of the projection differences to take -- which axis,
+    and whose answers stand in for the predicted term (see
+    :class:`method.config.DeltaPView` for the ladder they form). The default is
+    the one every existing measurement took: the checkpoint's own axis
+    $v^{(t)}$, differenced against M_0's answers. That gives $\Delta P_0$ at
+    ``t = 0`` and $\Delta P_t$ after it.
+
+    Freezing the *answers* at M_0 keeps the measurement comparable across steps
+    and out of the degenerate case where a drifted model stops producing usable
+    text; ``PredictedSource.CURRENT`` gives that up deliberately, and pays a
+    generation pass per checkpoint for it. Freezing the *axis* at $v^{(0)}$
+    costs nothing at all: the activations below do not depend on it, so a
+    second view over a measured checkpoint is a second projection over tensors
+    that are already on disk.
 
     ``sample_id`` identifies those training examples and keys every artifact
     written here, because ``weights_id`` alone describes the steps already
@@ -417,23 +443,27 @@ def compute_delta_p(
     """
     wid = get_weights_id(cfg, t)
     dp_key = _delta_p_key(cfg, sample_id)
-    out = store.trait_measurement(wid, cfg.trait, Artifacts.delta_p_json(dp_key))
+    out = store.trait_measurement(wid, cfg.trait, Artifacts.delta_p_json(dp_key, view))
     if out.exists():
         return json.loads(out.read_text())
 
-    model_path = materialize(cfg, t, store, backend)
     layer = cfg.model.layer
-    vt = torch.load(
-        store.trait_measurement(wid, cfg.trait, Artifacts.persona_vector(cfg.trait)),
-        weights_only=False,
-    )[layer]
+    # Materialising a checkpoint replays its whole adapter chain onto disk, so
+    # it is deferred until something actually needs a forward pass. Projecting
+    # cached activations onto another axis needs none, which is what makes that
+    # view free rather than merely cheap.
+    @functools.cache
+    def model_path() -> str:
+        return materialize(cfg, t, store, backend)
+
+    vector = _projection_vector(cfg, t, store, view.axis)
 
     train_file = _delta_p_subset(cfg, train_file, store, wid, dp_key)
 
     target_dir = store.measurement_dir(wid) / "delta_p_target" / dp_key
     if not (target_dir / f"samples_layer{layer}.pt").exists():
         with atomic_dir(target_dir) as scratch:
-            backend.hidden_states(model_path, train_file, layer, scratch)
+            backend.hidden_states(model_path(), train_file, layer, scratch)
     h_target = torch.load(target_dir / f"samples_layer{layer}.pt", weights_only=False)
 
     if cfg.delta_p.mode is DeltaPMode.PROMPT_LAST:
@@ -444,25 +474,58 @@ def compute_delta_p(
             "use FULL or SAMPLE until that path is added"
         )
 
-    pred_file = _base_answers_to_training_prompts(
-        cfg, store, backend, train_file, dp_key
+    # At t = 0 the current model *is* M_0, and generation is greedy, so the two
+    # sources would produce byte-identical answers. Resolving to BASE there
+    # shares the answers and the forward pass instead of paying for a second
+    # copy of both, and makes the recomputed series start at exactly Delta P_0
+    # rather than at something that ought to equal it.
+    effective = PredictedSource.BASE if t == 0 else view.predicted
+    pred_file = _predicted_answers(
+        cfg, t, store, backend, train_file, dp_key, effective
     )
-    pred_dir = store.measurement_dir(wid) / "delta_p_predicted" / dp_key
+    pred_dir = _predicted_dir(store, wid, dp_key, effective)
     if not (pred_dir / f"samples_layer{layer}.pt").exists():
         with atomic_dir(pred_dir) as scratch:
-            backend.hidden_states(model_path, pred_file, layer, scratch)
+            backend.hidden_states(model_path(), pred_file, layer, scratch)
     h_pred = torch.load(pred_dir / f"samples_layer{layer}.pt", weights_only=False)
 
-    values = delta_projection(h_target, h_pred, vt)
+    values = delta_projection(h_target, h_pred, vector)
     stats = summarize(values)
     with atomic_file(
-        store.trait_measurement(wid, cfg.trait, Artifacts.delta_p_csv(dp_key))
+        store.trait_measurement(wid, cfg.trait, Artifacts.delta_p_csv(dp_key, view))
     ) as scratch:
         pd.DataFrame({"delta_p": values.tolist()}).to_csv(scratch, index=False)
     with atomic_file(out) as scratch:
         scratch.write_text(json.dumps(stats, indent=2), encoding="utf-8")
-    logger.info("DeltaP_%d = %.4f (n=%d)", t, stats["mean"], stats["n"])
+    logger.info(
+        "DeltaP[%s]_%d = %.4f (n=%d)",
+        view.suffix or "default",
+        t,
+        stats["mean"],
+        stats["n"],
+    )
     return stats
+
+
+def _projection_vector(
+    cfg: TrajectoryConfig, t: int, store: Store, axis: ProjectionAxis
+) -> torch.Tensor:
+    r"""The persona vector DeltaP projects onto, at this checkpoint's layer.
+
+    ``CURRENT`` reads $v^{(t)}$, extracted from the checkpoint being measured.
+    ``BASE`` reads $v^{(0)}$ from the base checkpoint instead, holding the axis
+    still while the activations move -- which is what separates the persona
+    direction rotating from the representation drifting.
+    """
+    source_t = 0 if axis is ProjectionAxis.BASE else t
+    return torch.load(
+        store.trait_measurement(
+            get_weights_id(cfg, source_t),
+            cfg.trait,
+            Artifacts.persona_vector(cfg.trait),
+        ),
+        weights_only=False,
+    )[cfg.model.layer]
 
 
 def measure_probes(
@@ -472,6 +535,7 @@ def measure_probes(
     backend: ExecutionBackend,
     probes: Sequence[StepConfig] | None = None,
     *,
+    view: DeltaPView = DeltaPView(),
     on_probe_done: Callable[[], None] | None = None,
 ) -> dict[str, dict[str, float]]:
     """DeltaP at checkpoint ``t`` for every probe dataset, keyed by ``dataset_id``.
@@ -486,6 +550,12 @@ def measure_probes(
     the base checkpoint). Requires ``v_t``, so callers must have run
     :func:`extract_persona_vector` for this checkpoint first.
 
+    ``view`` is passed straight through to :func:`compute_delta_p`, so one
+    checkpoint yields each of the projection differences by being called once
+    per view. It takes a single view rather than a set: a caller that wants
+    several iterates ``cfg.delta_p.views``, which keeps the results separate
+    all the way to the records they are written into.
+
     ``on_probe_done``, if given, runs after each probe's DeltaP lands on disk --
     a hook a caller can use to sync that one result immediately rather than
     waiting on the whole (potentially long) list of probes. This module stays
@@ -496,7 +566,13 @@ def measure_probes(
     for probe in probes:
         train_file = cached_training_sample(probe, cfg.seed, store)
         results[probe.dataset_id] = compute_delta_p(
-            cfg, t, store, backend, train_file, training_sample_id(probe, cfg.seed)
+            cfg,
+            t,
+            store,
+            backend,
+            train_file,
+            training_sample_id(probe, cfg.seed),
+            view=view,
         )
         if on_probe_done is not None:
             on_probe_done()
@@ -548,21 +624,46 @@ def _delta_p_subset(
     return subset
 
 
-def _base_answers_to_training_prompts(
+def _predicted_dir(
+    store: Store, wid: str, dp_key: str, source: PredictedSource
+) -> Path:
+    """Where the predicted term's hidden states live for one source.
+
+    ``base`` keeps the unqualified directory it has always had, so a checkpoint
+    measured before the source axis existed is still a cache hit.
+    """
+    name = "delta_p_predicted"
+    if source is not PredictedSource.BASE:
+        name = f"{name}_{source.value}"
+    return store.measurement_dir(wid) / name / dp_key
+
+
+def _predicted_answers(
     cfg: TrajectoryConfig,
+    t: int,
     store: Store,
     backend: ExecutionBackend,
     train_file: Path,
     dp_key: str,
+    source: PredictedSource,
 ) -> Path:
-    """M_0's own answers to a training set's prompts, generated once.
+    """The answers DeltaP's predicted term projects, generated once per source.
 
-    Keyed by ``dp_key`` rather than the file name: every trajectory's first
-    step resolves to the same base checkpoint, so a positional name like
-    ``train_step1`` would serve one dataset's answers to every other.
+    Under ``BASE`` these are M_0's, so they are written against the *base*
+    checkpoint's id no matter which ``t`` asked for them: one generation serves
+    the whole trajectory. Under ``CURRENT`` they belong to checkpoint ``t`` and
+    are written against its own id, which is what makes the recomputed series
+    cost a generation pass per checkpoint.
+
+    Keyed by ``dp_key`` rather than by the file name in both cases: every
+    trajectory's first step resolves to the same base checkpoint, so a
+    positional name like ``train_step1`` would serve one dataset's answers to
+    every other.
     """
-    base_wid = get_weights_id(cfg, 0)
-    out = store.measurement(base_wid, f"base_answers_{dp_key}.jsonl")
+    if source is PredictedSource.BASE:
+        t = 0
+    wid = get_weights_id(cfg, t)
+    out = store.measurement(wid, f"{source.value}_answers_{dp_key}.jsonl")
     if out.exists():
         return out
     rows = [
@@ -571,6 +672,6 @@ def _base_answers_to_training_prompts(
     prompts = [{"messages": r["messages"][:-1]} for r in rows]
     with atomic_file(out) as scratch:
         backend.generate_answers(
-            materialize(cfg, 0, store, backend), prompts, scratch, cfg
+            materialize(cfg, t, store, backend), prompts, scratch, cfg
         )
     return out

@@ -22,6 +22,19 @@ class LinearFit:
     intercept: float
     r2: float
 
+    @property
+    def corr(self) -> float:
+        r"""Pearson $r$ between ``x`` and ``y``, signed by the slope.
+
+        A derived view of :attr:`r2` rather than a second statistic: for a
+        simple least-squares fit $r^2 = R^2$ exactly, so the correlation needs
+        no access to the points the fit was made from. It is what the figures
+        annotate where a reader has to compare panels by eye -- it keeps the
+        direction of the relationship visible, and it is linear in the strength
+        of it where $R^2$ is quadratic.
+        """
+        return float(np.copysign(np.sqrt(self.r2), self.slope))
+
     def predict(self, x: ArrayLike) -> NDArray[np.float64]:
         return self.slope * np.asarray(x, dtype=float) + self.intercept
 
@@ -48,11 +61,11 @@ def linear_fit(x: ArrayLike, y: ArrayLike) -> LinearFit:
 
 @dataclass(frozen=True)
 class FitInterval:
-    """A fit plus a bootstrap confidence interval on its slope and $R^2$."""
+    """A fit plus a bootstrap confidence interval on its slope and correlation."""
 
     fit: LinearFit
-    r2_lo: float
-    r2_hi: float
+    corr_lo: float
+    corr_hi: float
     slope_lo: float
     slope_hi: float
     #: Resamples that produced a usable fit. Below ``n_resamples`` when some
@@ -68,21 +81,27 @@ def bootstrap_fit(
     level: float = 0.95,
     seed: int = 0,
 ) -> FitInterval:
-    r"""Fit ``y ~ x`` and bootstrap the uncertainty in its slope and $R^2$.
+    r"""Fit ``y ~ x`` and bootstrap the uncertainty in its slope and correlation.
 
     Points are resampled with replacement as *units*, which for the RQ1 decay
-    curves means resampling the probe datasets: a checkpoint's $R^2$ rests on
-    eight of them, and the question the interval answers is how much of it is
-    the particular eight that were chosen (the "probe-set sampling" row of the
-    noise budget).
+    curves means resampling the probe datasets: a checkpoint's correlation
+    rests on eight of them, and the question the interval answers is how much
+    of it is the particular eight that were chosen (the "probe-set sampling"
+    row of the noise budget).
 
-    Percentile interval rather than normal-theory, because $R^2$ lives on
-    $[0, 1]$ and its sampling distribution against eight points is neither
-    symmetric nor anywhere near Gaussian at the ends.
+    Percentile interval rather than normal-theory, because $r$ lives on
+    $[-1, 1]$ and its sampling distribution against eight points is neither
+    symmetric nor anywhere near Gaussian near the ends.
+
+    The correlation is taken per resample rather than by transforming an
+    interval on $R^2$. The two agree only while every resample fits the same
+    sign: a percentile interval is equivariant under a *monotone* transform,
+    and $r \mapsto r^2$ stops being one as soon as some draw slopes the other
+    way -- exactly the case where the sign is the thing worth reporting.
 
     Resamples where every drawn ``x`` (or every drawn ``y``) is identical are
     dropped rather than scored: a duplicated point carries no fit, and counting
-    it as $R^2 = 0$ would bias the lower bound down by an artifact of the
+    it as $r = 0$ would pull the interval toward zero by an artifact of the
     resampling. :attr:`FitInterval.n_usable` reports how many survived.
     """
     x_arr = np.asarray(x, dtype=float)
@@ -102,17 +121,17 @@ def bootstrap_fit(
 
     usable = (sxx > 0) & (syy > 0)
     slopes = np.where(usable, sxy / np.where(usable, sxx, 1.0), np.nan)
-    r2s = np.where(usable, sxy**2 / np.where(usable, sxx * syy, 1.0), np.nan)
+    corrs = np.where(usable, sxy / np.sqrt(np.where(usable, sxx * syy, 1.0)), np.nan)
     if not usable.any():
         return FitInterval(fit, np.nan, np.nan, np.nan, np.nan, 0)
 
     tail = 100 * (1 - level) / 2
-    r2_lo, r2_hi = np.nanpercentile(r2s, [tail, 100 - tail])
+    corr_lo, corr_hi = np.nanpercentile(corrs, [tail, 100 - tail])
     slope_lo, slope_hi = np.nanpercentile(slopes, [tail, 100 - tail])
     return FitInterval(
         fit=fit,
-        r2_lo=float(r2_lo),
-        r2_hi=float(r2_hi),
+        corr_lo=float(corr_lo),
+        corr_hi=float(corr_hi),
         slope_lo=float(slope_lo),
         slope_hi=float(slope_hi),
         n_usable=int(usable.sum()),

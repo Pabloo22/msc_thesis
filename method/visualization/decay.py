@@ -7,10 +7,10 @@ module produces both rather than one flattened table:
 ``(trunk, t, probe)``: the projection difference the probe dataset had at
 $M_0$, the one it has at $M_t$, and the behaviour change fine-tuning on it
 actually produced. Eight such rows are one scatter panel, and fitting them
-yields **one** $R^2$.
+yields **one** correlation.
 
 *Level 2 -- across checkpoints.* :func:`fit_frame` collapses each of those
-scatters to a single row: its $R^2$ and slope with bootstrap intervals, the
+scatters to a single row: its correlation and slope with bootstrap intervals, the
 noise ceiling those eight points could not have exceeded, and the checkpoint's
 own drift and behaviour level. This is the frame the headline curve and the
 mechanism regression are drawn from, and its ``n`` counts **checkpoints, not
@@ -46,12 +46,49 @@ logger = logging.getLogger(__name__)
 TRUNK_ROLE = "trunk"
 BRANCH_ROLE = "branch"
 
-#: Suffixes distinguishing the two projection differences every figure pairs:
-#: ``p0`` is $\Delta P_0$, computed once against $M_0$ and never recomputed --
-#: the quantity whose staleness is RQ1 -- and ``pt`` is $\Delta P_t$, the same
-#: dataset re-measured at the checkpoint it is about to be trained from.
-SERIES = ("p0", "pt")
-SERIES_LABELS = {"p0": r"$\Delta P_0$", "pt": r"$\Delta P_t$"}
+#: The projection differences the figures pair, in the order they form a
+#: ladder: each refreshes one more thing at $M_t$ than the one before it.
+#:
+#: The notation carries one mark per choice. A **hat** says the predicted term
+#: is *approximated* by $M_0$'s answers rather than being what the checkpoint
+#: would really say; a $v_0$ **superscript** says the axis is held at the base
+#: model's persona vector; the **subscript** is the checkpoint the activations
+#: come from. So $\Delta P_t$ -- unmarked -- is the projection difference the
+#: update actually faces, and everything else is an approximation of it.
+#:
+#: ``p0``
+#:     $\Delta P_0$, everything read at $M_0$. This is the quantity the
+#:     persona-vectors paper computes, and it needs no hat: at $t = 0$ the
+#:     current model *is* $M_0$, so nothing about it is approximated.
+#: ``pv0``
+#:     $\Delta \hat{P}_t^{v_0}$, the checkpoint's activations against the base
+#:     model's axis. Free to measure -- the activations do not depend on the
+#:     axis -- and it is what separates the persona direction rotating from the
+#:     representation drifting.
+#: ``pt``
+#:     $\Delta \hat{P}_t$, axis and encoder current, answers still $M_0$'s.
+#:     The quantity whose staleness is RQ1.
+#: ``p``
+#:     $\Delta P_t$, nothing approximated.
+#:
+#: Only the middle two need a family of their own to measure, so their columns
+#: are NaN wherever that family did not run -- which every consumer here treats
+#: as "not measured", never as zero.
+SERIES = ("p0", "pv0", "pt", "p")
+SERIES_LABELS = {
+    "p0": r"$\Delta P_0$",
+    "pv0": r"$\Delta \hat{P}_t^{v_0}$",
+    "pt": r"$\Delta \hat{P}_t$",
+    "p": r"$\Delta P_t$",
+}
+
+#: The ``decay_frame`` column each series is fitted from.
+SERIES_COLUMNS = {
+    "p0": "delta_p_0",
+    "pv0": "delta_p_v0",
+    "pt": "delta_p_t",
+    "p": "delta_p",
+}
 
 #: $z_t$ components, in the order the proposal introduces them.
 Z_COMPONENTS = ("p", "q", "rho", "r")
@@ -197,8 +234,8 @@ def validation_frame(
     that fine-tune produced. Reproducing Figure 8 of the persona-vectors paper
     over these 24 points is the gate the rest of the design hangs on.
 
-    Kept apart from :func:`decay_frame` deliberately. $R^2$ over 24 datasets is
-    not comparable with $R^2$ over the 8 probes -- correlation estimates are
+    Kept apart from :func:`decay_frame` deliberately. A correlation over 24
+    datasets is not comparable with one over the 8 probes -- such estimates are
     sensitive to range restriction and to ``n`` -- so reporting a fall from one
     to the other would manufacture a decay that is pure artifact.
     """
@@ -237,14 +274,53 @@ _VALIDATION_COLUMNS = [
 
 _DECAY_COLUMNS = [
     "trait", "trunk", "seed", "t", "probe", "steps_since_realignment",
-    "delta_p_0", "delta_p_t", "b_t", "b_next", "delta_b",
+    "delta_p_0", "delta_p_v0", "delta_p_t", "delta_p", "b_t", "b_next", "delta_b",
     "se_b_t", "se_b_next", "se_delta_b", *Z_COMPONENTS,
 ]
+
+
+#: Which ``StepRecord`` field each re-measured series is read from, and the
+#: ``decay_frame`` column it lands in. A family measuring one of these views
+#: records only that view, so its ``probes`` is empty by design and reading the
+#: wrong field would give a trunk whose probes all look to have failed.
+REMEASURED_FIELDS = {"probes_v0": "delta_p_v0", "probes_current": "delta_p"}
+
+
+def _remeasured_probes(
+    runs: Iterable[Run], *, stat: str = "mean"
+) -> dict[str, dict[tuple[str, str, int], tuple[Mapping[str, float], ...]]]:
+    r"""Re-measured probe series per column, keyed as :func:`trunk_series` is.
+
+    Kept out of :func:`trunk_series` even though it indexes on the same key,
+    because a re-measurement run *is* the decay trunk -- same model, same seed,
+    same steps, same adapters -- and feeding both through one index would trip
+    its duplicate-trunk guard on runs that agree by construction.
+    """
+    index: dict[str, dict[tuple[str, str, int], tuple[Mapping[str, float], ...]]] = {
+        column: {} for column in REMEASURED_FIELDS.values()
+    }
+    for run in runs:
+        if run.label("role") != TRUNK_ROLE:
+            continue
+        key = (run.trait, run.label("trunk"), run.seed)
+        for field, column in REMEASURED_FIELDS.items():
+            series = tuple(
+                {
+                    dataset: summary[stat]
+                    for dataset, summary in getattr(step, field).items()
+                    if stat in summary
+                }
+                for step in run.trajectory.steps
+            )
+            if any(series):
+                index[column][key] = series
+    return index
 
 
 def decay_frame(
     decay: Collection,
     validation: Collection | None = None,
+    remeasured: Iterable[Collection] = (),
     *,
     stat: str = "mean",
     source: str = "base",
@@ -253,7 +329,7 @@ def decay_frame(
 
     Each row pairs a projection difference with the behaviour change it was
     meant to predict, so the ``K`` rows sharing a ``(trunk, t)`` are one scatter
-    panel of section 9's plot 2 and one fitted $R^2$ of its plot 3.
+    panel of section 9's plot 2 and one fitted correlation of its plot 3.
 
     Both projection differences travel together. ``delta_p_0`` is read from the
     trunk's own $t = 0$ probe measurement and ``delta_p_t`` from checkpoint
@@ -267,6 +343,17 @@ def decay_frame(
     expects -- "the ``t = 0`` column is identical across rows because $M_0$ is
     shared".
 
+    ``remeasured`` supplies the other two, ``delta_p_v0`` and ``delta_p``: the
+    same probes at the same checkpoints, read against the base model's axis
+    (:func:`method.experiments.build_exp2_axis_configs`) and with the
+    checkpoint answering the prompts itself
+    (:func:`method.experiments.build_exp2_regen_configs`). They are joined in
+    rather than read from the trunk because they are *re-measurements* of
+    trunks that already exist, each paid for by its own family. A row no such
+    family covered keeps a NaN, which is the distinction the columns have to
+    preserve -- "not measured here" is not "measured and small" -- so
+    :func:`fit_frame` declines to fit a series it cannot see.
+
     Rows whose branch never ran are dropped rather than carried as NaN: a
     partly-finished fan should narrow the scatter it can draw, not poison the
     variance of the one it can. The reseed trunk therefore contributes no rows
@@ -276,10 +363,17 @@ def decay_frame(
     trunks = trunk_series(decay.runs, stat=stat, source=source)
     branches = _branch_endpoints(decay.runs)
     fan_0 = _validation_endpoints(validation.runs if validation else [])
+    recomputed = _remeasured_probes(
+        [run for collection in remeasured for run in collection.runs], stat=stat
+    )
 
     rows = []
     for (trait, trunk, seed), series in sorted(trunks.items()):
         baseline = series.delta_p_0
+        elsewhere = {
+            column: index.get((trait, trunk, seed), ())
+            for column, index in recomputed.items()
+        }
         for t, (probes, since) in enumerate(zip(series.probes, series.since)):
             for probe, delta_p_t in sorted(probes.items()):
                 endpoint = branches.get((trait, trunk, seed, t, probe)) or (
@@ -300,6 +394,14 @@ def decay_frame(
                         "steps_since_realignment": since,
                         "delta_p_0": baseline[probe],
                         "delta_p_t": delta_p_t,
+                        **{
+                            column: (
+                                series_t[t].get(probe, np.nan)
+                                if t < len(series_t)
+                                else np.nan
+                            )
+                            for column, series_t in elsewhere.items()
+                        },
                         "b_t": b_t,
                         "b_next": endpoint.final_behavior(),
                         "delta_b": endpoint.final_behavior() - b_t,
@@ -351,15 +453,23 @@ def fit_frame(
 ) -> pd.DataFrame:
     r"""Collapse each ``(trunk, t)`` scatter to one row: its fit and its ceiling.
 
-    Both series are fitted -- $\Delta b$ against the frozen $\Delta P_0$ and
-    against the recomputed $\Delta P_t$ -- because section 9 reads them against
-    each other: $\Delta P_0$ falling *while* $\Delta P_t$ holds is staleness,
-    and both falling together is signal running out.
+    Every series in :data:`SERIES` is fitted, because section 9 reads them
+    against each other: $\Delta P_0$ falling *while* $\Delta P_t$ holds is
+    staleness, and both falling together is signal running out. $\Delta P$
+    settles what is left over -- if refreshing the prediction as well as the
+    axis does not recover the fit, what the frozen series lost was not a stale
+    prediction. It is fitted only where it was measured (see
+    :func:`_series_fit`).
 
-    Slope is reported beside $R^2$ rather than folded into it. Staleness can
-    appear as attenuation -- the ordering across probe datasets stays right
-    while the magnitude shrinks -- which leaves $R^2$ high and the slope low,
-    and the two imply different fixes.
+    Slope is reported beside the correlation rather than folded into it.
+    Staleness can appear as attenuation -- the ordering across probe datasets
+    stays right while the magnitude shrinks -- which leaves $r$ high and the
+    slope low, and the two imply different fixes.
+
+    The goodness of fit is carried as the signed correlation, which is what
+    every figure of section 9 plots. ``r2_max`` stays in $R^2$ units because it
+    is a variance ratio and is not drawn on any of them; take its square root
+    before comparing it against a correlation (see ``docs/r2_max.md``).
 
     ``sigma_seed`` is the fine-tune seed noise from :mod:`method.seed_noise`.
     Left at zero the ceiling accounts for eval noise only and is therefore an
@@ -385,26 +495,64 @@ def fit_frame(
             "r2_max": ceiling,
         }
         for series in SERIES:
-            column = "delta_p_0" if series == "p0" else "delta_p_t"
-            interval = bootstrap_fit(
-                group[column],
-                group["delta_b"],
-                n_resamples=n_resamples,
-                level=level,
-                seed=seed,
-            )
             record.update(
-                {
-                    f"r2_{series}": interval.fit.r2,
-                    f"r2_{series}_lo": interval.r2_lo,
-                    f"r2_{series}_hi": interval.r2_hi,
-                    f"slope_{series}": interval.fit.slope,
-                    f"slope_{series}_lo": interval.slope_lo,
-                    f"slope_{series}_hi": interval.slope_hi,
-                }
+                _series_fit(
+                    series,
+                    group,
+                    n_resamples=n_resamples,
+                    level=level,
+                    seed=seed,
+                )
             )
         records.append(record)
     return pd.DataFrame(records, columns=_FIT_COLUMNS)
+
+
+def _series_fit(
+    series: str,
+    group: pd.DataFrame,
+    *,
+    n_resamples: int,
+    level: float,
+    seed: int,
+) -> dict[str, float]:
+    r"""One series' fit over one scatter, or all-NaN where it was not measured.
+
+    $\Delta P$ is measured on one trunk only, so most scatters have no column
+    to fit. Returning NaN keeps the frame's shape fixed -- every figure indexes
+    the same columns whichever families are on disk -- while leaving the
+    absence visible: a missing measurement plots as a gap, where a zero would
+    plot as a fit that found nothing.
+
+    An incomplete column is treated the same way as an absent one. A fit over
+    the subset of probes that happened to be measured would be a correlation
+    over a different probe set than the one beside it, which is exactly the
+    comparison the whole figure rests on.
+    """
+    quantities = ("corr", "slope")
+    column = SERIES_COLUMNS[series]
+    values = group.get(column)
+    if values is None or values.isna().any():
+        return {
+            f"{quantity}_{series}{suffix}": float("nan")
+            for quantity in quantities
+            for suffix in ("", "_lo", "_hi")
+        }
+    interval = bootstrap_fit(
+        values,
+        group["delta_b"],
+        n_resamples=n_resamples,
+        level=level,
+        seed=seed,
+    )
+    return {
+        f"corr_{series}": interval.fit.corr,
+        f"corr_{series}_lo": interval.corr_lo,
+        f"corr_{series}_hi": interval.corr_hi,
+        f"slope_{series}": interval.fit.slope,
+        f"slope_{series}_lo": interval.slope_lo,
+        f"slope_{series}_hi": interval.slope_hi,
+    }
 
 
 _FIT_COLUMNS = [
@@ -412,7 +560,7 @@ _FIT_COLUMNS = [
     *Z_COMPONENTS, "var_observed", "var_noise", "r2_max",
     *[
         f"{quantity}_{series}{suffix}"
-        for quantity in ("r2", "slope")
+        for quantity in ("corr", "slope")
         for series in SERIES
         for suffix in ("", "_lo", "_hi")
     ],
@@ -422,7 +570,7 @@ _FIT_COLUMNS = [
 def mechanism_frame(fits: pd.DataFrame) -> pd.DataFrame:
     r"""One row per *distinct* checkpoint, for section 9's plot 4.
 
-    The regression of $R^2$ on drift, on behaviour level and on
+    The regression of the correlation on drift, on behaviour level and on
     ``steps_since_realignment`` counts checkpoints, not datasets, so ``n`` is
     ``1 shared t=0 + 3 trunks x 6 = 19`` rather than 19 x 8. Dense sampling is
     what buys those rows: measuring only ``t`` in ``{0, 2, 4, 6}`` would give 10.
@@ -464,7 +612,7 @@ def realignment_pairs(
     The second clause is what excludes trunk C. Every one of its drivers is
     Normal, so the first clause alone would call all six of its steps
     re-alignments -- but a step that re-aligns a model which was never
-    misaligned isolates nothing, and reporting the resulting $\Delta R^2$ beside
+    misaligned isolates nothing, and reporting the resulting $\Delta r$ beside
     A's and B's would invite reading noise as a null result.
     """
     since = experiments.steps_since_realignment(drivers)
@@ -478,17 +626,19 @@ def realignment_pairs(
 def phase_contrast_frame(
     fits: pd.DataFrame, trunk_drivers: Mapping[str, Sequence[StepConfig]] | None = None
 ) -> pd.DataFrame:
-    r"""Section 9's plot 4b: $R^2$ immediately before and after each re-alignment.
+    r"""Section 9's plot 4b: the fit immediately before and after each re-alignment.
 
     Trunk and probe set are held fixed within a pair and exactly one known
     driver separates the two checkpoints, so the difference isolates what a
     single re-alignment step does to predictive accuracy -- rather than the
     trend over ``t``, which confounds it with everything else that accumulated.
 
-    Both series are carried. $\Delta P_0$ answers "does re-aligning the model
+    Every series is carried. $\Delta P_0$ answers "does re-aligning the model
     restore the *stale* probe's accuracy", which is the emergent-re-alignment
-    question; $\Delta P_t$ is the control -- if it moves by the same amount,
-    what changed is the scatter, not the staleness.
+    question; $\Delta P_t$ and $\Delta P$ are the controls -- if they move by
+    the same amount, what changed is the scatter, not the staleness. A series
+    that was not measured on a trunk carries NaN through to its bars, which go
+    undrawn rather than reading as no change.
     """
     drivers = experiments.EXP2_TRUNKS if trunk_drivers is None else trunk_drivers
     if fits.empty:
@@ -514,10 +664,10 @@ def phase_contrast_frame(
                     "pair": f"{trunk.upper()}: {before}$\\to${after}",
                 }
                 for series in SERIES:
-                    row[f"r2_{series}_before"] = float(lo[f"r2_{series}"])
-                    row[f"r2_{series}_after"] = float(hi[f"r2_{series}"])
-                    row[f"delta_r2_{series}"] = float(
-                        hi[f"r2_{series}"] - lo[f"r2_{series}"]
+                    row[f"corr_{series}_before"] = float(lo[f"corr_{series}"])
+                    row[f"corr_{series}_after"] = float(hi[f"corr_{series}"])
+                    row[f"delta_corr_{series}"] = float(
+                        hi[f"corr_{series}"] - lo[f"corr_{series}"]
                     )
                 rows.append(row)
     return pd.DataFrame(rows, columns=_PHASE_COLUMNS)
@@ -527,7 +677,9 @@ _PHASE_COLUMNS = [
     "trait", "trunk", "t_before", "t_after", "pair",
     *[
         f"{prefix}_{series}{suffix}"
-        for prefix, suffix in (("r2", "_before"), ("r2", "_after"), ("delta_r2", ""))
+        for prefix, suffix in (
+            ("corr", "_before"), ("corr", "_after"), ("delta_corr", "")
+        )
         for series in SERIES
     ],
 ]

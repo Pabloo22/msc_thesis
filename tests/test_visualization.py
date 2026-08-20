@@ -17,7 +17,15 @@ import pytest
 from matplotlib.collections import PathCollection
 
 from method import experiments
-from method.visualization import figures, labels, make_plots, schema, style, synthetic
+from method.visualization import (
+    decay,
+    figures,
+    labels,
+    make_plots,
+    schema,
+    style,
+    synthetic,
+)
 from method.visualization.collect import Collection
 from method.visualization.demo import build_and_save
 from method.visualization.labels import display_dataset_name
@@ -78,6 +86,20 @@ class TestLinearFit:
     def test_predict_matches_slope_intercept(self) -> None:
         fit = linear_fit([0.0, 1.0], [0.0, 2.0])
         np.testing.assert_allclose(fit.predict([0.0, 5.0]), [0.0, 10.0], atol=1e-12)
+
+    def test_correlation_matches_numpy_and_keeps_the_slope_sign(self) -> None:
+        """The figures annotate r, not R^2; a sign dropped there would read as
+        a probe set ordered the wrong way round."""
+        rng = np.random.default_rng(0)
+        x = np.arange(30, dtype=float)
+        for direction in (1.0, -1.0):
+            y = direction * 3.0 * x + rng.normal(0, 20, size=30)
+            fit = linear_fit(x, y)
+            assert fit.corr == pytest.approx(np.corrcoef(x, y)[0, 1])
+            assert np.sign(fit.corr) == direction
+
+    def test_a_degenerate_fit_has_no_correlation(self) -> None:
+        assert linear_fit([1.0, 1.0, 1.0], [4.0, 6.0, 5.0]).corr == 0.0
 
 
 class TestStackAndTrim:
@@ -706,7 +728,7 @@ class TestDiversityBar:
 def _decay_rows(trunks=("a", "b"), checkpoints=range(3), n_probes=4) -> pd.DataFrame:
     """A decay frame in the shape :mod:`method.visualization.decay` emits."""
     rng = np.random.default_rng(0)
-    return pd.DataFrame(
+    rows = pd.DataFrame(
         [
             {
                 "trunk": trunk,
@@ -715,13 +737,38 @@ def _decay_rows(trunks=("a", "b"), checkpoints=range(3), n_probes=4) -> pd.DataF
                 "steps_since_realignment": t % 2,
                 "delta_p_0": float(i),
                 "delta_p_t": float(i) + t,
+                "b_t": 40.0 + t,
                 "delta_b": 2.0 * i + rng.normal(0, 0.1),
+                "se_b_next": 0.3,
                 "se_delta_b": 0.4,
             }
             for trunk in trunks
             for t in checkpoints
             for i in range(n_probes)
         ]
+    )
+    # Derived rather than drawn, so the fixture keeps the one relation the
+    # figure relies on: b_t is constant within a panel, so a fit against
+    # b_next is the fit against delta_b shifted.
+    return rows.assign(b_next=rows["b_t"] + rows["delta_b"])
+
+
+def _with_recomputed(
+    rows: pd.DataFrame, trunks=("a",), columns=("delta_p",)
+) -> pd.DataFrame:
+    r"""``rows`` with re-measured projection columns on ``trunks`` alone.
+
+    Partial by construction: each re-measured series is paid for per trunk, so
+    a grid that cannot mix a re-measured trunk with un-measured ones cannot
+    draw the real figure.
+    """
+    return rows.assign(
+        **{
+            column: np.where(
+                rows["trunk"].isin(trunks), rows["delta_p_0"] + 0.5 * (i + 1), np.nan
+            )
+            for i, column in enumerate(columns)
+        }
     )
 
 
@@ -737,12 +784,12 @@ def _fits(trunks=("a", "b"), checkpoints=range(3)) -> pd.DataFrame:
                 "r": 30.0 + t,
                 "b_t": 40.0 + t,
                 "steps_since_realignment": t % 2,
-                "r2_p0": 0.8 - 0.1 * t,
-                "r2_p0_lo": 0.6 - 0.1 * t,
-                "r2_p0_hi": 0.9,
-                "r2_pt": 0.8,
-                "r2_pt_lo": 0.7,
-                "r2_pt_hi": 0.9,
+                "corr_p0": 0.8 - 0.1 * t,
+                "corr_p0_lo": 0.6 - 0.1 * t,
+                "corr_p0_hi": 0.9,
+                "corr_pt": 0.8,
+                "corr_pt_lo": 0.7,
+                "corr_pt_hi": 0.9,
                 "slope_p0": 2.0 - 0.2 * t,
                 "slope_p0_lo": 1.0,
                 "slope_p0_hi": 3.0,
@@ -917,7 +964,7 @@ class TestScatterValidation:
         fig = figures.scatter_validation(_validation_rows())
         for ax in fig.axes:
             annotations = [t.get_text() for t in ax.texts]
-            assert any(r"$R^2$" in a and "slope" in a for a in annotations)
+            assert any(r"$r$" in a and "slope" in a for a in annotations)
             assert any("n$ = 3 datasets" in a for a in annotations)
 
     def test_a_trait_with_no_runs_is_marked_not_dropped(self) -> None:
@@ -941,18 +988,86 @@ class TestScatterValidation:
         assert len(zeroed.axes[0].collections) == len(dropped.axes[0].collections)
 
 
+#: What the judge's scale runs between, as the figures' own constants must
+#: agree it does.
+BEHAVIOUR_FLOOR, BEHAVIOUR_CEILING = 0.0, 100.0
+
+
 class TestDecayScatterGrid:
     def test_one_panel_per_trunk_and_checkpoint(self) -> None:
         fig = figures.decay_scatter_grid(_decay_rows())
         assert len(fig.axes) == 2 * 3
 
-    def test_every_panel_holds_both_series_and_both_r2_values(self) -> None:
+    def test_every_panel_holds_both_series_and_both_correlations(self) -> None:
         fig = figures.decay_scatter_grid(_decay_rows())
         ax = fig.axes[0]
         scatters = [c for c in ax.collections if isinstance(c, PathCollection)]
         assert len(scatters) == 2  # Delta P_0 and Delta P_t
         annotations = " ".join(t.get_text() for t in ax.texts)
-        assert r"\Delta P_0" in annotations and r"\Delta P_t" in annotations
+        assert r"$r(\Delta P_0)$" in annotations
+        assert r"$r(\Delta \hat{P}_t)$" in annotations
+
+    def test_a_measured_panel_gains_the_recomputed_series(self) -> None:
+        rows = _with_recomputed(_decay_rows())
+        fig = figures.decay_scatter_grid(rows, trunks=["a"])
+        ax = fig.axes[0]
+        scatters = [c for c in ax.collections if isinstance(c, PathCollection)]
+        assert len(scatters) == 3
+        assert r"$r(\Delta P_t)$" in " ".join(t.get_text() for t in ax.texts)
+
+    def test_all_four_series_draw_when_all_are_measured(self) -> None:
+        rows = _with_recomputed(
+            _decay_rows(), columns=("delta_p_v0", "delta_p")
+        )
+        fig = figures.decay_scatter_grid(rows, trunks=["a"])
+        scatters = [
+            c for c in fig.axes[0].collections if isinstance(c, PathCollection)
+        ]
+        assert len(scatters) == 4
+        keys = [t.get_text() for t in fig.legends[0].get_texts()]
+        for label in decay.SERIES_LABELS.values():
+            assert any(k.startswith(label) for k in keys), label
+
+    def test_an_unmeasured_panel_keeps_the_two_it_has(self) -> None:
+        """One grid mixes the trunk that was re-measured with the ones that
+        were not, so a panel draws what it has rather than all or nothing."""
+        rows = _with_recomputed(_decay_rows())
+        fig = figures.decay_scatter_grid(rows, trunks=["a", "b"])
+        panels = [
+            len([c for c in ax.collections if isinstance(c, PathCollection)])
+            for ax in fig.axes
+        ]
+        assert set(panels) == {2, 3}
+
+    def test_a_series_no_panel_drew_is_kept_out_of_the_legend(self) -> None:
+        """A key for a line nobody drew reads as a line that came out flat."""
+        (plain,) = figures.decay_scatter_grid(_decay_rows()).legends
+        (mixed,) = figures.decay_scatter_grid(
+            _with_recomputed(_decay_rows())
+        ).legends
+        def keys(legend):
+            return [t.get_text() for t in legend.get_texts()]
+
+        assert not any(t.startswith(r"$\Delta P_t$") for t in keys(plain))
+        assert any(t.startswith(r"$\Delta P_t$") for t in keys(mixed))
+
+    def test_the_panel_plots_the_raw_level_against_the_one_it_started_from(
+        self,
+    ) -> None:
+        """Delta b hides where on the judge's scale a step landed; the raw
+        b_{t+1} against a rule at b_t shows both that and the size of the
+        move."""
+        rows = _decay_rows()
+        fig = figures.decay_scatter_grid(rows)
+        panel = rows[(rows["trunk"] == "a") & (rows["t"] == 0)]
+        ax = fig.axes[0]
+        drawn = np.concatenate(
+            [c.get_offsets()[:, 1] for c in ax.collections
+             if isinstance(c, PathCollection)]
+        )
+        assert set(np.round(drawn, 6)) == set(np.round(panel["b_next"], 6))
+        assert [line.get_ydata()[0] for line in ax.lines
+                if line.get_color() == style.INK] == [panel["b_t"].iloc[0]]
 
     def test_axes_are_shared_so_slopes_are_comparable(self) -> None:
         """Per-panel scales would let a flattening slope and a shrinking
@@ -999,36 +1114,93 @@ class TestDecayScatterGrid:
             "Evil\nTrunk b",
         ]
 
-    def test_the_traits_are_not_put_on_one_scale(self) -> None:
-        """Delta P and Delta b are read against a different persona vector and
-        a different judge per trait, so one scale would compare numbers that
-        are not the same number -- while within a trait it still must."""
+    def test_delta_p_is_not_put_on_one_scale_across_traits(self) -> None:
+        """Delta P is read against a different persona vector per trait, so one
+        scale would compare numbers that are not the same number -- while
+        within a trait it still must."""
         fig = figures.decay_scatter_grid(
-            _traited(_decay_rows(), scale="delta_b"),
+            _traited(_decay_rows(), scale="delta_p_0"),
             traits=["sycophantic", "evil"],
         )
-        assert len({ax.get_ylim() for ax in fig.axes}) == 2
+        assert len({ax.get_xlim() for ax in fig.axes}) == 2
+
+    def test_behaviour_is_always_drawn_on_the_whole_judge_scale(self) -> None:
+        """Unlike Delta P, b is the same 0-100 judge average in every panel, so
+        a mark's height means one thing across the whole figure -- and a trunk
+        that stayed near the floor does not fill its panel the way one that
+        climbed to the ceiling does."""
+        rows = _traited(_decay_rows(), scale="b_next")
+        fig = figures.decay_scatter_grid(rows, traits=["sycophantic", "evil"])
+        assert {ax.get_ylim() for ax in fig.axes} == {figures.BEHAVIOUR_LIMITS}
+        assert all(
+            tuple(ax.get_yticks()) == figures.BEHAVIOUR_TICKS for ax in fig.axes
+        )
+
+    def test_the_scale_is_padded_so_a_mark_at_zero_is_drawn_whole(self) -> None:
+        """A probe scoring 0 is ordinary -- an aligned model on an evil judge --
+        and a mark centred on the spine would be sliced in half by it, which
+        reads as a different mark rather than as a point at the floor."""
+        low, high = figures.BEHAVIOUR_LIMITS
+        assert low < BEHAVIOUR_FLOOR and high > BEHAVIOUR_CEILING
+        # The ticks still say what the judge's range actually is.
+        assert figures.BEHAVIOUR_TICKS[0] == BEHAVIOUR_FLOOR
+        assert figures.BEHAVIOUR_TICKS[-1] == BEHAVIOUR_CEILING
 
 
 class TestHeadlineCurves:
-    def test_one_row_each_for_r2_and_slope_with_both_series_overlaid(self) -> None:
+    def test_one_row_each_for_corr_and_slope_with_both_series_overlaid(
+        self,
+    ) -> None:
         fig = figures.headline_curves(_fits())
         assert len(fig.axes) == 2  # no trait facet: one column, two rows
         ylabels = [ax.get_ylabel() for ax in fig.axes]
-        assert any("R^2" in label for label in ylabels)
+        assert any("Correlation" in label for label in ylabels)
         assert any("slope" in label for label in ylabels)
-        # 2 trunks x (p0 + pt) drawn on the one shared r2 axes.
+        # 2 trunks x (p0 + pt) drawn on the one shared correlation axes.
         assert len(fig.axes[0].lines) == 4
 
-    def test_r2_panels_are_bounded_to_the_unit_interval(self) -> None:
+    def test_all_positive_correlations_keep_the_unit_interval(self) -> None:
+        """Fixing every panel at the full [-1, 1] would spend half the height
+        on a sign the data never takes, and the decay this figure is for
+        happens inside the top half."""
         fig = figures.headline_curves(_fits())
         low, high = fig.axes[0].get_ylim()
-        assert low <= 0 and high <= 1.05
+        assert -0.1 < low <= 0 and 1.0 <= high <= 1.05
+
+    def test_a_negative_correlation_widens_the_row_to_the_full_range(
+        self,
+    ) -> None:
+        """A sign is worth an axis: clipping a series that goes negative would
+        hide the one thing correlation reports that R^2 cannot."""
+        fits = _fits()
+        fits.loc[fits["t"] == 2, "corr_p0"] = -0.3
+        fig = figures.headline_curves(fits)
+        low, _ = fig.axes[0].get_ylim()
+        assert low <= -1.0
+        # ...and zero becomes a level worth drawing, which on [0, 1] it is not.
+        assert any(
+            line.get_ydata()[0] == 0 for line in fig.axes[0].lines
+            if len(line.get_ydata()) and line.get_color() == style.BASELINE
+        )
 
     def test_p0_is_solid_and_pt_is_dashed(self) -> None:
         fig = figures.headline_curves(_fits(trunks=("a",)))
         linestyles = {line.get_linestyle() for line in fig.axes[0].lines}
         assert len(linestyles) == 2
+
+    def test_a_third_series_gets_a_style_and_a_legend_key_of_its_own(self) -> None:
+        r"""Colour already carries the trunk, so $\Delta P$ has to be
+        distinguishable from the two frozen series by line style alone."""
+        fits = _fits(trunks=("a",)).assign(
+            corr_p=0.9, corr_p_lo=0.85, corr_p_hi=0.95,
+            slope_p=2.2, slope_p_lo=2.0, slope_p_hi=2.4,
+        )
+        fig = figures.headline_curves(
+            fits, series=["p0", "pt", "p"], series_labels=decay.SERIES_LABELS
+        )
+        assert len({line.get_linestyle() for line in fig.axes[0].lines}) == 3
+        keys = [t.get_text() for t in fig.legends[0].get_texts()]
+        assert decay.SERIES_LABELS["p"] in keys
 
     def test_the_r2_max_column_is_no_longer_needed_to_plot(self) -> None:
         """The noise ceiling is still computed by fit_frame, but this figure
@@ -1042,7 +1214,7 @@ class TestHeadlineCurves:
         legend = fig.legends[0]
         assert len([t for t in legend.get_texts() if "Trunk" in t.get_text()]) == 1
 
-    def test_one_column_per_trait_two_rows_for_r2_and_slope(self) -> None:
+    def test_one_column_per_trait_two_rows_for_corr_and_slope(self) -> None:
         fig = figures.headline_curves(
             _traited(_fits()),
             traits=["sycophantic", "evil"],
@@ -1052,7 +1224,7 @@ class TestHeadlineCurves:
         titles = [ax.get_title() for ax in fig.axes if ax.get_title()]
         assert titles == ["Sycophancy", "Evil"]
         ylabels = [ax.get_ylabel() for ax in fig.axes if ax.get_ylabel()]
-        assert any("R^2" in label for label in ylabels)
+        assert any("Correlation" in label for label in ylabels)
         assert any("slope" in label for label in ylabels)
 
     def test_the_slope_is_not_shared_across_traits(self) -> None:
@@ -1121,7 +1293,7 @@ class TestMechanismGrid:
         ]
         assert counts == [["$n$ = 6 checkpoints"], ["$n$ = 3 checkpoints"]]
 
-    def test_r2_is_the_one_quantity_the_traits_do_share(self) -> None:
+    def test_the_correlation_is_the_one_quantity_the_traits_do_share(self) -> None:
         fig = figures.mechanism_grid(
             _traited(_fits(), scale="rho"),
             self.PREDICTORS,
@@ -1138,13 +1310,17 @@ class TestPhaseContrast:
             [
                 {
                     "trunk": "a", "t_before": 1, "t_after": 2, "pair": "A: 1-2",
-                    "r2_p0_before": 0.8, "r2_p0_after": 0.4, "delta_r2_p0": -0.4,
-                    "r2_pt_before": 0.8, "r2_pt_after": 0.75, "delta_r2_pt": -0.05,
+                    "corr_p0_before": 0.8, "corr_p0_after": 0.4,
+                    "delta_corr_p0": -0.4,
+                    "corr_pt_before": 0.8, "corr_pt_after": 0.75,
+                    "delta_corr_pt": -0.05,
                 },
                 {
                     "trunk": "b", "t_before": 2, "t_after": 3, "pair": "B: 2-3",
-                    "r2_p0_before": 0.6, "r2_p0_after": 0.5, "delta_r2_p0": -0.1,
-                    "r2_pt_before": 0.6, "r2_pt_after": 0.6, "delta_r2_pt": 0.0,
+                    "corr_p0_before": 0.6, "corr_p0_after": 0.5,
+                    "delta_corr_p0": -0.1,
+                    "corr_pt_before": 0.6, "corr_pt_after": 0.6,
+                    "delta_corr_pt": 0.0,
                 },
             ]
         )
@@ -1154,6 +1330,37 @@ class TestPhaseContrast:
         ax = fig.axes[0]
         # 2 steps x 2 series (p0, pt) x (before + after).
         assert len(ax.patches) == 2 * 2 * 2
+
+    def test_a_third_series_adds_a_pair_and_narrows_the_bars(self) -> None:
+        r"""The group has a fixed budget of the step's width, so $\Delta P$
+        joins by making every bar narrower rather than by colliding with the
+        neighbouring step."""
+        pairs = self._pairs().assign(
+            corr_p_before=0.8, corr_p_after=0.7, delta_corr_p=-0.1
+        )
+        fig = figures.phase_contrast(pairs, series=["p0", "pt", "p"])
+        ax = fig.axes[0]
+        assert len(ax.patches) == 2 * 3 * 2
+        widths = {round(p.get_width(), 6) for p in ax.patches}
+        narrow = {
+            round(p.get_width(), 6)
+            for p in figures.phase_contrast(self._pairs()).axes[0].patches
+        }
+        assert max(widths) < max(narrow)
+        centres = sorted(p.get_x() + p.get_width() / 2 for p in ax.patches)
+        assert max(centres) - min(centres) < len(self._pairs()) - 1 + 1.0
+
+    def test_a_series_this_trunk_lacks_leaves_a_gap(self) -> None:
+        """The recomputed series is measured on one trunk; zero-height bars on
+        the others would read as "no change" rather than as "not measured"."""
+        pairs = self._pairs().assign(
+            corr_p_before=[0.8, np.nan],
+            corr_p_after=[0.7, np.nan],
+            delta_corr_p=[-0.1, np.nan],
+        )
+        fig = figures.phase_contrast(pairs, series=["p0", "pt", "p"])
+        # Both steps keep their two frozen pairs; only one gains a third.
+        assert len(fig.axes[0].patches) == 2 * 2 * 2 + 2
 
     def test_shows_levels_as_well_as_the_difference(self) -> None:
         """A drop from 0.9 to 0.6 and one from 0.4 to 0.1 are the same
@@ -1434,6 +1641,26 @@ class TestExp2Driver:
     def test_an_unknown_trunk_still_appears(self) -> None:
         frame = pd.DataFrame({"trunk": ["z", "a"]})
         assert make_plots._present_trunks(frame) == ["a", "z"]
+
+    def test_an_unmeasured_series_is_kept_out_of_the_figures(self) -> None:
+        r"""$\Delta P$ is measured on one trunk, so on a run of the decay
+        family alone its column is entirely NaN -- and a legend key for a line
+        nobody drew reads as a line that came out flat."""
+        fits = _fits(trunks=("a",)).assign(corr_p=np.nan)
+        assert make_plots._present_series(fits) == ["p0", "pt"]
+
+    def test_a_series_measured_anywhere_is_drawn(self) -> None:
+        fits = _fits(trunks=("a", "b")).assign(
+            corr_p=lambda f: np.where(f["trunk"] == "a", 0.9, np.nan)
+        )
+        assert make_plots._present_series(fits) == ["p0", "pt", "p"]
+
+    def test_the_series_keep_the_designs_order(self) -> None:
+        """The ladder of what is allowed to be current at $M_t$, which is how
+        the figures are read left to right."""
+        assert make_plots._present_series(
+            _fits(trunks=("a",)).assign(corr_pv0=0.9, corr_p=0.9)
+        ) == list(decay.SERIES)
 
     def test_series_are_ordered_by_checkpoint(self) -> None:
         frame = pd.DataFrame(

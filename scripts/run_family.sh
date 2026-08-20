@@ -7,9 +7,10 @@ usage() {
     echo "Usage: bash scripts/run_family.sh <FAMILY_PREFIX> [LOCAL] [MOCK]" \
          "[--seeds N [N ...]] [--trunks X [X ...]]"
     echo
-    echo "  FAMILY_PREFIX  EXP2_VALIDATION | EXP2_DECAY | EXP2_RESEED | EXP3 | EXP4"
-    echo "                 Matched as a prefix, so EXP2 runs all three exp2"
-    echo "                 families. Run them in the order listed above:"
+    echo "  FAMILY_PREFIX  EXP2_VALIDATION | EXP2_DECAY | EXP2_RESEED | EXP2_AXIS"
+    echo "                 | EXP2_REGEN | EXP3 | EXP4"
+    echo "                 Matched as a prefix, so EXP2 runs every exp2"
+    echo "                 family. Run them in the order listed above:"
     echo "                 EXP2_VALIDATION is the gate that can invalidate the"
     echo "                 design before EXP2_DECAY's fan-out is paid for."
     echo "  LOCAL          run the small-proxy '_local' variants instead of paper scale"
@@ -27,7 +28,9 @@ usage() {
     echo "                 EXP2_DECAY: the trunks share no step prefix, so"
     echo "                 concurrent runs neither collide nor duplicate work."
     echo "                 Only families whose configs carry a trunk label"
-    echo "                 (EXP2_DECAY, EXP2_RESEED) can be filtered this way."
+    echo "                 (EXP2_DECAY, EXP2_RESEED, EXP2_AXIS, EXP2_REGEN)"
+    echo "                 can be"
+    echo "                 filtered this way."
     echo
     echo "Examples:"
     echo "  bash scripts/run_family.sh EXP2_VALIDATION"
