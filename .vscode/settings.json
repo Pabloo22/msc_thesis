@@ -124,5 +124,5 @@
     "claudeCode.preferredLocation": "panel",
     "editor.wordWrap": "on",
     "python.terminal.useEnvFile": true,
-    
+    "latex-workshop.latex.outDir": "%WORKSPACE_FOLDER%/.latex-build/%RELATIVE_DIR%"
 }
