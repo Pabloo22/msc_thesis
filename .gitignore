@@ -1,8 +1,3 @@
-MSc_Report/*
-!MSc_Report/*.tex
-!MSc_Report/chapters/
-MSc_Report/chapters/*
-!MSc_Report/chapters/*.tex
 .latex-build/
 
 data/results/
