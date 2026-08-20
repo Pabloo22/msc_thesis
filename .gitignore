@@ -8,6 +8,9 @@ data/results/
 /docs/*.fls*
 /docs/*.b*
 /docs/*main*
+docs/
+!docs/tutorial.md
+"docs/cloud_setup.md"
 dataset/
 trajectories/
 trajectories-mock/

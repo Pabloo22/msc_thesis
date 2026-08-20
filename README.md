@@ -108,16 +108,16 @@ because they gate each other:
 | 1 | `EXP2_VALIDATION` — the $t = 0$ fan over all 24 datasets | 24 | reproduces Fig. 8 of the persona-vectors paper — else stop |
 | 2 | *(no runs)* choose the probe set, check the noise ceiling | 0 | probes span the $\Delta P_0$ range; $R^2_{max}$ not dominated by noise |
 | 3 | `EXP2_DECAY_TRUNK_A` — trunk A's 6 drivers | 6 | — |
-| 4 | `EXP2_RESEED` — trunk A again under seed 1, no branches | 6 | $\rho, r$ track trunk A — else 3-5 trunk seeds are needed |
+| 4 | `EXP2_RESEED` — trunk A again under seeds 1-4, no branches, no probes | 24 | $\rho, r$ track trunk A across seeds |
 | 5 | `EXP2_DECAY_BRANCH_A` — trunk A's fan at $t = 1\ldots6$ | 48 | first real decay curve; hysteresis check at $M_2$ |
 | 6 | `EXP2_DECAY_TRUNK_B/_C` then `EXP2_DECAY_BRANCH_B/_C` | 12 + 96 | — |
-| | **Total** | **192** | |
+| | **Total** | **216** | |
 
 Phases 1-2 cost 24 runs and can invalidate the design before the remaining 168 are
 committed, which is why the families are run in this order rather than as one sweep.
 If the budget has to shrink, §10 of the spec says what to cut and in what order.
 
-Note the 344 exp2 registry keys are *not* 344 fine-tunings. `trait` is not part of
+Note the 350 exp2 registry keys are *not* 350 fine-tunings. `trait` is not part of
 `weights_key`, so the evil and sycophantic configs of a trajectory share one chain of
 adapters: the second trait re-measures, it does not retrain. Branches are cheap for the
 same reason — a branch is `drivers[:t] + (probe,)`, so the trunk's prefix is a store hit
@@ -169,14 +169,18 @@ order needs forcing.
 nohup bash scripts/run_family.sh EXP2_DECAY_TRUNK_A > exp2_trunk_a.log 2>&1 &
 ```
 
-**Phase 4 — the reseed replicate.** Trunk A under seed 1, six fine-tunings and no fan,
-because only $\Delta b$ needs training.
+**Phase 4 — the reseed replicates.** Trunk A under seeds 1-4 (`EXP2_RESEED_SEEDS`), no
+fan and no probes. Seeds are part of `weights_key`, so they shard freely:
 ```bash
 nohup bash scripts/run_family.sh EXP2_RESEED > exp2_reseed.log 2>&1 &
+CUDA_VISIBLE_DEVICES=0 bash scripts/run_family.sh EXP2_RESEED --seeds 1 2
+CUDA_VISIBLE_DEVICES=1 bash scripts/run_family.sh EXP2_RESEED --seeds 3 4
 ```
-Check it on `exp2_drift_z.png` and `exp2_drift_delta_p.png` (A′ is the dashed overlay on
-trunk A's column): if A and A′ diverge sharply in $\rho$ or $r$, `n = 2` is not enough and
-3-5 trunk seeds become necessary.
+Read it on `exp2_drift_z.png`, where each replicate is a dashed line in trunk A's colour:
+sharp divergence in $\rho$ or $r$ means the latent trajectory is not seed-stable and the
+mechanism regression's drift axis inherits that spread. `exp2_drift_delta_p.png` carries
+no dashed overlay — see [`docs/reseed_probes.md`](docs/reseed_probes.md) for why these
+runs are probe-free and what that does and does not bound.
 
 **Phase 5 — trunk A's fan.** 48 branches, and the first real decay curve. This is also
 where the hysteresis assumption gets checked: look at $\rho$ and $r$ at $M_2$ on trunk A.
@@ -204,9 +208,31 @@ poetry run python -m method.backfill_se --dry-run
 poetry run python -m method.backfill_se
 ```
 
-**Plotting.** Asking for any one exp2 family collects all three — the decay grid's
-$t = 0$ column comes from the validation fan, and the reseed family is only meaningful
-overlaid on the trunk it replicates:
+**Phase 7a — $\Delta \hat{P}_t^{v_0}$ (free).** Every trunk re-projected onto the *base*
+model's persona vector instead of its own. DeltaP normally refreshes the axis and the
+activations together, so the decay from $\Delta P_0$ confounds the persona direction
+rotating with the representation drifting; this separates them. Costs minutes and no GPU
+work — the activations are already cached and do not depend on the axis — so it runs on
+all three trunks by default. Must run where the store is.
+```bash
+nohup bash scripts/run_family.sh EXP2_AXIS > exp2_axis.log 2>&1 &
+```
+
+**Phase 7b (optional) — $\Delta P_t$.** The trunks again, with every checkpoint answering
+the probe prompts *itself* instead of re-reading $M_0$'s answers. Trains nothing: the
+configs hash to the decay trunks' own checkpoints and replay their adapters. ~12-15h per
+trunk on one 4090 for both traits, and no judge calls at all — so `--trunks` is how the
+cost is scoped, and trunk A is the one to run first. See
+[`docs/delta_p_regen.md`](docs/delta_p_regen.md) for what the series settles that
+$\Delta P_0$ and $\Delta P_t$ cannot.
+```bash
+nohup bash scripts/run_family.sh EXP2_REGEN --trunks a > exp2_regen_a.log 2>&1 &
+```
+
+**Plotting.** Asking for any one exp2 family collects the rest — the decay grid's
+$t = 0$ column comes from the validation fan, the reseed family is only meaningful
+overlaid on the trunk it replicates, and the regen family adds a series to figures the
+decay family draws:
 ```bash
 poetry run python -m method.visualization.make_plots --experiment exp2_decay
 ```
@@ -217,6 +243,14 @@ traits, so nothing is emitted per trait: `exp2_validation` (plot 1, a trait per 
 `exp2_phase_contrast` (4b, a trait per row) and `exp2_drift_delta_p` / `exp2_drift_z`
 (both plot 5, a trait per row). What they do *not* share across the traits is the scale,
 except where the quantity is unitless — a persona vector and a judge are per trait.
+
+Where phase 7 has run, `exp2_decay_grid`, `exp2_headline` and `exp2_phase_contrast` each
+carry the extra projection series on whichever trunks were covered. The four form a
+ladder of what is allowed to be current at $M_t$ — $\Delta P_0$, $\Delta \hat{P}_t^{v_0}$,
+$\Delta \hat{P}_t$, $\Delta P_t$, where a hat means the predicted answer is approximated
+by $M_0$'s. A trunk a series was not measured on keeps the ones it has: the column is NaN
+there, and nothing fits, draws or keys a series it cannot see. See
+[`docs/delta_p_regen.md`](docs/delta_p_regen.md) for the notation.
 
 ### 5. Experiments 3 and 4
 Both are seed sweeps, so `--seeds` is the axis that splits them:
@@ -238,8 +272,12 @@ across experiments:
 poetry run python -m method.probe_base --seeds 0 1 2 3 4
 poetry run python -m method.probe_base --local --backend mock   # smoke-test variant
 ```
-exp2 does not depend on this pass: each trunk measures $\Delta P$ for all 8 probes at
+exp2 does not depend on this pass: each trunk measures $\Delta P_0$ for all 8 probes at
 its own $t = 0$, and each validation run's first step *is* a $\Delta P_0$ measurement.
+
+Note this is the *frozen* prediction — $M_0$'s answers, re-read at every checkpoint. The
+variant that lets each checkpoint answer for itself is a separate family with its own
+budget: [`docs/delta_p_regen.md`](docs/delta_p_regen.md).
 
 ## Generating Plots
 Once trajectories (and base probes for exp3/exp4) are on disk, generate figures:
