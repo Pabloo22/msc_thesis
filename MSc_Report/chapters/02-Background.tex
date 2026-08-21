@@ -13,7 +13,7 @@ The basic component of a neural network is an artificial neuron. Given an input 
 \end{equation}
 where $\mathbf{w} \in \mathbb{R}^{d}$ is a vector of learnable weights, $b \in \mathbb{R}$ is a learnable bias, and $\sigma$ is the activation function. A common choice is the rectified linear unit (ReLU), defined as $\operatorname{ReLU}(z)=\max(0,z)$ \citep{glorot2011deep_sparse_rectifier}. The nonlinearity is essential: without it, composing several layers would still be equivalent to applying a single affine transformation, regardless of the number of layers.
 
-Neurons are organized into layers to form a neural network. The simplest example is a multilayer perceptron, in which every unit in one layer is connected to every unit in the following layer. Let $\mathbf{h}^{(0)}=\mathbf{x}$ denote the input. The representation produced by layer $l$ is
+Neurons are organised into layers to form a neural network. The simplest example is a multilayer perceptron, in which every unit in one layer is connected to every unit in the following layer. Let $\mathbf{h}^{(0)}=\mathbf{x}$ denote the input. The representation produced by layer $l$ is
 \begin{equation}
     \mathbf{h}^{(l)} = \sigma^{(l)}\!\left(\mathbf{W}^{(l)}\mathbf{h}^{(l-1)} + \mathbf{b}^{(l)}\right),
     \qquad l=1,\ldots,L,
