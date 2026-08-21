@@ -18,10 +18,9 @@ store/
 store-mock/
 .notify-state.json
 unsloth_compiled_cache/
-plots/mock*/
-plots/real/
-plots/
-
+plots/mock*
+plots/*
+!plots/real/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
