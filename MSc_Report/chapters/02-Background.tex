@@ -154,7 +154,13 @@ Informally, mechanistic interpretability is the field of study that aims to reve
 \subsection{The Linear Representation Hypothesis}
 Part of the work in mechanistic interpretability involves extracting features from the model's hidden states. In this context, a feature is a property of or part of the input to a neural network. Features are the building blocks of neural networks. Each hidden state represents a set of features that are then transformed into more useful concepts to solve the downstream task (e.g., predicting the next token). Coming back to our dog-versus-cat classifier, features it might learn to extract are, for instance, a ``dog-like tail'' or lower-level ones such as ``edges''. In the context of language models, a feature could be the language of the text or the gender of the protagonist of a story.
 
-A popular theory, as proposed in \cite{park2024linear_rep_hypothesis}, is that these features are represented by linear directions in the representation space. Early evidence of this hypothesis comes from 
+A popular theory, as proposed in \cite{park2024linear_rep_hypothesis}, is that these features are represented by linear directions in the representation space. Under this hypothesis, the activation $\mathbf{h} \in \mathbb{R}^{d}$ produced by a layer can be written as a linear combination of feature vectors,
+\begin{equation}
+    \mathbf{h}(\mathbf{x})
+    = \sum_{i=1}^{n} c_i\boldsymbol{\phi}_i,
+    \label{eq:linear_representation_hypothesis}
+\end{equation}
+where $\boldsymbol{\phi}_i \in \mathbb{R}^{d}$ is the direction associated with feature $i$, and $c_i$ represents how strongly that feature is present for the current input. Early evidence of this hypothesis comes from 
 
 Recently, much attention in the field of mechanistic interpretability, which tries to explain the behavior of neural networks in terms of interactions between lower level components, has been focussed on extracting features from the representation space of a model. The predominant methodology for this has used variations on the sparse autoencoder, in a series of papers inspired by Elhage et. als. model of  superposition.It's been conventionally understood that there are two key theories underlying this agenda. The first is the ‘linear representation hypothesis’ (LRH), the hypothesis that neural networks represent many intermediates or variables of the computation (such as the ‘features of the input’ in the opening quote) as linear directions in it’s representation space, or atoms[1]. And second, the theory that the network is capable of representing more of these ‘atoms’ than it has dimensions in its representation space, via superposition (the superposition hypothesis).
 
