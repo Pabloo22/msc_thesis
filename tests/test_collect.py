@@ -59,14 +59,21 @@ def temp_trajectories(tmp_path, monkeypatch):
 
 
 def write_run(
-    cfg: TrajectoryConfig, *, behaviors=None, delta_p=None, probes=None, mock=False
+    cfg: TrajectoryConfig,
+    *,
+    behaviors=None,
+    delta_p=None,
+    probes=None,
+    mock=False,
+    z_convention=None,
 ):
     """Write a schema-faithful ``trajectory.json`` for ``cfg``.
 
     ``behaviors`` is b_t for t = 0..len(steps); ``delta_p`` is one value per
     non-terminal step; ``probes`` maps ``dataset_id`` to one value per
     checkpoint. All default to simple ramps (``probes`` to nothing at all, as
-    for a run saved before probing existed).
+    for a run saved before probing existed). ``z_convention`` defaults to
+    absent, which is what a run saved before z became cosines looks like.
     """
     n = len(cfg.steps)
     behaviors = behaviors if behaviors is not None else [10.0 * t for t in range(n + 1)]
@@ -102,10 +109,10 @@ def write_run(
         / "trajectory.json"
     )
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps({"config": json.loads(to_json(cfg)), "steps": records}),
-        encoding="utf-8",
-    )
+    payload = {"config": json.loads(to_json(cfg)), "steps": records}
+    if z_convention is not None:
+        payload["z_convention"] = z_convention
+    path.write_text(json.dumps(payload), encoding="utf-8")
     return path
 
 
@@ -258,6 +265,32 @@ class TestCollect:
         assert all(run.trait == "evil" for run in evil.runs)
         baselines = result.filter(condition="baseline")
         assert all(run.label("condition") == "baseline" for run in baselines.runs)
+
+    def test_a_run_on_the_old_z_convention_is_counted_but_still_loaded(self):
+        # Only z is affected, so the run's behaviour and DeltaP series are
+        # current and dropping it would lose good data. It has to be visible,
+        # though: p and q from it are a fixed rescaling away from a converted
+        # run's, which is invisible on a plot.
+        cfg = hysteresis_configs()[0]
+        write_run(cfg)
+        result = collect([cfg], group=E.EXP3)
+        assert len(result.runs) == 1
+        assert len(result.legacy_z) == 1
+        assert "pre-cosine z convention" in result.summary()
+
+    def test_a_converted_run_is_not_counted(self):
+        cfg = hysteresis_configs()[0]
+        write_run(cfg, z_convention="cosine")
+        assert not collect([cfg], group=E.EXP3).legacy_z
+
+    def test_filtering_keeps_the_convention_warning(self):
+        # A sub-collection is what most figures actually draw from, so losing
+        # the count there would hide it exactly where it matters.
+        configs = hysteresis_configs(measure_traits=("evil", "sycophantic"))
+        for cfg in configs:
+            write_run(cfg)
+        result = collect(configs, group=E.EXP3)
+        assert result.filter(trait="evil").legacy_z == result.legacy_z
 
     def test_values_lists_distinct_label_values(self):
         configs = hysteresis_configs(measure_traits=("evil", "sycophantic"))

@@ -37,6 +37,7 @@ from method.config import (
     TrajectoryConfig,
     to_json,
 )
+from method.latent import CONVENTION as Z_CONVENTION
 from method.notify import Heartbeat, Notifier
 from method.store import (
     Store,
@@ -292,7 +293,15 @@ def run(
 
     with atomic_file(run_dir / "trajectory.json") as scratch:
         scratch.write_text(
-            json.dumps({"config": json.loads(to_json(cfg)), "steps": record}, indent=2),
+            json.dumps(
+                {
+                    "config": json.loads(to_json(cfg)),
+                    # Stamped rather than implied: see method.latent.CONVENTION.
+                    "z_convention": Z_CONVENTION,
+                    "steps": record,
+                },
+                indent=2,
+            ),
             encoding="utf-8",
         )
     # Everything the loop produced is already on the remote; what is new here

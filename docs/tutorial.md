@@ -134,17 +134,25 @@ At each checkpoint the pipeline produces five things. Four of them feed the
 The pure math for all of these lives in [`latent.py`](../method/latent.py) and is
 unit-tested in [`tests/test_latent.py`](../tests/test_latent.py).
 
-First, one building block — the **scalar projection** of an activation `h` onto a
-direction `v`:
+First, two building blocks. The **cosine similarity** of an activation `h` with
+a direction `v`:
+
+```
+cos(h, v) = (h · v) / (‖h‖ ‖v‖)
+```
+
+It measures *which way* `h` points relative to `v`, on a scale from -1 to 1, and
+it is blind to how long either vector is. And the **scalar projection**:
 
 ```
 project(h, v) = (h · v) / ‖v‖
 ```
 
-It measures *how far along* the direction `v` the activation `h` reaches. Note it
-divides by the length of `v` (so rescaling the direction doesn't matter) but
-**not** by the length of `h` (so if the activation grows, the projection grows —
-that is intentional).
+which measures *how far along* `v` the activation `h` reaches. It divides by the
+length of `v` (so rescaling the direction doesn't matter) but **not** by the
+length of `h`, so if the activation grows, the projection grows.
+
+`zₜ` uses the first and `ΔP` uses the second, for reasons spelled out below.
 
 Now the five quantities:
 
@@ -159,8 +167,8 @@ Now the five quantities:
 The **latent state** `zₜ = (p, q, ρ, r)` combines `v₀`, `vₜ` and `h_neutralₜ`:
 
 ```
-p  = project(h_neutralₜ, v₀)   drift of the neutral state along the ORIGINAL axis
-q  = project(h_neutralₜ, vₜ)   drift along the CURRENT (possibly rotated) axis
+p  = cos(h_neutralₜ, v₀)    drift of the neutral state along the ORIGINAL axis
+q  = cos(h_neutralₜ, vₜ)    drift along the CURRENT (possibly rotated) axis
 ρ  = cos(v₀, vₜ)            how far the persona vector has ROTATED since step 0
 r  = ‖vₜ‖                   whether the persona vector FADED or STRENGTHENED
 ```
@@ -168,11 +176,22 @@ r  = ‖vₜ‖                   whether the persona vector FADED or STRENGTHEN
 `p` and `q` differ only if the axis rotated (`ρ < 1`); comparing them separates
 "the model moved along the trait" from "the trait direction itself moved."
 
+Three of the four are angles and the fourth is a length, so nothing in `zₜ`
+moves when `h_neutral` merely grows or shrinks — that is what makes a level on
+a `zₜ` plot readable without knowing the scale the hidden states live at. `p`
+and `q` were scalar projections until the change recorded in
+[`todo_normalize_h_neutral.md`](todo_normalize_h_neutral.md), which is also
+where you will find how already-measured runs get converted.
+
 And `ΔP` for a training example is the shift it demands along the current axis:
 
 ```
 ΔP_i = project(h_targetᵢ, vₜ) − project(h_predᵢ, vₜ)
 ```
+
+`ΔP` keeps the projection because it is a *difference* of two positions along
+one axis: normalising each activation first would make it a difference of
+angles and throw away the magnitude it exists to report.
 
 where `h_target` is the activation on the dataset's *target* answer and `h_pred`
 is the activation on `M₀`'s *own* answer to the same prompt.

@@ -224,6 +224,30 @@ class TestStepRecordAndTrajectory:
     def test_z_series(self, two_step_trajectory: Trajectory) -> None:
         assert two_step_trajectory.z_series("rho") == pytest.approx([1.0, 0.9, 0.8])
 
+    def test_an_unmarked_run_carrying_z_is_stale(
+        self, two_step_trajectory: Trajectory
+    ) -> None:
+        # No marker means the file predates the cosine convention: its p and q
+        # are projections, a fixed rescaling away from a current run's.
+        assert two_step_trajectory.z_convention == "projection"
+        assert two_step_trajectory.z_is_stale
+
+    def test_a_marked_run_is_not_stale(self) -> None:
+        assert not Trajectory.from_dict(
+            {
+                "config": {"name": "run", "trait": "evil", "seed": 0},
+                "z_convention": "cosine",
+                "steps": [_payload(0, 40.0, None)],
+            }
+        ).z_is_stale
+
+    def test_a_branch_endpoint_is_never_stale(
+        self, branch_trajectory: Trajectory
+    ) -> None:
+        # It records no z at all, so there is nothing to convert and reporting
+        # it would be asking for a backfill it cannot use.
+        assert not branch_trajectory.z_is_stale
+
     def test_datasets(self, two_step_trajectory: Trajectory) -> None:
         assert two_step_trajectory.datasets() == ["evil/normal", "evil/normal"]
 

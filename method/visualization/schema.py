@@ -18,6 +18,8 @@ from typing import Any
 import pandas as pd
 
 from method.config import DeltaPView, PredictedSource, ProjectionAxis
+from method.latent import CONVENTION as Z_CONVENTION
+from method.latent import LEGACY_CONVENTION as LEGACY_Z_CONVENTION
 
 
 @dataclass(frozen=True)
@@ -99,6 +101,13 @@ class Trajectory:
     seed: int
     steps: tuple[StepRecord, ...]
     source: Path | None = None
+    #: How this run's ``p`` and ``q`` are normalised (see
+    #: :data:`method.latent.CONVENTION`). Runs written before ``z`` became
+    #: cosines carry no marker, so their absence *is* the legacy answer -- and
+    #: since the two conventions differ by a fixed rescaling, mixing them in
+    #: one figure is silent rather than obviously broken. See
+    #: :attr:`z_is_stale`.
+    z_convention: str = LEGACY_Z_CONVENTION
 
     @classmethod
     def from_dict(
@@ -111,7 +120,18 @@ class Trajectory:
             seed=cfg["seed"],
             steps=tuple(StepRecord.from_dict(s) for s in payload["steps"]),
             source=source,
+            z_convention=payload.get("z_convention", LEGACY_Z_CONVENTION),
         )
+
+    @property
+    def z_is_stale(self) -> bool:
+        """Whether this run carries ``z`` under a superseded convention.
+
+        False for a run that records no ``z`` at all -- a branch endpoint has
+        nothing to be stale about (see :class:`method.config.MeasurementLevel`)
+        and would otherwise be reported as needing a backfill it cannot use.
+        """
+        return self.z_convention != Z_CONVENTION and any(s.z for s in self.steps)
 
     def behavior_series(self, key: str | None = None) -> list[float]:
         """``b_t`` for one behaviour key across every checkpoint (default the trait)."""

@@ -104,20 +104,55 @@ class TestComputeLatent:
         h = torch.tensor([3.0, 4.0, 0.0])
         z = compute_latent(v0, vt, h)
 
-        assert z.p == pytest.approx(project(h, v0).item())  # drift on original axis
-        assert z.q == pytest.approx(project(h, vt).item())  # alignment on current axis
-        assert z.rho == pytest.approx(cosine(v0, vt))       # rotation of the vector
-        assert z.r == pytest.approx(vt.norm().item())       # magnitude of the vector
+        assert z.p == pytest.approx(cosine(h, v0))    # drift on original axis
+        assert z.q == pytest.approx(cosine(h, vt))    # alignment on current axis
+        assert z.rho == pytest.approx(cosine(v0, vt))  # rotation of the vector
+        assert z.r == pytest.approx(vt.norm().item())  # magnitude of the vector
 
     def test_hand_computed_values(self) -> None:
         v0 = torch.tensor([1.0, 0.0, 0.0])
         vt = torch.tensor([0.0, 2.0, 0.0])
         h = torch.tensor([3.0, 4.0, 0.0])
         z = compute_latent(v0, vt, h)
-        assert z.p == pytest.approx(3.0)   # h onto x-axis
-        assert z.q == pytest.approx(4.0)   # h onto y-axis (norm-2 vector cancels)
+        assert z.p == pytest.approx(0.6)   # cos of the 3-4-5 triangle onto x
+        assert z.q == pytest.approx(0.8)   # onto y; the norm-2 vector cancels
         assert z.rho == pytest.approx(0.0)  # x perpendicular to y
         assert z.r == pytest.approx(2.0)
+
+    def test_p_and_q_are_cosines_not_projections(self) -> None:
+        # The whole point of the change: an activation twice as long is the
+        # same direction and must give the same p and q, where the projection
+        # convention would have doubled both.
+        v0 = torch.tensor([1.0, 0.0, 0.0])
+        vt = torch.tensor([0.0, 2.0, 0.0])
+        h = torch.tensor([3.0, 4.0, 0.0])
+        z = compute_latent(v0, vt, h)
+        scaled = compute_latent(v0, vt, h * 10.0)
+
+        assert scaled.p == pytest.approx(z.p)
+        assert scaled.q == pytest.approx(z.q)
+        assert z.p != pytest.approx(project(h, v0).item())
+
+    def test_p_and_q_stay_within_the_cosine_range(self) -> None:
+        gen = torch.Generator().manual_seed(3)
+        for _ in range(20):
+            z = compute_latent(
+                torch.randn(16, generator=gen),
+                torch.randn(16, generator=gen),
+                torch.randn(16, generator=gen),
+            )
+            assert -1.0 <= z.p <= 1.0
+            assert -1.0 <= z.q <= 1.0
+
+    def test_delta_p_keeps_the_projection_convention(self) -> None:
+        # Trap 1 of docs/todo_normalize_h_neutral.md: normalising inside
+        # project() would have turned DeltaP into a difference of cosines and
+        # silently moved every DeltaP-derived result.
+        target = torch.tensor([[3.0, 4.0]])
+        predicted = torch.tensor([[1.0, 0.0]])
+        vector = torch.tensor([1.0, 0.0])
+        assert delta_projection(target, predicted, vector).item() == pytest.approx(2.0)
+        assert project(target, vector * 5.0).item() == pytest.approx(3.0)
 
     def test_no_rotation_gives_rho_one_and_equal_projections(self) -> None:
         # When the vector has not moved, p and q measure the same axis.

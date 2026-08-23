@@ -54,7 +54,14 @@ class Artifacts:
     BEHAVIOR_JSON = "behavior.json"
     EXTRACT_POS = "extract_pos.csv"
     EXTRACT_NEG = "extract_neg.csv"
-    LATENT_JSON = "latent.json"
+    # The filename is the cache key, and it carries the convention because
+    # nothing else does: the plain "latent.json" beside it holds $p$ and $q$ as
+    # unnormalised projections, and :func:`compute_step_latent` would serve
+    # those back forever under the old name with no error and no staleness
+    # warning. Renaming rather than deleting keeps the old values readable for
+    # comparison and means a box that pulls a stale bundle cannot silently mix
+    # the two conventions.
+    LATENT_JSON = "latent_cosine.json"
     NEUTRAL_ANSWERS = "neutral_answers.jsonl"
 
     # DeltaP describes the update a checkpoint is *about to* receive, so it is
@@ -448,6 +455,7 @@ def compute_delta_p(
         return json.loads(out.read_text())
 
     layer = cfg.model.layer
+
     # Materialising a checkpoint replays its whole adapter chain onto disk, so
     # it is deferred until something actually needs a forward pass. Projecting
     # cached activations onto another axis needs none, which is what makes that

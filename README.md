@@ -328,8 +328,8 @@ See [`docs/exp3_latents.md`](docs/exp3_latents.md) for what the audit found on t
 exp3 runs currently on disk.
 
 **A zero here is not a precision claim.** Every measurement is memoized by content, so a
-checkpoint reached twice reads its `latent.json` back verbatim: the audit only ever sees
-disagreement where the *cache* failed. Once the store is consistent it reports 0.0 for
+checkpoint reached twice reads its `latent_cosine.json` back verbatim: the audit only ever
+sees disagreement where the *cache* failed. Once the store is consistent it reports 0.0 for
 every component, which says the cache worked and leaves the measurement's own precision
 unmeasured. That is what the next section is for. -->
 

@@ -130,6 +130,12 @@ class Collection:
     runs: list[Run] = field(default_factory=list)
     missing: list[Path] = field(default_factory=list)
     stale: list[Path] = field(default_factory=list)
+    #: Runs whose ``z`` predates the cosine convention (see
+    #: :attr:`method.visualization.schema.Trajectory.z_is_stale`). These stay
+    #: in :attr:`runs`, because only ``z`` is affected and their behaviour and
+    #: DeltaP series are current -- but any figure reading ``z`` is mixing two
+    #: unit systems until ``method.backfill_latent_cosine`` has been over them.
+    legacy_z: list[Path] = field(default_factory=list)
 
     def __len__(self) -> int:
         return len(self.runs)
@@ -156,7 +162,7 @@ class Collection:
             attrs = {"trait": run.trait, "seed": str(run.seed), **run.labels}
             if all(attrs.get(k) == str(v) for k, v in labels.items()):
                 selected.append(run)
-        return Collection(self.group, selected, self.missing, self.stale)
+        return Collection(self.group, selected, self.missing, self.stale, self.legacy_z)
 
     def values(self, key: str) -> list[str]:
         """Distinct values of a label (or ``trait``), in first-seen order."""
@@ -167,7 +173,8 @@ class Collection:
     def summary(self) -> str:
         return (
             f"{self.group}: {len(self.runs)} run(s) loaded, "
-            f"{len(self.missing)} not yet run, {len(self.stale)} stale"
+            f"{len(self.missing)} not yet run, {len(self.stale)} stale, "
+            f"{len(self.legacy_z)} on the pre-cosine z convention"
         )
 
 
@@ -182,6 +189,7 @@ def collect(
     runs: list[Run] = []
     missing: list[Path] = []
     stale: list[Path] = []
+    legacy_z: list[Path] = []
 
     for cfg in configs:
         run_dir = trajectory_run_dir(cfg.name, cfg.seed, cfg.model.name, mock=mock)
@@ -204,9 +212,11 @@ def collect(
             )
             stale.append(path)
             continue
+        if trajectory.z_is_stale:
+            legacy_z.append(path)
         runs.append(Run(config=cfg, trajectory=trajectory, path=path, mock=mock))
 
-    collection = Collection(group or _sole_group(runs), runs, missing, stale)
+    collection = Collection(group or _sole_group(runs), runs, missing, stale, legacy_z)
     if missing:
         logger.warning(
             "%d/%d run(s) for %r are not on disk yet; first few: %s",
@@ -214,6 +224,19 @@ def collect(
             len(missing) + len(runs) + len(stale),
             collection.group,
             ", ".join(str(p.parent.name) for p in missing[:5]),
+        )
+    if legacy_z:
+        logger.warning(
+            "%d/%d loaded run(s) for %r still record z as unnormalised "
+            "projections rather than cosines; p and q from these are a fixed "
+            "rescaling away from the current ones, so a figure drawn now mixes "
+            "two unit systems without looking wrong. Run "
+            "`python -m method.backfill_latent_cosine` where the store lives "
+            "and sync trajectories/ back. First few: %s",
+            len(legacy_z),
+            len(runs),
+            collection.group,
+            ", ".join(str(p.parent.name) for p in legacy_z[:5]),
         )
     return collection
 

@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 import torch
 
+from method.latent import CONVENTION as Z_CONVENTION
 from method.latent import summarize
 from method.visualization import labels
 from method.visualization.schema import StepRecord, Trajectory
@@ -88,17 +89,21 @@ def synthetic_trajectory(
 
     A toy random walk stands in for the real dynamics: each step nudges
     behaviour, the persona vector's rotation ($\rho$) and norm ($r$), and the
-    projections $p$/$q$ toward the upcoming dataset's "pull" (misaligned
-    datasets push up, normal ones pull back down), with per-seed noise. The
-    result has the qualitative shape the proposal expects to test for --
-    partial re-alignment, drifting projections, measurement noise -- without
+    cosines $p$/$q$ toward the upcoming dataset's "pull" (misaligned datasets
+    push up, normal ones pull back down), with per-seed noise. The result has
+    the qualitative shape the proposal expects to test for -- partial
+    re-alignment, a drifting neutral state, measurement noise -- without
     running any real fine-tuning.
     """
     rng = np.random.default_rng(seed * 1_000_000 + _stable_seed(name) % 1_000_000)
     behavior = baseline_behavior
     rho = 1.0
     r = float(abs(rng.normal(29.5, 0.5)))
-    q = 0.0
+    # $p$ and $q$ are cosines, so the walk has to stay on $[-1, 1]$ to be
+    # schema-faithful at all. Start and step size are taken from the real
+    # trunks, where the neutral state sits a little negative on the trait axis
+    # and each step moves it by a few hundredths.
+    q = float(rng.normal(-0.22, 0.02))
 
     steps: list[StepRecord] = []
     for t in range(len(datasets) + 1):
@@ -145,9 +150,15 @@ def synthetic_trajectory(
             )
             rho = float(np.clip(rho - abs(pull) * rng.uniform(0.02, 0.08), -1.0, 1.0))
             r = float(r * (1 + pull * rng.uniform(0.0, 0.03)))
-            q = q + pull * rng.uniform(0.5, 1.5)
+            q = float(np.clip(q + pull * rng.uniform(0.01, 0.04), -1.0, 1.0))
 
-    return Trajectory(name=name, trait=trait, seed=seed, steps=tuple(steps))
+    return Trajectory(
+        name=name,
+        trait=trait,
+        seed=seed,
+        steps=tuple(steps),
+        z_convention=Z_CONVENTION,
+    )
 
 
 def synthetic_trajectory_set(
