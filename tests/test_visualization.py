@@ -1489,6 +1489,19 @@ class TestOverlayGrid:
         assert primary.get_linestyle() == "-"
         assert replicate.get_linestyle() != "-"
 
+    def test_a_band_spans_one_spread_each_side_of_the_line(self) -> None:
+        fig = figures.overlay_grid(
+            {("row", "col"): {"a": [2.0, 4.0]}},
+            bands={("row", "col"): {"a": [0.5, 1.0]}},
+        )
+        (ax,) = fig.axes
+        assert len(ax.lines) == 1
+        vertices = ax.collections[0].get_paths()[0].vertices
+        assert vertices[:, 1].min() == pytest.approx(1.5)
+        assert vertices[:, 1].max() == pytest.approx(5.0)
+        (legend,) = fig.legends
+        assert any("1 SD" in text.get_text() for text in legend.get_texts())
+
     def test_every_replicate_seed_draws_its_own_line(self) -> None:
         """The probe-free reseed tier is four extra seeds; collapsing them to
         one line would plot a trajectory no seed actually took."""
@@ -1722,6 +1735,27 @@ class TestExp2Driver:
     def test_a_frame_without_seeds_has_no_replicates(self) -> None:
         frame = pd.DataFrame({"probe": ["p"], "t": [0], "ratio": [1.0]})
         assert make_plots._replicates_by(frame, key="probe", value="ratio") == {}
+
+    def test_latent_summary_is_the_five_seed_mean_and_sample_std(self) -> None:
+        frame = pd.DataFrame(
+            [
+                {"trunk": "a", "seed": seed, "t": t, "rho": value}
+                for seed in range(5)
+                for t, value in enumerate((float(seed), float(seed * 10)))
+            ]
+        )
+        means, stds = make_plots._trunk_mean_std(frame, "rho", ["a"])
+        label = labels.display_trunk_name("a")
+        assert means == {label: [2.0, 20.0]}
+        assert stds[label] == pytest.approx([np.sqrt(2.5), np.sqrt(250.0)])
+
+    def test_single_seed_trunks_have_a_mean_line_but_no_band(self) -> None:
+        frame = pd.DataFrame(
+            {"trunk": ["b", "b"], "seed": [0, 0], "t": [0, 1], "rho": [1.0, 0.8]}
+        )
+        means, stds = make_plots._trunk_mean_std(frame, "rho", ["b"])
+        assert means == {labels.display_trunk_name("b"): [1.0, 0.8]}
+        assert stds == {}
 
 
 # --- demo.py -----------------------------------------------------------------

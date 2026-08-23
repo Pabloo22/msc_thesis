@@ -1575,13 +1575,14 @@ def _draw_overlay(
     ax: Axes,
     primary: Mapping[str, Sequence[float]],
     replicate: Mapping[str, Sequence[Sequence[float]]],
+    band: Mapping[str, Sequence[float]],
     *,
     colors: Mapping[str, str],
     marks: Mapping[str, style.DatasetMark] | None,
     reference: float | None,
     reference_label: str | None,
 ) -> None:
-    """One panel of an overlay plot: solid primary lines, dashed replicates.
+    """One panel of an overlay plot: solid lines, optional bands/replicates.
 
     ``replicate`` holds *every* replicate of a series, not one, so a family run
     at several seeds draws a dashed line each rather than one line through
@@ -1625,6 +1626,17 @@ def _draw_overlay(
     for label, values in primary.items():
         y = np.asarray(values, dtype=float)
         color, marker_style = styling(label, order[label])
+        if label in band:
+            spread = np.asarray(band[label], dtype=float)
+            ax.fill_between(
+                np.arange(y.size),
+                y - spread,
+                y + spread,
+                color=color,
+                alpha=0.18,
+                linewidth=0,
+                zorder=2,
+            )
         ax.plot(
             np.arange(y.size),
             y,
@@ -1677,6 +1689,7 @@ def overlay_grid(
         Mapping[tuple[str, str], Mapping[str, Sequence[Sequence[float]]]] | None
     ) = None,
     *,
+    bands: Mapping[tuple[str, str], Mapping[str, Sequence[float]]] | None = None,
     rows: Sequence[str] | None = None,
     cols: Sequence[str] | None = None,
     ylabel: str | None = None,
@@ -1686,27 +1699,24 @@ def overlay_grid(
     reference: float | None = None,
     reference_label: str | None = None,
     replicate_label: str = "Reseeded replicate (dashed)",
+    band_label: str = r"Mean $\pm$ 1 SD",
     sharey: bool = False,
 ) -> Figure:
     r"""Plot 5: how a quantity drifts over ``t``, panelled by row and column.
 
     ``panels`` maps a ``(row, col)`` pair of display labels to that panel's
-    series, and ``replicates`` the same for the reseeded runs -- mapping a
-    series' label to *every* replicate of it, since section 6c is run at one
-    probed seed and several probe-free ones
-    (:data:`~method.experiments.EXP2_RESEED_EXTRA_SEEDS`). A panel's two halves
-    therefore need not carry the same labels: the probe-free seeds reach the
-    latent columns and not the $\Delta P_t$ ones.
+    series. ``bands`` maps those labels to a symmetric spread around each
+    line, while ``replicates`` maps them to individual reseeded runs. A panel's
+    halves need not carry the same labels: probe-free seeds reach the latent
+    columns and not the $\Delta P_t$ ones.
 
     Replicates are drawn dashed in the colour of the series they replicate, so
     the comparison rides one colour assignment however many seeds land and
-    costs no extra hue. Still no shaded band: the seeds vary the fine-tuning
-    only, and every one of them reads the same cached $t = 0$ anchor
-    (``weights_key`` normalises the seed away there), so a band drawn from
-    their spread would look like the measurement's error while omitting the
-    common-mode anchor term that :mod:`method.anchor_noise` estimates
-    separately. The overlay says what the spread is and leaves combining the
-    two to the write-up.
+    costs no extra hue. Bands use the matching series colour and describe a
+    caller-provided spread around its solid line. In the latent grid that is
+    the between-seed SD, not measurement error; every seed reads the same
+    cached $t = 0$ anchor, so the band does not include the common-mode anchor
+    term that :mod:`method.anchor_noise` estimates separately.
 
     ``marks`` identifies each series as a dataset rather than by a hue of its
     own. Eight probes would otherwise take all eight categorical slots, leaving
@@ -1722,12 +1732,13 @@ def overlay_grid(
     within a column the two traits have their own vectors, so a shared axis
     would squash one trait's drift into the gap between the two norms.
 
-    No error bars: section 8 establishes that $\Delta P_t$ and $z_t$ involve no
-    sampling -- fixed prompts, fixed responses, forward passes only -- so the
-    quantities on this axis have no measurement error to draw.
+    No measurement-error bars: section 8 establishes that $\Delta P_t$ and
+    $z_t$ involve no sampling -- fixed prompts, fixed responses, forward passes
+    only. A seed-spread band instead quantifies training-run variation.
     """
     style.apply_style()
     replicates = replicates or {}
+    bands = bands or {}
     rows = list(rows) if rows else list(dict.fromkeys(row for row, _ in panels))
     cols = list(cols) if cols else list(dict.fromkeys(col for _, col in panels))
 
@@ -1750,6 +1761,7 @@ def overlay_grid(
                 ax,
                 series,
                 replicates.get((row, col)) or {},
+                bands.get((row, col)) or {},
                 colors=colors or {},
                 marks=marks,
                 reference=reference,
@@ -1767,6 +1779,9 @@ def overlay_grid(
             plt.Line2D([], [], color=style.MUTED, linestyle=(0, (3, 2)), linewidth=1.3)
         )
         texts.append(replicate_label)
+    if any(bands.values()):
+        handles.append(Patch(facecolor=style.MUTED, edgecolor="none", alpha=0.18))
+        texts.append(band_label)
     ncol = min(4, len(handles) or 1)
     fig.legend(handles, texts, loc="lower center", ncol=ncol)
     _layout_grid(

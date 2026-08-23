@@ -176,11 +176,12 @@ nohup bash scripts/run_family.sh EXP2_RESEED > exp2_reseed.log 2>&1 &
 CUDA_VISIBLE_DEVICES=0 bash scripts/run_family.sh EXP2_RESEED --seeds 1 2
 CUDA_VISIBLE_DEVICES=1 bash scripts/run_family.sh EXP2_RESEED --seeds 3 4
 ```
-Read it on `exp2_drift_z.png`, where each replicate is a dashed line in trunk A's colour:
-sharp divergence in $\rho$ or $r$ means the latent trajectory is not seed-stable and the
-mechanism regression's drift axis inherits that spread. `exp2_drift_delta_p.png` carries
-no dashed overlay — see [`docs/reseed_probes.md`](docs/reseed_probes.md) for why these
-runs are probe-free and what that does and does not bound.
+Read it on `exp2_drift_z.png`, where trunk A's solid line is the mean of all five seeds
+and the shaded region is $\pm 1$ seed SD: a wide band in $\rho$ or $r$ means the latent
+trajectory is not seed-stable and the mechanism regression's drift axis inherits that
+spread. `exp2_drift_delta_p.png` carries no band — see
+[`docs/reseed_probes.md`](docs/reseed_probes.md) for why these runs are probe-free and
+what that does and does not bound.
 
 **Phase 5 — trunk A's fan.** 48 branches, and the first real decay curve. This is also
 where the hysteresis assumption gets checked: look at $\rho$ and $r$ at $M_2$ on trunk A.

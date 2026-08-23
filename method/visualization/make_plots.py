@@ -219,12 +219,13 @@ def _replicates_by(
     aggregates whatever shares an index entry, so pivoting on ``key`` alone
     would average the replicate seeds together and draw a single line that no
     seed actually produced. That was invisible while the reseed family was one
-    seed, and silently wrong the moment :data:`EXP2_RESEED_EXTRA_SEEDS` landed.
+    seed, and silently wrong the moment :data:`EXP2_RESEED_SEEDS` landed.
 
-    Grouped rather than flattened because the caller draws each replicate in
+    Grouped rather thana html flattened because the caller draws each replicate in
     the colour of the primary series it replicates, which is what keeps a
     six-seed overlay from spending six hues on one quantity.
     """
+
     if "seed" not in frame.columns:
         return {}
     pivoted = _pivot_over_t(frame, index=[key, "seed"], value=value)
@@ -464,30 +465,31 @@ def _probe_replicates(arm: pd.DataFrame) -> dict[str, list[list[float]]]:
     }
 
 
-def _trunk_series(
+def _trunk_mean_std(
     arm: pd.DataFrame, component: str, trunks: Sequence[str]
-) -> dict[str, list[float]]:
-    """One trait's ``component`` over ``t``, one entry per trunk."""
-    return {
-        display_trunk_name(trunk): values
-        for trunk in trunks
-        for values in _series_by(
-            arm[arm["trunk"] == trunk], key="trunk", value=component
-        ).values()
-    }
+) -> tuple[dict[str, list[float]], dict[str, list[float]]]:
+    """A trunk's seed mean and sample SD for one latent component.
 
-
-def _trunk_replicates(
-    arm: pd.DataFrame, component: str, trunks: Sequence[str]
-) -> dict[str, list[list[float]]]:
-    """The same, one series per replicate seed of each trunk."""
-    return {
-        display_trunk_name(trunk): runs
-        for trunk in trunks
-        for runs in _replicates_by(
-            arm[arm["trunk"] == trunk], key="trunk", value=component
-        ).values()
-    }
+    Every complete seed contributes equally, including the design's original
+    seed 0.  A band is returned only when at least two seeds are present; the
+    other trunks currently have one seed and therefore remain ordinary lines.
+    """
+    means: dict[str, list[float]] = {}
+    stds: dict[str, list[float]] = {}
+    for trunk in trunks:
+        pivoted = _pivot_over_t(
+            arm[arm["trunk"] == trunk],
+            index=["trunk", "seed"],
+            value=component,
+        )
+        if pivoted.empty:
+            continue
+        label = display_trunk_name(trunk)
+        values = pivoted.to_numpy(dtype=float)
+        means[label] = values.mean(axis=0).tolist()
+        if len(values) > 1:
+            stds[label] = values.std(axis=0, ddof=1).tolist()
+    return means, stds
 
 
 def _drift_delta_p_figure(ratios: pd.DataFrame, out_dir: Path) -> list[Path]:
@@ -536,7 +538,7 @@ def _drift_delta_p_figure(ratios: pd.DataFrame, out_dir: Path) -> list[Path]:
 
 
 def _drift_latent_figure(latents: pd.DataFrame, out_dir: Path) -> list[Path]:
-    r"""Plot 5, the $z_t$ half: a trait per row, a component per column."""
+    r"""Plot 5, the $z_t$ half: seed means with one-SD bands."""
     saved: list[Path] = []
     if latents.empty:
         return saved
@@ -545,22 +547,17 @@ def _drift_latent_figure(latents: pd.DataFrame, out_dir: Path) -> list[Path]:
         display_trunk_name(trunk): style.categorical_color(trunk_index(trunk))
         for trunk in trunks
     }
-    own, replicate = _split_by_seed(latents, experiments.EXP2_SEED)
-
-    panels, replicates = {}, {}
+    panels, bands = {}, {}
     for trait in traits:
         for component, label in Z_LABELS.items():
             cell = (display_trait_name(trait), label)
-            panels[cell] = _trunk_series(
-                own[own["trait"] == trait], component, trunks
-            )
-            replicates[cell] = _trunk_replicates(
-                replicate[replicate["trait"] == trait], component, trunks
+            panels[cell], bands[cell] = _trunk_mean_std(
+                latents[latents["trait"] == trait], component, trunks
             )
 
     fig = figures.overlay_grid(
         panels,
-        replicates,
+        bands=bands,
         rows=[display_trait_name(trait) for trait in traits],
         cols=list(Z_LABELS.values()),
         colors=colors,
