@@ -45,7 +45,7 @@ To update the network parameters, the gradient of this loss with respect to each
     \mathcal{L}(\boldsymbol{\theta}_{t}),
     \label{eq:gradient_descent}
 \end{equation}
-where $t$ is the optimization step and $\eta>0$ is the learning rate. In practice, we use stochastic gradient descent, which estimates the gradient using a small batch of data rather than the full dataset. Furthermore, advanced optimisers such as Adam \citep{kingma2015adam} compute moving estimates of the first and second moments of the gradient to accelerate convergence. Once the network is trained, we can perform \textit{inference} by applying only the forward pass (i.e., the weights are frozen).
+where $t$ is the optimization step and $\eta>0$ is the learning rate. In practice, we use stochastic gradient descent, which estimates the gradient using a small batch of data rather than the full dataset. Furthermore, advanced optimisers such as Adam \citep{Kingma2015adam} compute moving estimates of the first and second moments of the gradient to accelerate convergence. Once the network is trained, we can perform \textit{inference} by applying only the forward pass (i.e., the weights are frozen).
 
 \section{Transformers}
 \label{sec:transformers}
@@ -90,13 +90,12 @@ where $K$ is the number of heads and $\mathbf{W}_{O}$ is another learned project
 
 \begin{figure}
     \centering
-    \includegraphics[width=0.75\linewidth]{MSc_Report//images/transformer.png}
+    \includegraphics[width=0.75\linewidth]{transformer.png}
     \caption{The transformer architecture, obtained from \cite{vaswani2017attention}.}
     \label{fig:transformer}
 \end{figure}
 
 \subsection{The Transformer Architecture}
-
 Figure \ref{fig:transformer} represents the entire transformer architecture:
 \begin{itemize}
     \item An attention operation is followed by a position-wise feed-forward network, which applies the same MLP independently to every token position. This is where most of the transformer's parameters are. This component can be thought of as the model's ``long-term memory''. Here, it can store knowledge during training that can then be injected into each contextualised token embedding.
