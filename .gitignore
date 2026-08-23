@@ -18,6 +18,7 @@ store/
 store-mock/
 .notify-state.json
 unsloth_compiled_cache/
+papers/*
 plots/mock*
 plots/*
 !plots/real/
