@@ -49,14 +49,6 @@ The main issue is that during forecasting, we only have access to the initial mo
     \end{itemize}
 \end{itemize}
 
-\begin{itemize}
-    \item \textbf{RQ1 (Decay)}: How does predictive accuracy of projection differences computed with $\mathcal{M}_0$ degrade with sequence length, and measured drift $(\rho, r)$?
-    \item \textbf{RQ2 (History-Dependence)}: Does the persona induced by the last dataset always win, or do previous SFTs also influence the result? Some sub-questions:
-    \begin{itemize}
-        \item What are the effects of quantity (sequence length) and diversity of the datasets (e.g., training on hallucination + evil vs twice on evil)?
-        \item Even if the model gets re-aligned, is it easier to misalign it in future iterations, and do the activations come back to their original position?
-    \end{itemize}
-\end{itemize}
 For this reason, in this project, we analyse how long projection differences can maintain their predictive power over sequences of fine-tuning steps. This is the unexplored ``chaotic sensitivity'' problem mentioned in \cite{pacchiardi2026continual}.
 
 The main theoretical limitation of this approach, however, is representation drift. Projection differences that rely on the base model can easily become outdated. In other words, there is an open question of whether fine-tuning on a dataset always modifies the model's behavior in the same direction and the same amount, or whether the order matters.

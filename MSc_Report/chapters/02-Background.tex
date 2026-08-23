@@ -160,16 +160,11 @@ A popular theory, as proposed in \cite{park2024linear_rep_hypothesis}, is that t
     = \sum_{i=1}^{n} c_i\boldsymbol{\phi}_i,
     \label{eq:linear_representation_hypothesis}
 \end{equation}
-where $\boldsymbol{\phi}_i \in \mathbb{R}^{d}$ is the direction associated with feature $i$, and $c_i$ represents how strongly that feature is present for the current input. Early evidence of this hypothesis comes from 
-
-Recently, much attention in the field of mechanistic interpretability, which tries to explain the behavior of neural networks in terms of interactions between lower level components, has been focussed on extracting features from the representation space of a model. The predominant methodology for this has used variations on the sparse autoencoder, in a series of papers inspired by Elhage et. als. model of  superposition.It's been conventionally understood that there are two key theories underlying this agenda. The first is the ‘linear representation hypothesis’ (LRH), the hypothesis that neural networks represent many intermediates or variables of the computation (such as the ‘features of the input’ in the opening quote) as linear directions in it’s representation space, or atoms[1]. And second, the theory that the network is capable of representing more of these ‘atoms’ than it has dimensions in its representation space, via superposition (the superposition hypothesis).
-
-While superposition is a relatively uncomplicated hypothesis, I think the LRH is worth examining in more detail. It is frequently stated quite vaguely, and I think there are several possible formulations of this hypothesis, with varying degrees of plausibility, that it is worth carefully distinguishing between. For example, the linear representation hypothesis is often stated as ‘networks represent features of the input as directions in representation space’. Here are two importantly different ways to parse this:
-
-A feature is a property of an input to the model, or some subset of that input (eg a token in the prompt given to a language model, or a patch of an image)
-
-
-The linear representation hypothesis suggests that concepts and features within a model's internal states are organised as linear directions. In the context of language models, 
+where $\boldsymbol{\phi}_i \in \mathbb{R}^{d}$ is the direction associated with feature $i$, and $c_i$ represents how strongly that feature is present for the current input. Early motivation for this hypothesis comes from word embeddings \citep{mikolov2013linguistic}. For example, these embeddings can contain features such as ``gender'' or ``royalty'', allowing relationships such as
+$$
+\boldsymbol{\phi}_{\text{queen}} \approx \boldsymbol{\phi}_{\text{king}} + \boldsymbol{\phi}_{\text{woman}} - \boldsymbol{\phi}_{\text{man}}.
+$$
+While it is still contested whether 
 
 This implies that one can extract and identify these concepts using simple, linear classifiers (probes). 
 
