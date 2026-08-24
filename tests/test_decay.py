@@ -69,12 +69,15 @@ def write_run(
     probes_current=None,
     se=0.5,
     delta_p=1.0,
+    h_norm=True,
 ) -> None:
     """Write a schema-faithful ``trajectory.json``.
 
     A run whose ``measure`` is ``ENDPOINT_BEHAVIOR`` gets the single-record
     shape a branch really has: final checkpoint, ``b`` only, no ``z`` and no
-    probes.
+    probes. ``h_norm=False`` writes the ``z`` block a run measured before the
+    norm was recorded carries, which is what an un-backfilled run on disk still
+    looks like.
     """
     n = len(cfg.steps)
     if cfg.measure is not E.MeasurementLevel.FULL:
@@ -98,6 +101,7 @@ def write_run(
                         "q": 0.2 * t,
                         "rho": 1.0 - 0.1 * t,
                         "r": 30.0 + t,
+                        **({"h_norm": 60.0 + t} if h_norm else {}),
                     }
                 },
                 "probes": {
@@ -684,6 +688,33 @@ class TestLatentFrame:
         latents = decay.latent_frame(build_decay().runs)
         assert len(latents) == len(TRUNKS) * 7
         assert set(latents.columns) >= set(decay.Z_COMPONENTS)
+
+    def test_carries_the_norm_the_cosines_were_divided_by(self) -> None:
+        r"""``h_norm`` rides along with z_t so the drift plot can show what a
+        falling cosine cannot: whether the neutral state turned off the persona
+        axis or merely grew in directions unrelated to it."""
+        latents = decay.latent_frame(build_decay().runs)
+        assert "h_norm" in latents.columns
+        row = latents[(latents["trunk"] == "a") & (latents["t"] == 6)].iloc[0]
+        assert row["h_norm"] == pytest.approx(66.0)
+
+    def test_the_norm_stays_out_of_the_drift_predictors(self) -> None:
+        """A length in the units of the activations is not a coordinate of
+        z_t, and the mechanism regression builds its predictors from
+        ``Z_COMPONENTS``. Adding it there would hand the fit a fifth one."""
+        assert "h_norm" not in decay.Z_COMPONENTS
+        assert decay.LATENT_COLUMNS == (*decay.Z_COMPONENTS, "h_norm")
+
+    def test_a_run_measured_before_the_norm_existed_reads_as_nan(self) -> None:
+        """Missing, not an error: the field arrived after these runs were
+        measured, and ``method.backfill_h_norm`` fills it in where the store
+        lives. The plot drops such a seed rather than drawing a short line."""
+        configs = E.build_exp2_reseed_configs(measure_traits=("evil",), trunks=TRUNKS)
+        for cfg in configs:
+            write_run(cfg, behaviors=[60.0] * 7, probes={}, h_norm=False)
+        latents = decay.latent_frame(collect(configs, group=E.EXP2_RESEED).runs)
+        assert latents["h_norm"].isna().all()
+        assert latents["rho"].notna().all()
 
     def test_keeps_raw_units(self) -> None:
         r"""$p$ and $q$ start at essentially zero on the base model, so a

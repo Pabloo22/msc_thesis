@@ -1096,21 +1096,21 @@ def decay_scatter_grid(
     return fig
 
 
-def _band(
+def _series_line(
     ax: Axes,
     x: ArrayLike,
     mid: ArrayLike,
-    lo: ArrayLike,
-    hi: ArrayLike,
     *,
     color: str,
     label: str,
     linestyle: str | tuple = "solid",
 ) -> None:
-    """A line with its confidence band, as used by the headline curves."""
-    x_arr = np.asarray(x, dtype=float)
+    """One trunk-and-series curve, as used by the headline curves.
+
+    Drawn without its bootstrap band: see :func:`headline_curves`.
+    """
     ax.plot(
-        x_arr,
+        np.asarray(x, dtype=float),
         np.asarray(mid, dtype=float),
         color=color,
         marker="o",
@@ -1121,15 +1121,6 @@ def _band(
         linestyle=linestyle,
         label=label,
         zorder=3,
-    )
-    ax.fill_between(
-        x_arr,
-        np.asarray(lo, dtype=float),
-        np.asarray(hi, dtype=float),
-        color=color,
-        alpha=0.13,
-        linewidth=0,
-        zorder=2,
     )
 
 
@@ -1211,7 +1202,15 @@ def headline_curves(
     panels share a fixed range regardless -- see :func:`_correlation_ylim` for
     which one.)
 
-    This panel no longer draws the $R^2_{max}$ noise ceiling; see
+    Nor does it draw the bootstrap intervals ``fit_frame`` computes. Eight
+    probe datasets per checkpoint make them wide, and one band per
+    (trunk, series) curve -- four of them per panel, overlapping -- buries the
+    curves the figure exists to show under the uncertainty about them. The
+    intervals are still computed and still in the frame; the honest place for
+    a sample this small is a sentence in the text saying so, not a wash of
+    shading over every panel.
+
+    This panel no longer draws the $R^2_{max}$ noise ceiling either; see
     ``docs/r2_max.md`` for what it means and where to find it instead. Note it
     is a variance ratio, so the ceiling on the correlation drawn here is its
     square root, not the stored number.
@@ -1239,9 +1238,7 @@ def headline_curves(
     )
     # One floor for the whole correlation row, so its panels stay comparable.
     corr_floor = _correlation_floor(
-        fits,
-        [f"corr_{name}{suffix}" for name in series for suffix in ("", "_lo")],
-        clearance=0.03,
+        fits, [f"corr_{name}" for name in series], clearance=0.03
     )
     for row, (quantity, qlabel) in enumerate(quantities):
         for col, (_, frame, _trait_label) in enumerate(cols):
@@ -1252,12 +1249,10 @@ def headline_curves(
                     continue
                 color = trunk_colors.get(trunk, style.BLUE)
                 for name in series:
-                    _band(
+                    _series_line(
                         ax,
                         arm["t"],
                         arm[f"{quantity}_{name}"],
-                        arm[f"{quantity}_{name}_lo"],
-                        arm[f"{quantity}_{name}_hi"],
                         color=color,
                         label="_nolegend_",
                         linestyle=linestyles.get(name, "solid"),

@@ -46,6 +46,7 @@ from pathlib import Path
 import pandas as pd
 
 from method import experiments, seed_noise
+from method.latent import H_NORM
 from method.visualization import decay, figures, style
 from method.visualization.collect import (
     Collection,
@@ -73,6 +74,13 @@ logger = logging.getLogger("make_plots")
 
 #: Display label -> $z_t$ component, matching :mod:`method.visualization.demo`.
 Z_LABELS = {"p": r"$p_t$", "q": r"$q_t$", "rho": r"$\rho_t$", "r": r"$r_t$"}
+
+#: The drift grid's columns: z_t's four, then the length they were normalised
+#: by. Separate from :data:`Z_LABELS` because ``h_norm`` is not a component of
+#: z_t (see :data:`method.latent.H_NORM`) and the audit figures label z_t's
+#: coordinates from that mapping -- a fifth entry there would put a length on
+#: axes that only hold the four.
+DRIFT_Z_LABELS = {**Z_LABELS, H_NORM: r"$\|h^{\mathrm{neutral}}_t\|$"}
 
 
 def _emit(fig: plt.Figure, name: str, out_dir: Path, saved: list[Path]) -> None:
@@ -538,7 +546,22 @@ def _drift_delta_p_figure(ratios: pd.DataFrame, out_dir: Path) -> list[Path]:
 
 
 def _drift_latent_figure(latents: pd.DataFrame, out_dir: Path) -> list[Path]:
-    r"""Plot 5, the $z_t$ half: seed means with one-SD bands."""
+    r"""Plot 5, the $z_t$ half: seed means with one-SD bands.
+
+    A fifth column carries $\|h^{\mathrm{neutral}}_t\|$, which is not part of
+    z_t but is what disambiguates its first two columns: $p$ and $q$ are
+    cosines, so both fall when the neutral state turns off the persona axis
+    *and* when it merely grows in unrelated directions. Only the norm beside
+    them separates the two. Panels are unshared, so its own scale -- a length
+    of order tens, against cosines on $[-1, 1]$ -- costs the other columns
+    nothing. Empty where the runs predate :mod:`method.backfill_h_norm`.
+
+    Its two rows are the *same* series, and not by accident: ``h_neutral`` is
+    the model's own resting state, so a trunk has one of them however many
+    persona axes it is measured against. Only $p$ and $q$ (which the trait's
+    $v$ enters) differ by row. Kept per row rather than collapsed to one panel
+    so a row stays readable as one trait's whole story.
+    """
     saved: list[Path] = []
     if latents.empty:
         return saved
@@ -549,7 +572,7 @@ def _drift_latent_figure(latents: pd.DataFrame, out_dir: Path) -> list[Path]:
     }
     panels, bands = {}, {}
     for trait in traits:
-        for component, label in Z_LABELS.items():
+        for component, label in DRIFT_Z_LABELS.items():
             cell = (display_trait_name(trait), label)
             panels[cell], bands[cell] = _trunk_mean_std(
                 latents[latents["trait"] == trait], component, trunks
@@ -559,7 +582,7 @@ def _drift_latent_figure(latents: pd.DataFrame, out_dir: Path) -> list[Path]:
         panels,
         bands=bands,
         rows=[display_trait_name(trait) for trait in traits],
-        cols=list(Z_LABELS.values()),
+        cols=list(DRIFT_Z_LABELS.values()),
         colors=colors,
     )
     _emit(fig, "exp2_drift_z", out_dir, saved)

@@ -1226,6 +1226,20 @@ class TestHeadlineCurves:
         keys = [t.get_text() for t in fig.legends[0].get_texts()]
         assert decay.SERIES_LABELS["p"] in keys
 
+    def test_no_bootstrap_band_is_drawn_behind_the_curves(self) -> None:
+        """Eight probe datasets make the intervals wide, and four overlapping
+        bands per panel bury the curves the figure exists to show. The sample
+        size belongs in a sentence of the text, not in a wash of shading."""
+        fig = figures.headline_curves(_fits())
+        assert all(not ax.collections for ax in fig.axes)
+
+    def test_the_interval_columns_are_no_longer_needed_to_plot(self) -> None:
+        """fit_frame still computes them and they still belong in the frame --
+        this figure simply does not read them any more."""
+        fits = _fits()
+        fits = fits.drop(columns=[c for c in fits if c.endswith(("_lo", "_hi"))])
+        figures.headline_curves(fits)  # must not raise
+
     def test_the_r2_max_column_is_no_longer_needed_to_plot(self) -> None:
         """The noise ceiling is still computed by fit_frame, but this figure
         no longer draws it -- see docs/r2_max.md -- so it must not require the
@@ -1780,6 +1794,50 @@ class TestExp2Driver:
         means, stds = make_plots._trunk_mean_std(frame, "rho", ["b"])
         assert means == {labels.display_trunk_name("b"): [1.0, 0.8]}
         assert stds == {}
+
+    def test_the_drift_grid_ends_with_the_activation_norm(self) -> None:
+        r"""$p$ and $q$ are cosines, so both fall when the neutral state turns
+        off the persona axis and when it merely grows elsewhere.
+        $\|h^{\mathrm{neutral}}_t\|$ beside them is what tells the two apart."""
+        assert list(make_plots.DRIFT_Z_LABELS)[:4] == list(make_plots.Z_LABELS)
+        assert list(make_plots.DRIFT_Z_LABELS)[-1] == "h_norm"
+
+    def test_the_drift_figure_draws_the_norm_in_its_own_panel(self, tmp_path) -> None:
+        frame = pd.DataFrame(
+            [
+                {"trait": "evil", "trunk": "a", "seed": 0, "t": t, **values}
+                for t, values in enumerate(
+                    [
+                        {"p": 0.0, "q": 0.0, "rho": 1.0, "r": 30.0, "h_norm": 60.0},
+                        {"p": -0.1, "q": -0.2, "rho": 0.9, "r": 31.0, "h_norm": 66.0},
+                    ]
+                )
+            ]
+        )
+        saved = make_plots._drift_latent_figure(frame, tmp_path)
+
+        assert (tmp_path / "exp2_drift_z.png") in saved
+        # The panel the fifth column is drawn from: the norm's own series, on
+        # its own scale -- a length of order tens beside cosines on [-1, 1].
+        means, _ = make_plots._trunk_mean_std(frame, "h_norm", ["a"])
+        assert means == {labels.display_trunk_name("a"): [60.0, 66.0]}
+
+    def test_the_norm_panel_is_empty_before_the_backfill(self) -> None:
+        """An un-backfilled run reaches the frame with a NaN norm. The panel
+        says "not run" rather than drawing a line through nothing."""
+        frame = pd.DataFrame(
+            [
+                {
+                    "trait": "evil", "trunk": "a", "seed": 0, "t": t,
+                    "p": 0.0, "q": 0.0, "rho": 1.0 - 0.1 * t, "r": 30.0,
+                    "h_norm": np.nan,
+                }
+                for t in range(2)
+            ]
+        )
+        means, _ = make_plots._trunk_mean_std(frame, "h_norm", ["a"])
+        assert means == {}
+        assert make_plots._trunk_mean_std(frame, "rho", ["a"])[0]
 
 
 # --- demo.py -----------------------------------------------------------------

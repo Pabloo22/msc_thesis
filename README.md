@@ -179,7 +179,8 @@ CUDA_VISIBLE_DEVICES=1 bash scripts/run_family.sh EXP2_RESEED --seeds 3 4
 Read it on `exp2_drift_z.png`, where trunk A's solid line is the mean of all five seeds
 and the shaded region is $\pm 1$ seed SD: a wide band in $\rho$ or $r$ means the latent
 trajectory is not seed-stable and the mechanism regression's drift axis inherits that
-spread. `exp2_drift_delta_p.png` carries no band — see
+spread. The rightmost column, $\|h^{\mathrm{neutral}}_t\|$, is the same reading for the
+activation length the cosines divide out. `exp2_drift_delta_p.png` carries no band — see
 [`docs/reseed_probes.md`](docs/reseed_probes.md) for why these runs are probe-free and
 what that does and does not bound.
 
@@ -199,7 +200,7 @@ CUDA_VISIBLE_DEVICES=0 nohup bash scripts/run_family.sh EXP2_DECAY --trunks b > 
 CUDA_VISIBLE_DEVICES=1 nohup bash scripts/run_family.sh EXP2_DECAY --trunks c > exp2_c.log 2>&1 &
 ```
 
-**Before plotting — backfill `SE(b)`.** The headline figure's noise ceiling needs the
+**Before plotting — backfill `SE(b)`.** The $R^2_{max}$ noise ceiling needs the
 analytic standard error of every behaviour measurement. Checkpoints measured before that
 was recorded carry no `SE`, and show up as NaN rather than as zero. Run this wherever the
 store lives (the per-generation scores it reads exist only there), then sync
@@ -259,6 +260,16 @@ traits, so nothing is emitted per trait: `exp2_validation` (plot 1, a trait per 
 `exp2_phase_contrast` (4b, a trait per row) and `exp2_drift_delta_p` / `exp2_drift_z`
 (both plot 5, a trait per row). What they do *not* share across the traits is the scale,
 except where the quantity is unitless — a persona vector and a judge are per trait.
+
+`exp2_drift_z` has five columns, not four: $p$, $q$, $\rho$, $r$ and then
+$\|h^{\mathrm{neutral}}_t\|$, the length the first two were divided by. It is not a
+fifth coordinate of $z_t$ — it is what disambiguates the first two, since a cosine falls
+both when the neutral state turns off the persona axis and when it merely grows in
+directions unrelated to it. The column is empty on runs that predate
+`backfill_h_norm`; run it (above) and re-plot. Both trait rows show the same
+norm series, because `h_neutral` is the model's resting state and a trunk has
+one of those however many persona axes it is measured against — only $p$ and
+$q$, which the trait's $v$ enters, differ by row.
 
 Where phase 7 has run, `exp2_decay_grid`, `exp2_headline` and `exp2_phase_contrast` each
 carry the extra projection series on whichever trunks were covered. The four form a

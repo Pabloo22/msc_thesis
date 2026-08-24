@@ -33,6 +33,7 @@ import pandas as pd
 
 from method import experiments
 from method.config import DatasetVersion, StepConfig
+from method.latent import H_NORM
 from method.noise import delta_b_noise_variance, r2_max
 from method.visualization.collect import Collection, Run
 from method.visualization.metrics import bootstrap_fit
@@ -92,6 +93,18 @@ SERIES_COLUMNS = {
 
 #: $z_t$ components, in the order the proposal introduces them.
 Z_COMPONENTS = ("p", "q", "rho", "r")
+
+#: What :func:`latent_frame` carries per checkpoint: z_t and the activation
+#: length ``p`` and ``q`` were divided by.
+#:
+#: ``h_norm`` is deliberately not in :data:`Z_COMPONENTS`. It is recorded beside
+#: z_t rather than being part of it (see :data:`method.latent.H_NORM`), and that
+#: tuple is what the mechanism regression builds its drift predictors from --
+#: adding a raw length there would quietly give the fit a fifth predictor in
+#: units none of the other four are in. Here it is a series to plot next to
+#: them: the one thing that says whether a falling $p$ is the neutral state
+#: turning off the persona axis or merely growing in unrelated directions.
+LATENT_COLUMNS = (*Z_COMPONENTS, H_NORM)
 
 
 @dataclass(frozen=True)
@@ -758,6 +771,11 @@ def latent_frame(
     regression is read against. Kept in raw units: $\rho$ starts at 1 and $r$ at
     the persona vector's norm, but $p$ and $q$ start at essentially zero on the
     base model, and a "% of step 0" reading of those is division by noise.
+
+    Carries ``h_norm`` alongside the four (see :data:`LATENT_COLUMNS`), NaN for
+    a checkpoint measured before it was recorded and never backfilled --
+    :mod:`method.backfill_h_norm` fills those in where the store lives, and
+    until it has, the plot drops those seeds rather than drawing a short line.
     """
     rows = []
     for (trait, trunk, seed), series in sorted(
@@ -773,13 +791,13 @@ def latent_frame(
                     "steps_since_realignment": series.since[t],
                     "b_t": series.behavior[t],
                     "se_b_t": series.behavior_se[t],
-                    **{c: latent.get(c, np.nan) for c in Z_COMPONENTS},
+                    **{c: latent.get(c, np.nan) for c in LATENT_COLUMNS},
                 }
             )
     return pd.DataFrame(
         rows,
         columns=[
             "trait", "trunk", "seed", "t", "steps_since_realignment", "b_t",
-            "se_b_t", *Z_COMPONENTS,
+            "se_b_t", *LATENT_COLUMNS,
         ],
     )
