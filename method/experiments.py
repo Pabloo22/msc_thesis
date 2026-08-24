@@ -123,7 +123,7 @@ EXP1 = TrajectoryConfig(
 #: what lets a phase be run, plotted and judged on its own.
 EXP2_VALIDATION = "exp2_validation"  # section 5: the t=0 fan over all 24 datasets
 EXP2_DECAY = "exp2_decay"  # sections 3-4: three trunks, each fanned out at every t
-EXP2_RESEED = "exp2_reseed"  # section 6c: trunk A again under another seed
+EXP2_RESEED = "exp2_reseed"  # section 6c: the trunks again under other seeds
 EXP2_AXIS = "exp2_axis"  # the trunks again, re-projected onto the base axis
 EXP2_REGEN = "exp2_regen"  # the trunks again, re-answering the probes at every t
 EXP3 = "exp3"  # "Is a model trained on trait-eliciting data more prone to EM?"
@@ -561,12 +561,11 @@ def build_exp2_reseed_configs(
     *,
     seeds: Sequence[int] = EXP2_RESEED_SEEDS,
     measure_traits: Sequence[str] = MEASURE_TRAITS,
-    trunk: str = "a",
     trunks: Mapping[str, Sequence[StepConfig]] = EXP2_TRUNKS,
     probes: Sequence[StepConfig] = (),
     local: bool = False,
 ) -> list[TrajectoryConfig]:
-    """Section 6c: trunk A again under other fine-tuning seeds, no branches.
+    """Section 6c: every trunk again under other fine-tuning seeds, no branches.
 
     Six fine-tunings per seed and no fan, because only ``Delta b`` needs
     training -- ``z`` is a forward pass, so re-running the trunk alone
@@ -592,9 +591,13 @@ def build_exp2_reseed_configs(
     ``z`` gets the opposite treatment because the question is genuinely open
     there: nothing says a representational path has to reproduce just because a
     projection does.
+
+    Covers every trunk, like :func:`build_exp2_decay_configs`, so that plot 5's
+    band is a spread across seeds in all three columns rather than in one. Narrow
+    to a subset by passing a smaller ``trunks`` mapping, or leave the registry
+    alone and select at launch with ``run_family.sh EXP2_RESEED --trunks b``,
+    which reads the config's trunk label.
     """
-    if trunk not in trunks:
-        raise ValueError(f"unknown trunk {trunk!r}; known: {sorted(trunks)}")
     if EXP2_SEED in seeds:
         raise ValueError(
             f"reseed uses seed {EXP2_SEED}, which is the decay family's own seed; "
@@ -606,13 +609,14 @@ def build_exp2_reseed_configs(
         _exp2_config(
             name=f"exp2_reseed_trunk_{trunk}_{trait}",
             trait=trait,
-            steps=tuple(trunks[trunk]),
+            steps=tuple(steps),
             seed=seed,
             group=EXP2_RESEED,
             labels=(("role", "trunk"), ("trunk", trunk)),
             local=local,
             probes=probes,
         )
+        for trunk, steps in trunks.items()
         for trait in measure_traits
         for seed in seeds
     ]

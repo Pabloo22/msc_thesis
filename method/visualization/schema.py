@@ -139,7 +139,12 @@ class Trajectory:
         return [s.behavior[key] for s in self.steps]
 
     def z_series(self, component: str, source: str = "base") -> list[float]:
-        """One ``z_t`` component (``p``/``q``/``rho``/``r``) across every checkpoint.
+        """One ``z_t`` component across every checkpoint.
+
+        ``component`` is one of z_t's four (``p``/``q``/``rho``/``r``) or
+        ``h_norm``, the activation length ``p`` and ``q`` were divided by, which
+        blocks measured before it was recorded do not carry until
+        :mod:`method.backfill_h_norm` fills them in.
 
         Raises ``KeyError`` if any checkpoint lacks the series, for the same
         reason :meth:`probe_series` does: a short series plots as a truncated
@@ -153,6 +158,15 @@ class Trajectory:
                 f"latent at checkpoint(s) {missing}. Branch endpoints measure "
                 "only b by design (see method.config.MeasurementLevel); z is "
                 "recorded by the trunk they forked from."
+            )
+        unrecorded = [s.t for s in self.steps if component not in s.z[source]]
+        if unrecorded:
+            raise KeyError(
+                f"trajectory {self.name!r} (seed {self.seed}) records no "
+                f"{component!r} in its {source!r} latent at checkpoint(s) "
+                f"{unrecorded}. A block measured before a component existed "
+                "keeps its original fields until a backfill adds the rest "
+                "(for h_norm, python -m method.backfill_h_norm)."
             )
         return [s.z[source][component] for s in self.steps]
 

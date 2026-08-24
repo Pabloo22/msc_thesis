@@ -63,7 +63,7 @@ import torch
 from method import anchor_noise
 from method.config import Backend
 from method.latent import CONVENTION, LEGACY_CONVENTION
-from method.steps import Artifacts
+from method.steps import Artifacts, h_neutral_path
 from method.store import Store, atomic_file
 from method.utils import trajectories_root
 
@@ -113,11 +113,7 @@ def h_neutral_norm(
     value being converted, so the division undoes exactly the normalisation
     that was missing rather than an approximation of it.
     """
-    path = (
-        store.measurement_dir(weights_id)
-        / Artifacts.h_neutral(source)
-        / "mean_by_layer.pt"
-    )
+    path = h_neutral_path(store, weights_id, source)
     if not path.exists():
         return None
     return float(torch.load(path, weights_only=False)[layer].float().norm())

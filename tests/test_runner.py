@@ -389,6 +389,98 @@ class TestLatentSourcesFollowTheConfig:
         assert set(latents) == {"base", "current"}
 
 
+class TestCachedLatentGainsItsNorm:
+    """``h_norm`` was added after most checkpoints had been measured.
+
+    Every one of those has a ``latent_cosine.json`` that predates the field, and
+    ``compute_step_latent`` returns exactly what lands in ``trajectory.json`` --
+    so a cache hit that handed the old block straight back would keep producing
+    runs the backfill has to visit again, forever.
+    """
+
+    @staticmethod
+    def _measure(tmp_path):
+        store = Store(tmp_path)
+        backend = get_backend(Backend.MOCK, dtype="float16")
+        cfg = E.SMOKE_MOCK
+        steps.extract_persona_vector(cfg, 0, store, backend)
+        steps.measure_h_neutral(cfg, 0, store, backend)
+        return cfg, store
+
+    @staticmethod
+    def _strip_h_norm(cfg, store):
+        """Rewrite the cache as it looked before the field existed."""
+        path = store.trait_measurement(
+            get_weights_id(cfg, 0), cfg.trait, steps.Artifacts.LATENT_JSON
+        )
+        cached = json.loads(path.read_text())
+        legacy = {
+            source: {k: v for k, v in z.items() if k != "h_norm"}
+            for source, z in cached.items()
+        }
+        path.write_text(json.dumps(legacy))
+        return path, cached
+
+    def test_a_fresh_measurement_records_it(self, tmp_path):
+        cfg, store = self._measure(tmp_path)
+
+        latents = steps.compute_step_latent(cfg, 0, store)
+
+        assert latents["base"]["h_norm"] > 0
+
+    def test_a_cache_predating_the_field_is_filled_in(self, tmp_path):
+        cfg, store = self._measure(tmp_path)
+        steps.compute_step_latent(cfg, 0, store)
+        path, original = self._strip_h_norm(cfg, store)
+
+        latents = steps.compute_step_latent(cfg, 0, store)
+
+        assert latents["base"]["h_norm"] == pytest.approx(original["base"]["h_norm"])
+        # Written back, not just returned: the next reader must not pay for it
+        # again, and `latent_cosine.json` is what the backfills reconcile with.
+        assert json.loads(path.read_text())["base"]["h_norm"] == pytest.approx(
+            original["base"]["h_norm"]
+        )
+
+    def test_filling_in_never_rederives_z(self, tmp_path):
+        """p and q keep the anchor they were measured against.
+
+        Recomputing them would re-anchor the checkpoint onto whichever v_0 the
+        store holds now, and exp3 sits on several distinct base measurements --
+        so a stale-looking cache must be *added to*, never rebuilt.
+        """
+        cfg, store = self._measure(tmp_path)
+        steps.compute_step_latent(cfg, 0, store)
+        path, _ = self._strip_h_norm(cfg, store)
+        planted = json.loads(path.read_text())
+        planted["base"]["p"] = -0.123
+        path.write_text(json.dumps(planted))
+
+        latents = steps.compute_step_latent(cfg, 0, store)
+
+        assert latents["base"]["p"] == pytest.approx(-0.123)
+
+    def test_an_evicted_tensor_does_not_fail_the_step(self, tmp_path):
+        """The norm is a diagnostic; no figure depends on it.
+
+        A checkpoint whose activation bundle is no longer on this box must
+        still hand back its z, for `method.backfill_h_norm` to complete later
+        where the store lives.
+        """
+        cfg, store = self._measure(tmp_path)
+        steps.compute_step_latent(cfg, 0, store)
+        self._strip_h_norm(cfg, store)
+        shutil.rmtree(
+            store.measurement_dir(get_weights_id(cfg, 0))
+            / steps.Artifacts.h_neutral("base")
+        )
+
+        latents = steps.compute_step_latent(cfg, 0, store)
+
+        assert "h_norm" not in latents["base"]
+        assert set(latents["base"]) == {"p", "q", "rho", "r"}
+
+
 class TestBranchesMeasureOnlyTheirEndpoint:
     """``MeasurementLevel.ENDPOINT_BEHAVIOR``: the fan-out's cost control.
 

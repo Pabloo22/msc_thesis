@@ -104,10 +104,16 @@ def synthetic_trajectory(
     # trunks, where the neutral state sits a little negative on the trait axis
     # and each step moves it by a few hundredths.
     q = float(rng.normal(-0.22, 0.02))
+    # The length the cosines were divided by. Recorded rather than implied so
+    # the fixtures exercise the same schema the real runs write (see
+    # method.latent.H_NORM); the level and the few-percent creep per step are
+    # both taken from the measured trunks, where the neutral state grows
+    # slightly as training goes on.
+    h_norm = float(rng.normal(63.7, 1.5))
 
     steps: list[StepRecord] = []
     for t in range(len(datasets) + 1):
-        z = {"base": {"p": q * rho, "q": q, "rho": rho, "r": r}}
+        z = {"base": {"p": q * rho, "q": q, "rho": rho, "r": r, "h_norm": h_norm}}
         noisy_behavior = behavior + rng.normal(0, behavior_scale * noise)
         behavior_dict = {
             trait: float(np.clip(noisy_behavior, 0, 100)),
@@ -151,6 +157,7 @@ def synthetic_trajectory(
             rho = float(np.clip(rho - abs(pull) * rng.uniform(0.02, 0.08), -1.0, 1.0))
             r = float(r * (1 + pull * rng.uniform(0.0, 0.03)))
             q = float(np.clip(q + pull * rng.uniform(0.01, 0.04), -1.0, 1.0))
+            h_norm = float(h_norm * (1 + rng.uniform(0.002, 0.01)))
 
     return Trajectory(
         name=name,

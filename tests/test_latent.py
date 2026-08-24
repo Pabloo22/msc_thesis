@@ -15,10 +15,12 @@ import pytest
 import torch
 
 from method.latent import (
+    H_NORM,
     LatentState,
     compute_latent,
     cosine,
     delta_projection,
+    latent_record,
     project,
     summarize,
 )
@@ -88,13 +90,15 @@ class TestCosine:
         assert cosine(a, b * 0.01) == pytest.approx(base)
 
     def test_returns_python_float(self) -> None:
-        assert isinstance(cosine(torch.tensor([1.0, 1.0]), torch.tensor([1.0, 0.0])), float)
+        assert isinstance(
+            cosine(torch.tensor([1.0, 1.0]), torch.tensor([1.0, 0.0])), float
+        )
 
     def test_known_angle(self) -> None:
         # 45 degrees between the two axes' diagonal and one axis.
-        assert cosine(torch.tensor([1.0, 1.0]), torch.tensor([1.0, 0.0])) == pytest.approx(
-            1.0 / math.sqrt(2.0)
-        )
+        assert cosine(
+            torch.tensor([1.0, 1.0]), torch.tensor([1.0, 0.0])
+        ) == pytest.approx(1.0 / math.sqrt(2.0))
 
 
 class TestComputeLatent:
@@ -104,8 +108,8 @@ class TestComputeLatent:
         h = torch.tensor([3.0, 4.0, 0.0])
         z = compute_latent(v0, vt, h)
 
-        assert z.p == pytest.approx(cosine(h, v0))    # drift on original axis
-        assert z.q == pytest.approx(cosine(h, vt))    # alignment on current axis
+        assert z.p == pytest.approx(cosine(h, v0))  # drift on original axis
+        assert z.q == pytest.approx(cosine(h, vt))  # alignment on current axis
         assert z.rho == pytest.approx(cosine(v0, vt))  # rotation of the vector
         assert z.r == pytest.approx(vt.norm().item())  # magnitude of the vector
 
@@ -114,8 +118,8 @@ class TestComputeLatent:
         vt = torch.tensor([0.0, 2.0, 0.0])
         h = torch.tensor([3.0, 4.0, 0.0])
         z = compute_latent(v0, vt, h)
-        assert z.p == pytest.approx(0.6)   # cos of the 3-4-5 triangle onto x
-        assert z.q == pytest.approx(0.8)   # onto y; the norm-2 vector cancels
+        assert z.p == pytest.approx(0.6)  # cos of the 3-4-5 triangle onto x
+        assert z.q == pytest.approx(0.8)  # onto y; the norm-2 vector cancels
         assert z.rho == pytest.approx(0.0)  # x perpendicular to y
         assert z.r == pytest.approx(2.0)
 
@@ -184,13 +188,67 @@ class TestComputeLatent:
             compute_latent(v0, vt, h)
 
 
+class TestLatentRecord:
+    """What ``compute_step_latent`` actually writes: z_t plus its normaliser."""
+
+    def test_carries_z_t_unchanged(self) -> None:
+        v0, vt = torch.tensor([1.0, 0.0]), torch.tensor([0.0, 1.0])
+        h = torch.tensor([3.0, 4.0])
+
+        record = latent_record(v0, vt, h)
+
+        assert {k: v for k, v in record.items() if k != H_NORM} == compute_latent(
+            v0, vt, h
+        ).as_dict()
+
+    def test_records_the_activation_norm(self) -> None:
+        record = latent_record(
+            torch.tensor([1.0, 0.0]),
+            torch.tensor([0.0, 1.0]),
+            torch.tensor([3.0, 4.0]),
+        )
+        assert record[H_NORM] == pytest.approx(5.0)
+
+    def test_the_norm_recovers_the_projection(self) -> None:
+        """``p * h_norm`` is the scalar projection the old convention reported.
+
+        The property that makes the cosine convention reversible, and the whole
+        reason the field is recorded rather than discarded.
+        """
+        v0 = torch.tensor([2.0, 0.0])
+        h = torch.tensor([3.0, 4.0])
+
+        record = latent_record(v0, v0.clone(), h)
+
+        assert record["p"] * record[H_NORM] == pytest.approx(float(project(h, v0)))
+
+    def test_leaves_z_t_a_four_tuple(self) -> None:
+        """z_t is (p, q, rho, r); the norm rides beside it, not inside it.
+
+        Anything iterating a LatentState -- the anchor-noise tables, the figure
+        labels -- must not gain a fifth component just because the record did.
+        """
+        assert set(LatentState.__dataclass_fields__) == {"p", "q", "rho", "r"}
+
+    def test_returns_python_floats(self) -> None:
+        record = latent_record(
+            torch.tensor([1.0, 0.0]),
+            torch.tensor([0.0, 1.0]),
+            torch.tensor([1.0, 1.0]),
+        )
+        for value in record.values():
+            assert isinstance(value, float)
+
+
 class TestDeltaProjection:
     def test_equals_difference_of_projections(self) -> None:
         target = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
         predicted = torch.tensor([[0.0, 1.0], [2.0, 2.0]])
         vector = torch.tensor([1.0, 1.0])
         expected = project(target, vector) - project(predicted, vector)
-        torch.testing.assert_close(delta_projection(target, predicted, vector), expected)
+        torch.testing.assert_close(
+            delta_projection(target, predicted, vector), expected
+        )
 
     def test_identical_activations_give_zero(self) -> None:
         acts = torch.randn(5, 8, generator=torch.Generator().manual_seed(0))
@@ -253,8 +311,16 @@ class TestSummarize:
     def test_all_expected_keys_present(self) -> None:
         keys = set(summarize(torch.arange(10, dtype=torch.float32)))
         assert keys == {
-            "mean", "std", "min", "p05", "p25",
-            "median", "p75", "p95", "max", "n",
+            "mean",
+            "std",
+            "min",
+            "p05",
+            "p25",
+            "median",
+            "p75",
+            "p95",
+            "max",
+            "n",
         }
 
 

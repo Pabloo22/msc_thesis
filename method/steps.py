@@ -32,7 +32,7 @@ from method.config import (
     StepConfig,
     TrajectoryConfig,
 )
-from method.latent import compute_latent, delta_projection, summarize
+from method.latent import H_NORM, delta_projection, latent_record, summarize
 from method.noise import behavior_summary
 from method.store import (
     Store,
@@ -374,22 +374,71 @@ def _neutral_answers_for(
     return out
 
 
+def h_neutral_path(store: Store, wid: str, source: str) -> Path:
+    """A checkpoint's mean neutral activation, one row per layer.
+
+    One definition shared by the measurement below and by the backfills that
+    have to find the same tensor after the fact.
+    """
+    return store.measurement_dir(wid) / Artifacts.h_neutral(source) / "mean_by_layer.pt"
+
+
+def _fill_h_norm(
+    cached: dict[str, dict[str, float]],
+    wid: str,
+    layer: int,
+    store: Store,
+    out: Path,
+) -> dict[str, dict[str, float]]:
+    """Add :data:`method.latent.H_NORM` to a cached z that predates it.
+
+    Strictly an addition: ``p``, ``q``, ``rho`` and ``r`` are handed back
+    exactly as they were measured. Recomputing them instead would re-anchor the
+    entry onto whichever ``v_0`` the store holds *now*, and exp3 is known to sit
+    on several distinct base measurements (see
+    :mod:`method.visualization.latent_audit`) -- so a cached run would quietly
+    change meaning on re-read rather than merely gain a field.
+
+    A checkpoint whose activation tensor is no longer on this machine keeps its
+    record unchanged. The norm is a diagnostic that no figure depends on, so a
+    tensor that has been evicted must not fail a trajectory that is otherwise
+    complete; :mod:`method.backfill_h_norm` fills those in where the store lives.
+    """
+    filled = False
+    for source, z in cached.items():
+        if H_NORM in z:
+            continue
+        path = h_neutral_path(store, wid, source)
+        if not path.exists():
+            logger.debug(
+                "no h_neutral tensor for %s/%s, leaving h_norm unset", wid, source
+            )
+            continue
+        z[H_NORM] = float(torch.load(path, weights_only=False)[layer].float().norm())
+        filled = True
+
+    if filled:
+        with atomic_file(out) as scratch:
+            scratch.write_text(json.dumps(cached, indent=2), encoding="utf-8")
+    return cached
+
+
 def compute_step_latent(
     cfg: TrajectoryConfig, t: int, store: Store
 ) -> dict[str, dict[str, float]]:
-    """z_t = (p, q, rho, r), one entry per h_neutral source."""
+    """z_t = (p, q, rho, r) and the ``h_norm`` it was normalised by, per source."""
     wid = get_weights_id(cfg, t)
     out = store.trait_measurement(wid, cfg.trait, Artifacts.LATENT_JSON)
     sources = cfg.latent.h_neutral_source.sources
+    layer = cfg.model.layer
     if out.exists():
         cached = json.loads(out.read_text())
         # The filename does not encode which sources were requested, so a run
         # measured under BASE and later re-configured to BOTH would otherwise
         # hand back a dict silently missing the "current" series.
         if all(source in cached for source in sources):
-            return cached
+            return _fill_h_norm(cached, wid, layer, store, out)
 
-    layer = cfg.model.layer
     v0 = torch.load(
         store.trait_measurement(
             get_weights_id(cfg, 0), cfg.trait, Artifacts.persona_vector(cfg.trait)
@@ -403,13 +452,8 @@ def compute_step_latent(
 
     latents = {}
     for source in sources:
-        h = torch.load(
-            store.measurement_dir(wid)
-            / Artifacts.h_neutral(source)
-            / "mean_by_layer.pt",
-            weights_only=False,
-        )[layer]
-        latents[source] = compute_latent(v0, vt, h).as_dict()
+        h = torch.load(h_neutral_path(store, wid, source), weights_only=False)[layer]
+        latents[source] = latent_record(v0, vt, h)
 
     with atomic_file(out) as scratch:
         scratch.write_text(json.dumps(latents, indent=2), encoding="utf-8")

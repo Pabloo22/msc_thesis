@@ -101,7 +101,7 @@ import torch
 from method import experiments, report, steps
 from method.backends import ExecutionBackend, get_backend, materialize
 from method.config import Backend, HNeutralSource, TrajectoryConfig
-from method.latent import compute_latent
+from method.latent import latent_record
 from method.notify import Heartbeat, Notifier
 from method.steps import Artifacts
 from method.store import Store, StoreSelection, atomic_dir, atomic_file, get_weights_id
@@ -342,11 +342,11 @@ def replicate_latent(
     def at(path: Path) -> torch.Tensor:
         return torch.load(path, weights_only=False)[layer]
 
-    return compute_latent(
+    return latent_record(
         at(persona_vector_path(store, cfg, 0, replicate)),
         at(persona_vector_path(store, cfg, t, replicate)),
         at(h_neutral_path(store, cfg, t, replicate)),
-    ).as_dict()
+    )
 
 
 # --- the run ---------------------------------------------------------------

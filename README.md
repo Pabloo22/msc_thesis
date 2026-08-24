@@ -209,6 +209,21 @@ poetry run python -m method.backfill_se --dry-run
 poetry run python -m method.backfill_se
 ```
 
+**Before plotting — backfill `z`.** Two passes over the same run directories, for the
+same reason: `p` and `q` became cosines, and a block written before that carries scalar
+projections (`backfill_latent_cosine`) or no record of the length they were divided by
+(`backfill_h_norm`). Both read one 417KB tensor per checkpoint, so both need the store
+and neither needs a GPU. Order does not matter; each is idempotent and leaves any file
+it cannot fully reach alone. See
+[`docs/todo_normalize_h_neutral.md`](docs/todo_normalize_h_neutral.md).
+```bash
+poetry run python -m method.backfill_latent_cosine --dry-run
+poetry run python -m method.backfill_latent_cosine
+poetry run python -m method.backfill_h_norm --dry-run
+poetry run python -m method.backfill_h_norm
+poetry run python -m method.sync push-runs
+```
+
 **Phase 7a — $\Delta \hat{P}_t^{v_0}$ (free).** Every trunk re-projected onto the *base*
 model's persona vector instead of its own. DeltaP normally refreshes the axis and the
 activations together, so the decay from $\Delta P_0$ confounds the persona direction

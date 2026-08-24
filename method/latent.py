@@ -36,6 +36,23 @@ CONVENTION = "cosine"
 #: activation's. :mod:`method.backfill_latent_cosine` converts these in place.
 LEGACY_CONVENTION = "projection"
 
+#: Key under which every ``z`` block carries ``||h_neutral_t||``, the length
+#: :func:`cosine` divides out of ``p`` and ``q``.
+#:
+#: Not a fifth coordinate of z_t -- that is and stays ``(p, q, rho, r)`` -- but
+#: the normaliser recorded beside it, for two reasons. It makes the convention
+#: reversible: ``p * h_norm`` is exactly the scalar projection the old one
+#: reported, so no result is locked behind the choice. And it answers the one
+#: question a cosine cannot: ``p`` falling can mean the neutral state turned off
+#: the persona axis *or* merely grew in unrelated directions, and only the norm
+#: separates the two.
+#:
+#: Absent from any block written before this existed; :mod:`method.backfill_h_norm`
+#: fills those in from the store. Nothing derives a figure from it yet, so its
+#: absence degrades rather than raises -- see
+#: :func:`method.steps.compute_step_latent`.
+H_NORM = "h_norm"
+
 
 @dataclass(frozen=True)
 class LatentState:
@@ -100,6 +117,21 @@ def compute_latent(
         rho=cosine(v0, vt),
         r=float(vt.float().norm()),
     )
+
+
+def latent_record(
+    v0: torch.Tensor, vt: torch.Tensor, h_neutral_t: torch.Tensor
+) -> dict[str, float]:
+    """One ``z`` block as it is written to disk: z_t plus :data:`H_NORM`.
+
+    The norm is free here -- ``h_neutral_t`` is already loaded and
+    :func:`cosine` computes its length anyway -- which is the whole reason to
+    take it at measurement time rather than reconstruct it later from a store
+    that may no longer be on the machine doing the reading.
+    """
+    record = compute_latent(v0, vt, h_neutral_t).as_dict()
+    record[H_NORM] = float(h_neutral_t.float().norm())
+    return record
 
 
 def delta_projection(

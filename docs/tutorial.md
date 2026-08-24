@@ -161,7 +161,7 @@ Now the five quantities:
 | **`bₜ`** | behaviour | judge scores on eval questions | Does `Mₜ` *act* evil/sycophantic/…? (the ground-truth outcome) |
 | **`vₜ`** | persona vector | extracted trait direction at step `t` | The trait axis itself |
 | **`h_neutralₜ`** | neutral activations | mean activation over a fixed neutral prompt set | Where the model's "resting" internal state sits |
-| **`zₜ`** | latent state | `(p, q, ρ, r)` — see below | A 4-number summary of drift |
+| **`zₜ`** | latent state | `(p, q, ρ, r)`, recorded with `h_norm` — see below | A 4-number summary of drift |
 | **`ΔP`** | projection difference | per-example shift the *next* dataset asks for | How hard the upcoming step pushes along the trait axis |
 
 The **latent state** `zₜ = (p, q, ρ, r)` combines `v₀`, `vₜ` and `h_neutralₜ`:
@@ -182,6 +182,12 @@ a `zₜ` plot readable without knowing the scale the hidden states live at. `p`
 and `q` were scalar projections until the change recorded in
 [`todo_normalize_h_neutral.md`](todo_normalize_h_neutral.md), which is also
 where you will find how already-measured runs get converted.
+
+Each `z` block also carries **`h_norm`** — `‖h_neutralₜ‖`, the length `p` and
+`q` were divided by. Not a fifth component of `zₜ`, but the record of what the
+normalisation removed: `p × h_norm` recovers the old scalar projection, and a
+`h_norm` series is the only thing that says whether a falling `p` is the neutral
+state turning off the trait axis or merely growing in unrelated directions.
 
 And `ΔP` for a training example is the shift it demands along the current axis:
 

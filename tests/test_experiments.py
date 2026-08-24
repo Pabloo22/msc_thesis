@@ -265,11 +265,17 @@ class TestExp2Design:
             if cfg.label_map["role"] == "branch":
                 assert int(cfg.label_map["t"]) >= 1
 
-    def test_reseed_replicates_trunk_a_under_different_seeds(self):
+    def test_reseed_replicates_every_trunk_under_different_seeds(self):
+        # Every trunk, not just A: plot 5 draws a seed band per column, and a
+        # family registered for one trunk leaves the other two as bare lines.
         reseed = E.build_exp2_reseed_configs(measure_traits=("evil",))
+        assert {cfg.label_map["trunk"] for cfg in reseed} == set(E.EXP2_TRUNKS)
+        for name in E.EXP2_TRUNKS:
+            seeds = [c.seed for c in reseed if c.label_map["trunk"] == name]
+            assert seeds == list(E.EXP2_RESEED_SEEDS)
+
         trunk, _ = self.trunk_and_branches("a")
-        assert [cfg.seed for cfg in reseed] == list(E.EXP2_RESEED_SEEDS)
-        for cfg in reseed:
+        for cfg in (c for c in reseed if c.label_map["trunk"] == "a"):
             assert cfg.steps == trunk.steps
             assert cfg.seed != trunk.seed
             # Different seed, so every trained checkpoint is genuinely re-run --
