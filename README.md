@@ -261,6 +261,15 @@ traits, so nothing is emitted per trait: `exp2_validation` (plot 1, a trait per 
 (both plot 5, a trait per row). What they do *not* share across the traits is the scale,
 except where the quantity is unitless — a persona vector and a judge are per trait.
 
+`exp2_decay_grid` draws two of the projection differences, not all of them: $\Delta P_0$
+and $\Delta P_t$, the ends of the ladder. A panel that size shows a *relationship* —
+whether the cloud still has a line in it — and two series is as many as one can show
+that for; the rungs between them are read as numbers across checkpoints, which is what
+`exp2_decay_correlations` is. That table carries every measured series at every
+checkpoint of every trunk, the two drawn ones included, and is written twice: a
+`.tex` `tabular` fragment to `\input` (the caption and label stay in the report) and a
+`.csv` to read back. Change which two the grid draws with `DECAY_GRID_SERIES`.
+
 `exp2_drift_z` has five columns, not four: $p$, $q$, $\rho$, $r$ and then
 $\|h^{\mathrm{neutral}}_t\|$, the length the first two were divided by. It is not a
 fifth coordinate of $z_t$ — it is what disambiguates the first two, since a cosine falls

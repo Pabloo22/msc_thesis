@@ -10,13 +10,14 @@ result with :func:`method.visualization.style.save_figure`.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
 from matplotlib.artist import Artist
 from matplotlib.axes import Axes
+from matplotlib.collections import PathCollection
 from matplotlib.figure import Figure
 from matplotlib.patches import Patch
 from matplotlib.transforms import Bbox
@@ -834,8 +835,7 @@ class _DecaySeries:
     """One projection-difference series as a decay panel draws it."""
 
     column: str
-    #: The symbol, without math delimiters, so the figure can set it both on
-    #: its own and inside ``r(...)`` without either spelling it out twice.
+    #: The symbol the series is written as, without math delimiters.
     symbol: str
     color: str
     #: What the legend says the series is, beyond its symbol.
@@ -844,10 +844,6 @@ class _DecaySeries:
     @property
     def label(self) -> str:
         return f"${self.symbol}$"
-
-    @property
-    def corr_label(self) -> str:
-        return rf"$r({self.symbol})$"
 
 
 #: The series a decay panel can hold, in the order they are layered. Each is a
@@ -868,18 +864,412 @@ _DECAY_SERIES: tuple[_DecaySeries, ...] = (
 )
 
 
-def _panel_series(panel: pd.DataFrame) -> list[_DecaySeries]:
-    """The series this panel has a complete column for.
+def _panel_series(
+    panel: pd.DataFrame, wanted: Sequence[str] | None = None
+) -> list[_DecaySeries]:
+    """The series this panel has a complete column for, of those asked for.
 
     Incomplete is treated as absent. A fit over whichever probes happened to be
     measured would be a correlation over a different probe set than the one
-    annotated beside it, and the panels exist to be compared.
+    labelled beside it, and the panels exist to be compared.
     """
     return [
         series
         for series in _DECAY_SERIES
-        if series.column in panel and not panel[series.column].isna().any()
+        if (wanted is None or series.column in wanted)
+        and series.column in panel
+        and not panel[series.column].isna().any()
     ]
+
+
+#: How many positions along its own line a label is offered, how many
+#: text-heights of clearance off the line it may stand at, and how far it is
+#: held off whatever it is placed against, in points.
+_FIT_LABEL_STEPS = 17
+_FIT_LABEL_AWAY = 3
+_FIT_LABEL_PAD = 2.5
+
+#: How much of the panel a mark claims, in points: half the width of the
+#: largest one the grid draws, plus its outline. A label that comes this close
+#: to a point is printing over it.
+_MARK_RADIUS = 4.0
+
+#: How many points a fit line is tested as. Enough that a label cannot slip
+#: between two of them and call the line missed.
+_CURVE_SAMPLES = 40
+
+#: What a position pays for each thing it would print over. A mark is a
+#: measurement and the panel exists to show it; a fit line is thin and a reader
+#: follows it past a number without losing it; a rule spans the panel, so it
+#: can be picked up again either side; a label already printed cannot be
+#: overlapped at all. Leaving the panel is not costed but forbidden, and the
+#: price here only orders the fallback for a label with nowhere clear to go.
+_COST_MARK = 12.0
+_COST_CURVE = 3.0
+_COST_RULE = 4.0
+_COST_TAKEN = 100.0
+_COST_OFF_PANEL = 500.0
+
+#: ...and what it pays for getting there: a step along its own line, a
+#: text-height of clearance off it, hanging under the line rather than over it,
+#: and running forward off the line's end rather than back along it. All are
+#: cheap next to hiding a mark, which is the point of the search -- a label
+#: anywhere near a line still names that line, so moving is nearly free and
+#: hiding data is not -- and they are ordered so that, all else equal, a label
+#: sits at the end of its line, over it, reading back into the panel.
+_COST_STEP = 0.4
+_COST_AWAY = 1.5
+_COST_UNDER = 1.0
+_COST_FORWARD = 0.5
+
+
+@dataclass(frozen=True)
+class _Box:
+    """A rectangle in axes fractions."""
+
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+
+    def holds(self, x: float, y: float, pad: tuple[float, float] = (0.0, 0.0)) -> bool:
+        """Whether ``(x, y)`` falls inside, grown by ``pad`` on each side."""
+        px, py = pad
+        return self.x0 - px <= x <= self.x1 + px and self.y0 - py <= y <= self.y1 + py
+
+    def hits(self, other: _Box) -> bool:
+        return not (
+            self.x1 < other.x0
+            or other.x1 < self.x0
+            or self.y1 < other.y0
+            or other.y1 < self.y0
+        )
+
+    @property
+    def spilled(self) -> float:
+        """How far it sticks out of the panel, summed over its four sides."""
+        return (
+            max(0.0, -self.x0)
+            + max(0.0, -self.y0)
+            + max(0.0, self.x1 - 1.0)
+            + max(0.0, self.y1 - 1.0)
+        )
+
+
+@dataclass(frozen=True)
+class _Panel:
+    """One panel's geometry, in the axes fractions a label is placed in.
+
+    Fractions rather than data units because a label's size is a size on paper:
+    the same number of points is a different number of $\\Delta P$ in every
+    column of a grid whose traits are on their own scales, but always the same
+    fraction of a panel that is the same size.
+    """
+
+    xlim: tuple[float, float]
+    ylim: tuple[float, float]
+    width_in: float
+    height_in: float
+
+    @classmethod
+    def of(cls, ax: Axes) -> _Panel:
+        """Measure ``ax`` as it is currently laid out.
+
+        Only valid once the grid around it has been laid out: a panel is not
+        the size it will be printed at until then, and neither is anything
+        placed by measuring it.
+        """
+        box = ax.get_window_extent()
+        dpi = ax.figure.dpi
+        return cls(
+            xlim=ax.get_xlim(),
+            ylim=ax.get_ylim(),
+            width_in=box.width / dpi,
+            height_in=box.height / dpi,
+        )
+
+    def at(self, x: float, y: float) -> tuple[float, float]:
+        """``(x, y)`` in data units, as a fraction of the panel."""
+        (x0, x1), (y0, y1) = self.xlim, self.ylim
+        return (x - x0) / (x1 - x0), (y - y0) / (y1 - y0)
+
+    def size(self, width: float, height: float) -> tuple[float, float]:
+        """A size in points, as a fraction of the panel."""
+        return width / 72 / self.width_in, height / 72 / self.height_in
+
+
+@dataclass(frozen=True)
+class _FitLabel:
+    """A label and the fit line it is to be printed beside."""
+
+    text: str
+    color: str
+    fit: LinearFit
+    #: The x range the line was drawn over: the stretch of it a label may be
+    #: placed along, and no further.
+    span: tuple[float, float]
+
+    @property
+    def rising(self) -> bool:
+        return self.fit.slope >= 0
+
+    @property
+    def start(self) -> float:
+        """The height of the line's upper end, where a label is offered first."""
+        return float(self.fit.predict(self.walk(0.0)[0]))
+
+    def walk(self, back: float) -> tuple[float, float]:
+        """The point a fraction ``back`` along the line from its upper end."""
+        low, high = self.span
+        top, bottom = (high, low) if self.rising else (low, high)
+        x = top + (bottom - top) * back
+        return x, float(self.fit.predict(x))
+
+
+def _fit_label(text: str, color: str, x: np.ndarray, fit: LinearFit) -> _FitLabel:
+    """Bind ``text`` to the line ``fit`` draws over ``x``."""
+    line_x = _fit_line_x(x)
+    return _FitLabel(
+        text=text,
+        color=color,
+        fit=fit,
+        span=(float(line_x[0]), float(line_x[-1])),
+    )
+
+
+@dataclass(frozen=True)
+class _Placement:
+    """One position a label could take, and the footprint it would have there.
+
+    Anchored on the line, in axes fractions, plus the offset in points the text
+    is printed at from there -- the two coordinate systems a label lives in: it
+    belongs to a place in the panel, and it takes up a size on the page.
+    """
+
+    box: _Box
+    x: float
+    y: float
+    dx: float
+    dy: float
+    ha: str
+    va: str
+    #: What the position had to give up to exist: steps back along the line,
+    #: text-heights of clearance off it, hanging under the line rather than
+    #: over it, and running forward off its end rather than back along it.
+    step: int
+    away: int
+    under: bool
+    forward: bool
+
+
+def _text_size(ax: Axes, text: str, fontsize: float) -> tuple[float, float]:
+    """The size ``text`` prints at, in points, including its bbox padding.
+
+    Measured rather than estimated from the character count: the labels are
+    mathtext, and a placement search is only as good as its idea of how much
+    room the thing it is placing takes.
+    """
+    artist = ax.text(0.0, 0.0, text, fontsize=fontsize, transform=ax.transAxes)
+    # Every figure here is drawn on the Agg canvas the style module fixes, and
+    # the base canvas class does not declare the renderer that one has.
+    renderer = ax.figure.canvas.get_renderer()  # type: ignore[attr-defined]
+    extent = artist.get_window_extent(renderer)
+    artist.remove()
+    scale = 72 / ax.figure.dpi
+    return (
+        extent.width * scale + 2 * _FIT_LABEL_PAD,
+        extent.height * scale + 2 * _FIT_LABEL_PAD,
+    )
+
+
+def _placements(
+    label: _FitLabel, panel: _Panel, size: tuple[float, float]
+) -> Iterator[_Placement]:
+    """Every position ``label`` could take, in points along and off its line.
+
+    Four to a point on the line -- over it or under it, running back along it
+    or forward off its end -- because which of the wedges a line divides its
+    panel into is the empty one is a property of the cloud, not of the line: a
+    rising fit through a cloud that flattens at the top has room above it
+    exactly where a fit through a rising cloud has none.
+
+    And each of those at a few text-heights of clearance off the line, which is
+    what reaches the empty half of a panel whose cloud lies along the line
+    itself. A label standing off its line still reads as that line's while it
+    is the nearest one to it, and in the panels that need the room -- a flat
+    sycophancy trunk, where three near-parallel fits run through one band of
+    marks -- the space either side of the band is the only space there is.
+    """
+    width_pt, height_pt = size
+    width, height = panel.size(width_pt, height_pt)
+    pad_x, pad_y = panel.size(_FIT_LABEL_PAD, _FIT_LABEL_PAD)
+    for step in range(_FIT_LABEL_STEPS):
+        x, y = panel.at(*label.walk(step / (_FIT_LABEL_STEPS - 1)))
+        for under in (False, True):
+            # Back along the line is the direction that keeps the text beside
+            # the fit rather than trailing off the end of it; the other is
+            # offered anyway, and costed, for the panels with no room there.
+            back = label.rising is not under
+            for left in (back, not back):
+                for away in range(_FIT_LABEL_AWAY):
+                    lift = pad_y + away * height
+                    anchor_x = x - pad_x if left else x + pad_x
+                    anchor_y = y - lift if under else y + lift
+                    x0, x1 = (
+                        (anchor_x - width, anchor_x)
+                        if left
+                        else (anchor_x, anchor_x + width)
+                    )
+                    y0, y1 = (
+                        (anchor_y - height, anchor_y)
+                        if under
+                        else (anchor_y, anchor_y + height)
+                    )
+                    yield _Placement(
+                        box=_Box(x0, y0, x1, y1),
+                        x=x,
+                        y=y,
+                        dx=-_FIT_LABEL_PAD if left else _FIT_LABEL_PAD,
+                        dy=(
+                            -(_FIT_LABEL_PAD + away * height_pt)
+                            if under
+                            else _FIT_LABEL_PAD + away * height_pt
+                        ),
+                        ha="right" if left else "left",
+                        va="top" if under else "bottom",
+                        step=step,
+                        away=away,
+                        under=under,
+                        forward=left is not back,
+                    )
+
+
+def _label_fits(
+    ax: Axes,
+    entries: Sequence[tuple[str, str, ArrayLike, LinearFit]],
+    *,
+    rules: Sequence[float] = (),
+    fontsize: float = 7.0,
+) -> None:
+    r"""Print each fit's $r$ beside the line it was measured from.
+
+    Direct labelling in place of a per-panel key. A key makes the reader carry
+    a colour from a corner of the panel over to a line to find out which fit a
+    number belongs to, and at this grid's panel size a three-entry stack of
+    them takes more of the panel than the data does. A label against its own
+    line is read where the line is looked at, and it is what lets the text drop
+    the series name and print $r$ alone: position says which line the number
+    belongs to, with colour repeating it.
+
+    Where along the line is chosen by looking at what is already drawn in the
+    panel. Every position on the line is costed by what its label would cover
+    there -- marks first, then the other fits and any rule in ``rules`` -- plus
+    a little for how far it sits from the line's upper end, and the cheapest
+    wins. Moving costs almost nothing next to hiding a point, so a label takes
+    the end of its line when that corner is clear and slides down into the
+    panel's empty half when it is not, which is the whole reason to search
+    rather than to anchor: which corner of a decay panel is empty changes from
+    trunk to trunk and checkpoint to checkpoint, and there are forty-two of
+    them.
+
+    ``entries`` are ``(text, colour, x, fit)``, one per drawn series, sharing
+    ``ax``. A series of fewer than two points has no line to label and is
+    skipped, matching :func:`_scatter_with_fit`, which draws none. Labels are
+    placed in turn and never overlap: a series that agrees with one already
+    placed -- $\Delta P_0$ and $\Delta P_t$ agreeing is what an unaged trunk
+    looks like -- finds its line's best spots taken and moves along it.
+
+    ``rules`` are heights the panel has drawn a line across its whole width at.
+    A rule is read along its length, so a number parked on it costs more than
+    the same number anywhere else in the panel, though less than a hidden mark:
+    a rule interrupted is still a rule.
+
+    Call this only once the grid has been laid out. Everything here is measured
+    off the panel as it stands, and a panel that has still to be fitted around
+    a legend is not the shape the label will be printed in.
+    """
+    labels = [
+        _fit_label(text, color, np.asarray(x, dtype=float), fit)
+        for text, color, x, fit in entries
+        if np.asarray(x, dtype=float).size >= 2
+    ]
+    if not labels:
+        return
+    panel = _Panel.of(ax)
+    marks = [
+        panel.at(float(x), float(y))
+        for collection in ax.collections
+        if isinstance(collection, PathCollection)
+        for x, y in np.asarray(collection.get_offsets(), dtype=float)
+    ]
+    mark_pad = panel.size(_MARK_RADIUS, _MARK_RADIUS)
+    curves = [
+        [
+            panel.at(*label.walk(step / (_CURVE_SAMPLES - 1)))
+            for step in range(_CURVE_SAMPLES)
+        ]
+        for label in labels
+    ]
+    levels = [panel.at(0.0, level)[1] for level in rules]
+    taken: list[_Box] = []
+
+    def cost(
+        placement: _Placement, others: Sequence[Sequence[tuple[float, float]]]
+    ) -> float:
+        """What ``placement`` would hide, plus what it gave up to get there."""
+        box = placement.box
+        return (
+            _COST_STEP * placement.step
+            + _COST_AWAY * placement.away
+            + _COST_UNDER * placement.under
+            + _COST_FORWARD * placement.forward
+            + _COST_OFF_PANEL * box.spilled
+            + _COST_MARK * sum(box.holds(x, y, mark_pad) for x, y in marks)
+            + _COST_CURVE
+            * sum(any(box.holds(*point) for point in curve) for curve in others)
+            + _COST_RULE * sum(box.y0 <= level <= box.y1 for level in levels)
+            + _COST_TAKEN * sum(box.hits(other) for other in taken)
+        )
+
+    # Highest line first, so the label with the least room to give up -- the
+    # one whose line ends nearest the top of the panel -- chooses first.
+    for index in sorted(range(len(labels)), key=lambda i: -labels[i].start):
+        label = labels[index]
+        others = [curve for i, curve in enumerate(curves) if i != index]
+        options = list(_placements(label, panel, _text_size(ax, label.text, fontsize)))
+        # The panel's edge is a wall rather than a cost: a label past it reads
+        # as belonging to the panel next door, which is worse than anything it
+        # could have been hiding inside its own. Only a label with nowhere at
+        # all to go falls back on the costed order.
+        inside = [option for option in options if not option.box.spilled]
+        best = min(
+            inside or options, key=lambda placement: cost(placement, others)
+        )
+        taken.append(best.box)
+        ax.annotate(
+            label.text,
+            xy=(best.x, best.y),
+            xycoords="axes fraction",
+            xytext=(best.dx, best.dy),
+            textcoords="offset points",
+            ha=best.ha,
+            va=best.va,
+            fontsize=fontsize,
+            color=label.color,
+            zorder=5,
+            # A label can end up over the data even so -- a crowded panel has
+            # no clear spot, only a cheapest one -- and a marker behind it
+            # costs a digit. The patch is the chart surface itself, so it reads
+            # as clearance rather than as a box, and mostly rather than fully
+            # opaque: enough to keep the digits off a marker's outline, not so
+            # much that it erases the marker.
+            bbox={
+                "facecolor": style.SURFACE,
+                "edgecolor": "none",
+                "alpha": 0.6,
+                "pad": _FIT_LABEL_PAD,
+            },
+        )
 
 
 def decay_scatter_grid(
@@ -890,6 +1280,7 @@ def decay_scatter_grid(
     trunks: Sequence[str] | None = None,
     checkpoints: Sequence[int] | None = None,
     trunk_labels: Mapping[str, str] | None = None,
+    series: Sequence[str] | None = None,
     xlabel: str = r"Projection difference $\Delta P$",
     ylabel: str = r"Behaviour after the step, $b_{t+1}$",
 ) -> Figure:
@@ -900,15 +1291,25 @@ def decay_scatter_grid(
     stack as blocks of rows. Each panel holds the ``K`` probe datasets once per
     series it has a complete column for -- against the frozen $\Delta P_0$ in
     blue, the recomputed $\Delta P_t$ in orange, and, where it was measured,
-    $\Delta P$ in green (:data:`_DECAY_SERIES`) -- with each fit's correlation
-    annotated. The hypothesis is visible as the blue fit flattening
-    left-to-right while the others do not.
+    $\Delta P$ in green (:data:`_DECAY_SERIES`) -- and each fit's $r$ printed
+    beside the line it was measured from (:func:`_label_fits`). The hypothesis
+    is visible as the blue fit flattening left-to-right while the others do
+    not.
+
+    ``series`` picks which of :data:`_DECAY_SERIES` a panel may draw, by
+    column; the default is every one the frame has measured. A scatter panel
+    this size shows a relationship rather than a number -- whether the cloud
+    still has a line in it -- and it takes two series to show one going stale
+    while another does not. The rungs between them are read as numbers, across
+    checkpoints, which is a table's job and not a 1.75-inch panel's: pass the
+    two ends of the ladder here and tabulate the rest.
 
     Panels need not all carry the same series. $\Delta P$ costs a generation
-    pass per checkpoint and is measured on one trunk, so its row has three fits
-    where the others have two. That asymmetry is the point of drawing them in
-    one grid rather than two: the trunk that was re-measured is read in place,
-    against the same axes and the same probes as the trunks that were not.
+    pass per checkpoint, so on a partly measured sweep its column is complete
+    for some trunks and not others. That asymmetry is the point of drawing them
+    in one grid rather than two: the trunk that was re-measured is read in
+    place, against the same axes and the same probes as the trunks that were
+    not.
 
     The y axis is the behaviour the step actually reached, $b_{t+1}$, with the
     level it started from, $b_t$, drawn as a black rule across the panel. That
@@ -976,6 +1377,8 @@ def decay_scatter_grid(
     # measured on one trunk still needs naming, and asking the whole frame
     # would name one that no panel had a complete column for.
     drawn: dict[str, _DecaySeries] = {}
+    # What each panel has to label, held back until the grid is laid out.
+    labelled: list[tuple[Axes, list[tuple[str, str, pd.Series, LinearFit]], float]] = []
     for row, (frame, trunk, name) in enumerate(panels):
         for col, t in enumerate(checkpoints):
             ax = axes[row][col]
@@ -994,6 +1397,9 @@ def decay_scatter_grid(
             )
             errors = panel["se_b_next"] if "se_b_next" in panel else None
             probes = list(panel["probe"]) if "probe" in panel else None
+            # Resolved before the comprehension below binds the same name to
+            # one series at a time.
+            wanted = _panel_series(panel, series)
             fits = [
                 (
                     series,
@@ -1009,18 +1415,28 @@ def decay_scatter_grid(
                         mark_edge=series.color,
                     ),
                 )
-                for series in _panel_series(panel)
+                for series in wanted
             ]
             drawn.update({series.column: series for series, _ in fits})
-            # A minus sign is printed where there is one; a plus is not,
-            # since it costs width in the narrowest panel of the set to say
-            # what its absence already says.
-            _corner_text(
-                ax,
-                [
-                    (rf"{series.corr_label} = {fit.corr:.2f}", series.color)
-                    for series, fit in fits
-                ],
+            # Held rather than printed: each r is placed by measuring the panel
+            # it goes in, and the panel is not its final size until the whole
+            # grid has been laid out below. A minus sign is printed where there
+            # is one; a plus is not, since it costs width in the narrowest
+            # panel of the set to say what its absence already says.
+            labelled.append(
+                (
+                    ax,
+                    [
+                        (
+                            rf"$r$ = {fit.corr:.2f}",
+                            series.color,
+                            panel[series.column],
+                            fit,
+                        )
+                        for series, fit in fits
+                    ],
+                    float(panel["b_t"].iloc[0]),
+                )
             )
             # As a right-hand axes title rather than an in-panel annotation:
             # the phase belongs to the panel, not to the data, and a corner
@@ -1093,6 +1509,10 @@ def decay_scatter_grid(
         ylabel=ylabel,
         legend_rows=-(-len(handles) // ncol),
     )
+    # Last of all: every r is placed by looking at the panel it goes in, which
+    # is only now the size and shape it will be read at.
+    for ax, entries, level in labelled:
+        _label_fits(ax, entries, rules=(level,))
     return fig
 
 

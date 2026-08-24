@@ -110,6 +110,17 @@ def display_trunk_name(trunk: str) -> str:
     return TRUNK_LABELS.get(trunk, f"Trunk {trunk}")
 
 
+def display_trunk_short(trunk: str) -> str:
+    """:func:`display_trunk_name` without its schedule, for a narrow column.
+
+    A panel row carries the schedule because it is read against its
+    neighbours: which steps were misaligning is what a reader compares the
+    rows on. A table row is read against a caption instead, and its key column
+    has to fit beside a column per checkpoint, which the name alone does.
+    """
+    return display_trunk_name(trunk).split(", ")[0]
+
+
 def display_trunk_title(trunk: str) -> str:
     """:func:`display_trunk_name` broken across two lines, for a panel header.
 

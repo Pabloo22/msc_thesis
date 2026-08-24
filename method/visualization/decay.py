@@ -580,6 +580,54 @@ _FIT_COLUMNS = [
 ]
 
 
+def correlation_table(
+    fits: pd.DataFrame, *, series: Sequence[str] | None = None
+) -> pd.DataFrame:
+    r"""$r$ per ``(trait, trunk, series)``, one column per checkpoint.
+
+    The tabular half of section 9's plot 2. A scatter panel shows a
+    *relationship* -- whether the cloud still has a line in it -- and two
+    series is as many as one 1.75-inch panel can show that for. The rungs of
+    the ladder between them are not read as clouds at all but as numbers across
+    checkpoints, which is a table's job: every measured series at every step,
+    at the precision the text quotes rather than the precision a reader can
+    take off an axis.
+
+    So the grid draws the two ends of the ladder and this tabulates all of it,
+    the two drawn ones included -- a reader comparing a middle rung against
+    them should not have to read one number off a table and the other off a
+    panel.
+
+    ``series`` selects which of :data:`SERIES` to carry, defaulting to every
+    one with a fit anywhere in ``fits``. A series measured on some checkpoints
+    and not others keeps its row, with a gap where it was not measured: which
+    cells are missing is itself the state of the sweep, and blanking the row
+    would hide it.
+    """
+    wanted = list(series) if series is not None else list(SERIES)
+    columns = {
+        f"corr_{name}": name
+        for name in wanted
+        if f"corr_{name}" in fits and fits[f"corr_{name}"].notna().any()
+    }
+    if fits.empty or not columns:
+        return pd.DataFrame()
+    long = fits.melt(
+        id_vars=["trait", "trunk", "t"],
+        value_vars=list(columns),
+        var_name="series",
+        value_name="corr",
+    )
+    long["series"] = pd.Categorical(
+        long["series"].map(columns), categories=wanted, ordered=True
+    )
+    table = long.pivot(index=["trait", "trunk", "series"], columns="t", values="corr")
+    # Empty rows are the series a caller asked for and the sweep never
+    # measured; the categorical above keeps them in the ladder's order, and
+    # this is where they go.
+    return table.dropna(how="all").sort_index()
+
+
 def mechanism_frame(fits: pd.DataFrame) -> pd.DataFrame:
     r"""One row per *distinct* checkpoint, for section 9's plot 4.
 

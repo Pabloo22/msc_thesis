@@ -1016,6 +1016,28 @@ class TestScatterValidation:
 #: agree it does.
 BEHAVIOUR_FLOOR, BEHAVIOUR_CEILING = 0.0, 100.0
 
+def _fit_labels(ax) -> list:
+    """The r labels a decay panel prints beside its fit lines."""
+    return [text for text in ax.texts if text.get_text().startswith("$r$")]
+
+
+def _label_boxes(ax) -> list:
+    """Where those labels actually land, as drawn: the only thing that says
+    whether one of them is sitting on a point, a rule or another label."""
+    renderer = ax.figure.canvas.get_renderer()
+    return [label.get_window_extent(renderer) for label in _fit_labels(ax)]
+
+
+def _marks(ax) -> np.ndarray:
+    """Every drawn point in the panel, in the same units as the label boxes."""
+    return np.concatenate(
+        [
+            ax.transData.transform(collection.get_offsets())
+            for collection in ax.collections
+            if isinstance(collection, PathCollection)
+        ]
+    )
+
 
 class TestDecayScatterGrid:
     def test_one_panel_per_trunk_and_checkpoint(self) -> None:
@@ -1027,9 +1049,11 @@ class TestDecayScatterGrid:
         ax = fig.axes[0]
         scatters = [c for c in ax.collections if isinstance(c, PathCollection)]
         assert len(scatters) == 2  # Delta P_0 and Delta P_t
-        annotations = " ".join(t.get_text() for t in ax.texts)
-        assert r"$r(\Delta P_0)$" in annotations
-        assert r"$r(\Delta \hat{P}_t)$" in annotations
+        # Each r is printed beside its own line and in its own colour, so the
+        # text says the number and the position says whose it is.
+        printed = {label.get_color(): label.get_text() for label in _fit_labels(ax)}
+        assert set(printed) == {style.BLUE, style.ORANGE}
+        assert all(text.startswith("$r$ = ") for text in printed.values())
 
     def test_a_measured_panel_gains_the_recomputed_series(self) -> None:
         rows = _with_recomputed(_decay_rows())
@@ -1037,7 +1061,71 @@ class TestDecayScatterGrid:
         ax = fig.axes[0]
         scatters = [c for c in ax.collections if isinstance(c, PathCollection)]
         assert len(scatters) == 3
-        assert r"$r(\Delta P_t)$" in " ".join(t.get_text() for t in ax.texts)
+        assert style.GREEN in {label.get_color() for label in _fit_labels(ax)}
+
+    def test_two_series_that_agree_keep_their_labels_apart(self) -> None:
+        """Delta P_0 and Delta P_t agreeing is what an unaged trunk looks
+        like, so a panel has to be able to draw one line twice and still say
+        which r belongs to which."""
+        rows = _decay_rows(trunks=["a"], checkpoints=[0])
+        assert (rows["delta_p_0"] == rows["delta_p_t"]).all()  # one line, twice
+        ax = figures.decay_scatter_grid(rows).axes[0]
+        first, second = _label_boxes(ax)
+        assert not first.overlaps(second)
+
+    def test_a_label_gives_way_to_the_marks(self) -> None:
+        """The panel is drawn to show where the probes landed; a number over
+        one of them hides the measurement it was printed to explain."""
+        ax = figures.decay_scatter_grid(_decay_rows()).axes[0]
+        marks = _marks(ax)
+        assert len(marks)
+        assert not any(
+            box.contains(x, y) for box in _label_boxes(ax) for x, y in marks
+        )
+
+    def test_a_label_stays_inside_its_own_panel(self) -> None:
+        """A grid is read panel by panel, so a number past the edge of one
+        reads as belonging to the next."""
+        fig = figures.decay_scatter_grid(_decay_rows())
+        for ax in fig.axes:
+            assert all(
+                ax.bbox.containsx(box.x0) and ax.bbox.containsx(box.x1)
+                for box in _label_boxes(ax)
+            )
+
+    def test_a_label_does_not_park_on_the_level_it_started_from(self) -> None:
+        """b_t is a rule read along its whole length, so a number sitting on it
+        costs more than the same number anywhere else in the panel."""
+        rows = _decay_rows(trunks=["a"], checkpoints=[0])
+        # The rule just above where the fits end, which is where a label
+        # against the top of its line would otherwise print.
+        rows["b_t"] = rows["b_next"].max() + 1.0
+        fig = figures.decay_scatter_grid(rows)
+        ax = fig.axes[0]
+        rule = ax.transData.transform((0.0, rows["b_t"].iloc[0]))[1]
+        assert not any(box.y0 <= rule <= box.y1 for box in _label_boxes(ax))
+
+    def test_only_the_series_asked_for_are_drawn(self) -> None:
+        """The grid shows two series so a panel can show one relationship
+        going stale while another holds; the rungs between them are read as
+        numbers across checkpoints, which is the correlation table's job."""
+        rows = _with_recomputed(_decay_rows(), columns=("delta_p_v0", "delta_p"))
+        ax = figures.decay_scatter_grid(
+            rows, trunks=["a"], series=["delta_p_0", "delta_p"]
+        ).axes[0]
+        scatters = [c for c in ax.collections if isinstance(c, PathCollection)]
+        assert len(scatters) == 2
+        assert {label.get_color() for label in _fit_labels(ax)} == {
+            style.BLUE,
+            style.GREEN,
+        }
+
+    def test_a_series_kept_out_of_the_panels_is_kept_out_of_the_legend(self) -> None:
+        (legend,) = figures.decay_scatter_grid(
+            _decay_rows(), series=["delta_p_0"]
+        ).legends
+        keys = [text.get_text() for text in legend.get_texts()]
+        assert not any(key.startswith(r"$\Delta \hat{P}_t$") for key in keys)
 
     def test_all_four_series_draw_when_all_are_measured(self) -> None:
         rows = _with_recomputed(
@@ -1841,6 +1929,62 @@ class TestExp2Driver:
 
 
 # --- demo.py -----------------------------------------------------------------
+
+
+#: The key columns of the emitted correlation table, as its writer is given
+#: them: one heading per level of the frame's index.
+_HEADINGS = ("Trait", "Trunk", "Projection")
+
+#: ...and what heads the block of value columns beside them.
+_SPANNER = "Checkpoint $t$"
+
+
+class TestCorrelationTableOutput:
+    def _table(self) -> pd.DataFrame:
+        return pd.DataFrame(
+            [[0.9, 0.8], [0.7, np.nan], [0.6, 0.5]],
+            index=pd.MultiIndex.from_tuples(
+                [
+                    ("Evil", "A: II drivers", r"$\Delta P_0$"),
+                    ("Evil", "A: II drivers", r"$\Delta P_t$"),
+                    ("Sycophancy", "A: II drivers", r"$\Delta P_0$"),
+                ],
+                names=("trait", "trunk", "series"),
+            ),
+            columns=[0, 1],
+        )
+
+    def test_the_grid_draws_the_two_ends_of_the_ladder(self) -> None:
+        """Everything frozen against nothing approximated: the pair that shows
+        one relationship going stale while the other holds."""
+        assert make_plots.DECAY_GRID_SERIES == ("delta_p_0", "delta_p")
+
+    def test_a_repeated_key_is_blanked_rather_than_repeated(self) -> None:
+        """What a reader skips over down a table, rather than what they read;
+        blanking it is what makes the blocks visible."""
+        rows = make_plots._latex_table(self._table(), _HEADINGS, _SPANNER).splitlines()
+        assert r"Evil & A: II drivers & $\Delta P_0$ & 0.90 & 0.80 \\" in rows
+        assert r" &  & $\Delta P_t$ & 0.70 & -- \\" in rows
+
+    def test_a_new_block_is_ruled_off(self) -> None:
+        body = make_plots._latex_table(self._table(), _HEADINGS, _SPANNER)
+        assert body.count(r"\hline") == 4  # top, each trait block, end
+
+    def test_it_is_a_fragment_not_a_float(self) -> None:
+        """The caption, the label and the placement are the report's to write;
+        a generated file carrying them would need editing after every replot."""
+        body = make_plots._latex_table(self._table(), _HEADINGS, _SPANNER)
+        assert body.startswith("% Generated")
+        assert r"\begin{tabular}{lllrr}" in body
+        assert r"\begin{table}" not in body
+
+    def test_both_forms_are_written(self, tmp_path: Path) -> None:
+        saved: list[Path] = []
+        make_plots._emit_table(
+            self._table(), _HEADINGS, _SPANNER, "corrs", tmp_path, saved
+        )
+        assert saved == [tmp_path / "corrs.tex", tmp_path / "corrs.csv"]
+        assert all(path.exists() for path in saved)
 
 
 class TestDemo:

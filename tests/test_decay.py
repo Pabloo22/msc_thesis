@@ -588,6 +588,49 @@ class TestFitFrame:
         assert "corr_p0" in fits.columns
 
 
+class TestCorrelationTable:
+    def _fits(self):
+        return decay.fit_frame(
+            decay.decay_frame(build_decay(), build_validation()), n_resamples=10
+        )
+
+    def test_a_row_per_trunk_and_series_and_a_column_per_checkpoint(self) -> None:
+        table = decay.correlation_table(self._fits())
+        assert list(table.columns) == list(range(7))
+        assert {trunk for _, trunk, _ in table.index} == set(TRUNKS)
+
+    def test_rows_follow_the_ladder_rather_than_the_alphabet(self) -> None:
+        """The series are a ladder -- each refreshes one more thing at M_t --
+        and a table that sorted their names would read out of order."""
+        table = decay.correlation_table(self._fits())
+        drawn = [series for _, _, series in table.index]
+        assert drawn[: 2] == ["p0", "pt"]
+
+    def test_an_unmeasured_series_is_left_out(self) -> None:
+        """A row of dashes for a family that was never run reads as a series
+        that came out flat."""
+        table = decay.correlation_table(self._fits())
+        assert "pv0" not in {series for _, _, series in table.index}
+
+    def test_a_partly_measured_series_keeps_its_row_and_its_gaps(self) -> None:
+        """Which checkpoints a re-measured series covers is the state of the
+        sweep; blanking the row would hide it."""
+        fits = self._fits()
+        fits.loc[fits["t"] > 2, "corr_pt"] = np.nan
+        table = decay.correlation_table(fits)
+        row = table.xs("pt", level="series").iloc[0]
+        assert row[:3].notna().all() and row[3:].isna().all()
+
+    def test_the_series_asked_for_are_the_ones_carried(self) -> None:
+        table = decay.correlation_table(self._fits(), series=["p0"])
+        assert {series for _, _, series in table.index} == {"p0"}
+
+    def test_empty_fits_give_an_empty_table(self) -> None:
+        import pandas as pd
+
+        assert decay.correlation_table(decay.fit_frame(pd.DataFrame())).empty
+
+
 # --- mechanism and phase contrast -------------------------------------------
 
 
