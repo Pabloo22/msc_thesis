@@ -6,7 +6,7 @@
 \pagestyle{plain}
 \usepackage{amssymb,graphicx,color}
 \usepackage{url}
-\graphicspath{{./}{images/}{MSc_Report/}{MSc_Report/images/}}
+\graphicspath{{./}{../}{images/}{MSc_Report/}{MSc_Report/images/}}
 \usepackage{amsfonts}
 \usepackage{latexsym}
 \usepackage{a4wide}
@@ -17,9 +17,10 @@
 \usepackage{pgfplots}
 \pgfplotsset{compat=1.18}
 \usetikzlibrary{arrows.meta}
-% let \input{figures/...} resolve whether we compile from MSc_Report/ or the repo root
+% let \input{figures/...} and \input{plots/...} resolve whether we compile from
+% MSc_Report/ (where ../ is the repo root) or from the repo root itself
 \makeatletter
-\def\input@path{{./}{MSc_Report/}}
+\def\input@path{{./}{../}{MSc_Report/}}
 \makeatother
 
 \newtheorem{theorem}{THEOREM}

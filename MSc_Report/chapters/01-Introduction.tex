@@ -20,8 +20,22 @@ An additional challenge for continual learning, however, is a specific form of c
     \item By definition, the effects of EM extend to tasks in unrelated domains that are not being evaluated. Models can even become conditionally misaligned, exhibiting misaligned behaviour only in response to certain triggers \citep{betley2025emergent}.
     \item The data causing EM does not always appear harmful. Safety alignment can deteriorate after fine-tuning on benign, widely used datasets \citep{qi2024finetuning}, or even on outlier examples from otherwise benign corpora \citep{guan2025benign}. Therefore, filtering data with simple classifiers is not enough.
     \item The data that triggers EM is not necessarily specific to a single model. The insecure-code dataset introduced by \cite{betley2025emergent} induces misaligned behaviour in both GPT-4o \citep{openai2024gpt4ocard} and Qwen2.5-Coder-32B-Instruct \citep{qwen2025qwen25technicalreport}. Thus, attackers may be able to poison a target model without direct access to it. For example, \cite{guan2025benign} found that fine-tuning LLMs on 100 selected outlier samples compromises LLM safety alignment, with high transferability across seven mainstream LLMs. 
-    \item The effect may emerge gradually through many small updates rather than from a single, identifiable event. This is particularly relevant in continual learning, where there may be no discrete training run to audit before deployment. Moreover, the drift may remain hidden as it develops. \cite{Peng2024safety_basin} find that an aligned model maintains its safety within a local region of weight space, which they call a ``safety basin'', but experiences a sharp drop in safety after leaving it. A series of seemingly harmless updates could therefore move the model towards this boundary without producing noticeable changes in per-step behavioural evaluations, with the consequences becoming apparent only once the boundary is crossed.
+    \item The effect may emerge gradually through many small updates rather than from a single, identifiable event. This is particularly relevant in continual learning, where there may be no discrete training run to audit before deployment. Moreover, the drift may remain hidden as it develops. \cite{Peng2024safety_basin} find that an aligned model maintains its safety within a local region of weight space, which they call a ``safety basin'', but experiences a sharp drop in safety after leaving it. A series of seemingly harmless updates could therefore move the model towards this boundary without producing noticeable changes in per-step behavioural evaluations, with the consequences becoming apparent only once the boundary is crossed (\Cref{fig:safety_basin_drift}).
 \end{itemize}
+
+\begin{figure}[t]
+    \centering
+    \input{figures/safety_basin_drift}
+    \caption{Why gradual drift can escape per-step auditing. Schematic of the safety
+    basin reported by \cite{Peng2024safety_basin}: broad safety is essentially flat within a
+    local region of weight space and then drops sharply once the model leaves it. A sequence of
+    small updates $\mathcal{M}_0 \rightarrow \mathcal{M}_6$, each individually harmless and each
+    passing the behavioural evaluation run after it (\checkmark), could potentially walk
+    the model towards that boundary. Such an evaluation measures the model's current safety
+    level rather than its remaining margin, so it gives no warning until the boundary is
+    crossed. The landscape shown is illustrative rather than measured.}
+    \label{fig:safety_basin_drift}
+\end{figure}
 
 EM might also still occur during self-distillation even after filtering suspicious data.
 % TODO ADD: Define self-distillation 
