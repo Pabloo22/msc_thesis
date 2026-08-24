@@ -1,0 +1,69 @@
+% Conceptual schematic: gradual drift towards the edge of the safety basin.
+% Requires in the preamble:
+%   \usepackage{tikz}
+%   \usepackage{pgfplots}
+%   \pgfplotsset{compat=1.18}
+%   \usetikzlibrary{arrows.meta}
+\begin{tikzpicture}[font=\small]
+
+\definecolor{basinfill}{HTML}{E3EAF4}
+\definecolor{safecurve}{HTML}{2C5F8A}
+\definecolor{trajcol}{HTML}{C4551F}
+\definecolor{failcol}{HTML}{A61B29}
+\definecolor{passcol}{HTML}{2E6F40}
+
+\begin{axis}[
+  width=11.5cm, height=4.4cm, scale only axis,
+  xmin=-0.5, xmax=9.6, ymin=0, ymax=1.30,
+  axis lines=left, axis line style={-},
+  xtick=\empty,
+  ytick={0.05,0.97}, yticklabels={low,high},
+  tick align=outside, tick style={draw=none},
+  ylabel={Broad safety},
+  xlabel={Distance travelled in weight space},
+  clip=false,
+]
+
+\path[fill=basinfill] (axis cs:-0.5,0) rectangle (axis cs:6.6,1.30);
+\node[anchor=west, text=safecurve!80!black, font=\small\itshape]
+  at (axis cs:0.1,0.40) {safety basin};
+
+\addplot[domain=-0.5:9.6, samples=300, thick, safecurve]
+  {0.05 + 0.92/(1+exp(5*(x-6.6)))};
+
+\draw[dashed, gray!60] (axis cs:6.6,0) -- (axis cs:6.6,1.30);
+\node[anchor=south, text=gray!45!black, align=center, font=\footnotesize]
+  at (axis cs:6.6,1.30) {basin\\boundary};
+
+% the trajectory: a sequence of equally sized updates walking outwards
+\draw[trajcol, -{Stealth[length=4pt]}] (axis cs:0.10,1.19) -- (axis cs:1.10,1.19);
+\draw[trajcol, -{Stealth[length=4pt]}] (axis cs:1.30,1.19) -- (axis cs:2.30,1.19);
+\draw[trajcol, -{Stealth[length=4pt]}] (axis cs:2.50,1.19) -- (axis cs:3.50,1.19);
+\draw[trajcol, -{Stealth[length=4pt]}] (axis cs:3.70,1.19) -- (axis cs:4.70,1.19);
+\draw[trajcol, -{Stealth[length=4pt]}] (axis cs:4.90,1.19) -- (axis cs:5.90,1.19);
+\draw[trajcol, -{Stealth[length=4pt]}] (axis cs:6.10,1.19) -- (axis cs:7.10,1.19);
+
+\addplot[only marks, mark=*, mark size=1.9pt, trajcol]
+  coordinates {(0,0.97) (1.2,0.97) (2.4,0.97) (3.6,0.97) (4.8,0.97) (6.0,0.926) (7.2,0.094)};
+
+% the verdict of a behavioural evaluation run after each update
+\node[anchor=south, text=passcol, font=\footnotesize] at (axis cs:0,1.01)   {\checkmark};
+\node[anchor=south, text=passcol, font=\footnotesize] at (axis cs:1.2,1.01) {\checkmark};
+\node[anchor=south, text=passcol, font=\footnotesize] at (axis cs:2.4,1.01) {\checkmark};
+\node[anchor=south, text=passcol, font=\footnotesize] at (axis cs:3.6,1.01) {\checkmark};
+\node[anchor=south, text=passcol, font=\footnotesize] at (axis cs:4.8,1.01) {\checkmark};
+\node[anchor=south, text=passcol, font=\footnotesize] at (axis cs:6.0,1.01) {\checkmark};
+\node[anchor=south, text=failcol, font=\footnotesize] at (axis cs:7.2,0.15)  {$\times$};
+
+\node[anchor=north east, text=trajcol, font=\footnotesize] at (axis cs:0.05,0.94) {$\mathcal{M}_0$};
+\node[anchor=north east, text=trajcol, font=\footnotesize] at (axis cs:6.05,0.90) {$\mathcal{M}_5$};
+\node[anchor=west,  text=trajcol, font=\footnotesize] at (axis cs:7.35,0.094) {$\mathcal{M}_6$};
+
+% the quantity we would actually like to forecast
+\draw[{Stealth[length=3.5pt]}-{Stealth[length=3.5pt]}, gray!45!black]
+  (axis cs:6.02,0.42) -- (axis cs:6.58,0.42);
+\node[anchor=west, text=gray!45!black, align=left, font=\footnotesize]
+  at (axis cs:6.75,0.40) {remaining margin,\\never observed};
+
+\end{axis}
+\end{tikzpicture}

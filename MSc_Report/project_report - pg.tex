@@ -13,6 +13,14 @@
 \usepackage{amsmath}
 \usepackage{cleveref}
 \usepackage{float}
+\usepackage{tikz}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usetikzlibrary{arrows.meta}
+% let \input{figures/...} resolve whether we compile from MSc_Report/ or the repo root
+\makeatletter
+\def\input@path{{./}{MSc_Report/}}
+\makeatother
 
 \newtheorem{theorem}{THEOREM}
 \newtheorem{lemma}[theorem]{LEMMA}
