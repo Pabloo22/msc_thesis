@@ -18,7 +18,7 @@ When we discuss deep learning, we are usually referring to models based on neura
 where $\mathbf{w} \in \mathbb{R}^{d}$ and $b \in \mathbb{R}$ are the learnable parameters, and $\sigma$ is the activation function. The purpose of the activation function is to introduce nonlinearity. Otherwise, composing multiple neurons (or layers of them) would be equivalent to having only one of them since we are composing affine functions. A common choice for this function is the rectified linear unit (ReLU), $\operatorname{ReLU}(z)=\max(0,z)$ \citep{glorot2011deep_sparse_rectifier}.
 
 \subsection{The Multi-Layer Perceptron}
-As I already hinted, neural networks operate by stacking layers of neurons. The simplest example is the multilayer perceptron (MLP), which connects all neurons in one layer to the next. Let $\mathbf{h}^{(0)}=\mathbf{x}$ denote the input. Then, the representation produced by layer $l$ is
+As mentioned, neural networks operate by stacking layers of neurons. The simplest example is the multilayer perceptron (MLP), which connects all neurons in one layer to the next. Let $\mathbf{h}^{(0)}=\mathbf{x}$ denote the input. Then, the representation produced by layer $l$ is
 \begin{equation}
     \mathbf{h}^{(l)} = \sigma^{(l)}\!\left(\mathbf{W}^{(l)}\mathbf{h}^{(l-1)} + \mathbf{b}^{(l)}\right),
     \qquad l=1,\ldots,L,
@@ -152,21 +152,21 @@ Informally, mechanistic interpretability is the field of study that aims to reve
 
 
 \subsection{The Linear Representation Hypothesis}
-Part of the work in mechanistic interpretability involves extracting features from the model's hidden states. In this context, a feature is a property of or part of the input to a neural network. Features are the building blocks of neural networks. Each hidden state represents a set of features that are then transformed into more useful concepts to solve the downstream task (e.g., predicting the next token). Coming back to our dog-versus-cat classifier, features it might learn to extract are, for instance, a ``dog-like tail'' or lower-level ones such as ``edges''. In the context of language models, a feature could be the language of the text or the gender of the protagonist of a story.
+Part of the work in mechanistic interpretability involves extracting features from the model's hidden states. In this context, a feature is a property of or part of the input to a neural network. Features are the building blocks of neural networks; each hidden state represents a set of features that are then transformed into more useful concepts to solve the downstream task (e.g., predicting the next token). Coming back to our dog-versus-cat classifier, features it might learn to extract are, for instance, a ``dog-like tail'' or lower-level ones such as ``edges''. In the context of language models, a feature could be the language of the text or the gender of the protagonist of a story.
 
-A popular theory, as proposed in \cite{park2024linear_rep_hypothesis}, is that these features are represented by linear directions in the representation space. Under this hypothesis, the activation $\mathbf{h} \in \mathbb{R}^{d}$ produced by a layer can be written as a linear combination of feature vectors,
-\begin{equation}
-    \mathbf{h}(\mathbf{x})
-    = \sum_{i=1}^{n} c_i\boldsymbol{\phi}_i,
-    \label{eq:linear_representation_hypothesis}
-\end{equation}
-where $\boldsymbol{\phi}_i \in \mathbb{R}^{d}$ is the direction associated with feature $i$, and $c_i$ represents how strongly that feature is present for the current input. Early motivation for this hypothesis comes from word embeddings \citep{mikolov2013linguistic}. For example, these embeddings can contain features such as ``gender'' or ``royalty'', allowing relationships such as
+A popular theory, formalised by \citet{park2024linear_rep_hypothesis}, is that features are represented as linear directions in a model's representation space. Early motivation for this hypothesis comes from word embeddings \citep{mikolov2013linguistic}. For example, these embeddings can contain features such as ``gender'' or ``royalty'', allowing relationships such as
 $$
 \boldsymbol{\phi}_{\text{queen}} \approx \boldsymbol{\phi}_{\text{king}} + \boldsymbol{\phi}_{\text{woman}} - \boldsymbol{\phi}_{\text{man}}.
 $$
-While it is still contested whether 
 
-This implies that one can extract and identify these concepts using simple, linear classifiers (probes). 
+While it is still contested whether \emph{all} features are represented as linear directions, it has been empirically proven that many of them are.
+
+\subsection{Steering Vectors}
+One way to extract and identify these features is via a ``mean of differences''. 
+
+
+
+One can extract and identify these features using simple, linear classifiers, called probes. 
 
 Features rotate or get scaled during training
 The paper [2601.22012] Putting a Face to Forgetting: Continual Learning meets Mechanistic Interpretability shows how knowledge changes during CL training. It decomposes the change to a feature into two primitive transformations — rotation and scaling — and separates their consequences into two kinds:
@@ -175,7 +175,7 @@ Capacity degradation. The feature's allocated capacity drops, which is irrecover
 overlap — a feature rotates toward another, increasing their inner product and forcing them to share capacity;
 fading — a feature's norm shrinks, losing capacity and, in the limit of norm → 0, vanishing entirely. Fading turns out to be the dominant driver of forgetting in the paper’s setup.
 
-\subsection{Steering Vectors}
+
 
 
 
