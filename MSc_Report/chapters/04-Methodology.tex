@@ -5,11 +5,40 @@
 \section{Problem Setting and Notation}
 \label{sec:problem}
 
-We consider a model $\mathcal{M}_0$ whose internal state $s_t$ (e.g., its parameters or memory) is modified by a planned sequence of update operations $\mathcal{D}_0, \mathcal{D}_1, \dots, \mathcal{D}_{T-1}$. Applying $\mathcal{D}_t$ transforms $\mathcal{M}_t \mapsto \mathcal{M}_{t+1}$ and yields a trajectory $\tau = (\mathcal{M}_t)_{t=0}^{T}$. While we keep the framework general, our experiments consider $\mathcal{M}_0$ as a pretrained, instruction-tuned language model, and each $\mathcal{D}_t$ as a batch of fine-tuning data along with its training settings. Under this framework, the model $\mathcal{M}_t$ can be studied by three types of measurement: 
+We consider a model $\mathcal{M}_0$ whose internal state (e.g., its parameters or memory) is modified by a planned sequence of update operations $\mathcal{D}_0, \mathcal{D}_1, \dots, \mathcal{D}_{T-1}$. Applying $\mathcal{D}_t$ transforms $\mathcal{M}_t \mapsto \mathcal{M}_{t+1}$ and yields a trajectory $\tau = (\mathcal{M}_t)_{t=0}^{T}$. While we keep the framework general, our experiments employ $\mathcal{M}_0$ as the pre-trained, instruction-tuned language model Qwen2.5-7B-Instruct \citep{qwen2025qwen25technicalreport}, and each $\mathcal{D}_t$ as a batch of fine-tuning data along with its training settings (which are kept constant). Under this framework, the model checkpoint $\mathcal{M}_t$ can be studied by three types of measurement: 
 \begin{itemize}
     \item A behaviour measurement returning a behavioural profile $\mathbf{b}_t$. For the experiments, we consider LLM-generated scores ranging from $0$ to $100$ for the traits ``evil'' and ``sycophancy''. This is the behaviour that we are interested in predicting. 
     \item A mechanistic analysis of $\mathcal{M}_t$, yielding a summary vector $\mathbf{z}_t$. This analysis can help us understand how the model's state is changing. 
-    \item An encoding  $\boldsymbol{\phi}(\mathcal{D}_t;\, \mathcal{M}) \in \mathbb{R}^{d_a}$ of an update operation $\mathcal{D}_t$, computable from a model $\mathcal{M}$ and the planned data. This encoder extracts features of the data as seen by the base model. 
+    \item An encoding $\boldsymbol{\phi}_t(\mathcal{D}_t;\, \mathcal{M})$ of an update operation $\mathcal{D}_t$, computable from a model $\mathcal{M}$ and the planned data.
 \end{itemize}
 
-The forecasting problem is then the following: given the present state and the planned updates, predict future behaviour without materialising any intermediate model $\mathcal{M}_{t'}$, $t' > t$.
+\begin{table}[htbp]
+\centering
+\begin{tabular}{ll}
+Symbol & Meaning \\
+\hline
+$\mathcal{M}_t$ & Checkpoint after $t$ sequential updates; $\mathcal{M}_0$ is the base model \\
+$\mathcal{D}_t$ & An update operation: a dataset plus its training settings \\
+$T$ & Trajectory length (number of updates) \\
+$\ell$ & Layer at which activations are read \\
+$b_t$ & Behavioural trait score of $\mathcal{M}_t$, on $[0,100]$ \\
+$\Delta b_{t+1}$ & $b_{t+1} - b_t$: behaviour change caused by update $t$ \\
+% $\mathrm{SE}(b_t)$ & Standard error of $b_t$ from finite generation sampling \\
+% $\sigma_{\text{seed}}$ & Standard deviation of $b$ across fine-tuning seeds \\
+$\mathbf{v}^{(t)}$ & Persona vector extracted from $\mathcal{M}_t$ at layer $\ell$ \\
+$\mathbf{h}^{\text{neutral}}_t$ & Mean neutral-prompt activation of $\mathcal{M}_t$ at layer $\ell$ \\
+$p_t$ & $\cos(\mathbf{h}^{\text{neutral}}_t, \mathbf{v}^{(0)})$: neutral state along the \emph{base} persona axis \\
+$q_t$ & $\cos(\mathbf{h}^{\text{neutral}}_t, \mathbf{v}^{(t)})$: neutral state along the \emph{current} persona axis \\
+$\rho_t$ & $\cos(\mathbf{v}^{(0)}, \mathbf{v}^{(t)})$: rotation of the persona axis \\
+$r_t$ & $\lVert \mathbf{v}^{(t)} \rVert$: magnitude of the persona contrast \\
+$\mathbf{z}_t$ & $(p_t, q_t, \rho_t, r_t)$: the latent state \\
+$\Delta P_0$ & Projection difference measured at $\mathcal{M}_0$ \\
+$\Delta \hat{P}_t^{(\mathbf{v}_0)}$ & Base axis $\mathbf{v}_0$, current encoder $\mathcal{M}_t$, base predicted answer $\hat{\mathbf{Y}}_0$ \\
+$\Delta \hat{P}_t$ & Current axis $\mathbf{v}_t$, current encoder  $\mathcal{M}_t$, base predicted answer $\hat{\mathbf{Y}}_0$ \\
+$\Delta P_t$ & Current axis $\mathbf{v}_t$, current encoder  $\mathcal{M}_t$, current predicted answer $\hat{\mathbf{Y}}_t$ \\
+% $N_q$, $n_q$ & Number of eval questions; generations scored for question $q$ \\
+% $R^2_{\max}$, $r_{\max}$ & Noise ceiling on the attainable fit, in $R^2$ and $r$ units \\
+\end{tabular}
+\caption{Notation used throughout this chapter.}
+\label{tab:notation}
+\end{table}
