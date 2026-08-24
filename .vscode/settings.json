@@ -124,5 +124,17 @@
     "claudeCode.preferredLocation": "panel",
     "editor.wordWrap": "on",
     "python.terminal.useEnvFile": true,
-    "latex-workshop.latex.outDir": "%WORKSPACE_FOLDER%/.latex-build/%RELATIVE_DIR%"
+    "latex-workshop.latex.outDir": "%WORKSPACE_FOLDER%/.latex-build/%RELATIVE_DIR%",
+    "latex-workshop.latex.tools": [
+  {
+    "name": "latexmk",
+    "command": "latexmk",
+    "args": [
+      "-synctex=1", "-interaction=nonstopmode", "-file-line-error",
+      "-pdf", "-outdir=%OUTDIR%", "%DOC%"
+    ],
+    "env": { "TEXINPUTS": "%OUTDIR%:" }
+  }
+]
+
 }
