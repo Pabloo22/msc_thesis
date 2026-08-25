@@ -4,8 +4,9 @@ r"""Measure DeltaP at the *base* model for every dataset the experiments use.
     poetry run python -m method.probe_base --local --backend mock
 
 The RQ1 scatter plots two series against the behaviour change a step caused:
-$\Delta P_t$, recomputed at the checkpoint about to be trained, and $\Delta P_0$,
-frozen at the base model. A trajectory only ever records $\Delta P_0$ for its
+$\Delta \hat{P}_t$, recomputed at the checkpoint about to be trained while
+retaining $M_0$'s answers, and $\Delta P_0$, frozen at the base model. A
+trajectory only ever records $\Delta P_0$ for its
 *first* dataset -- every later step is measured at a checkpoint that has already
 moved -- so the blue series has to be measured separately. That is what this
 script does.

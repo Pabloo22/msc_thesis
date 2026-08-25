@@ -159,7 +159,7 @@ rather than $\Delta P$, and seed replication has to be reinstated before the fan
 paid for.
 
 **Phase 3 — trunk A.** Run a trunk *before* its branches. The trunk carries all the
-per-checkpoint measurement ($z_t$, $b_t$, and $\Delta P_t$ for all 8 probes); branches
+per-checkpoint measurement ($z_t$, $b_t$, and $\Delta \hat{P}_t$ for all 8 probes); branches
 carry `measure=ENDPOINT_BEHAVIOR` and contribute only $b_{t+1}$, so without the trunk the
 decay figures have no rows at all. `run_family.sh` puts every trunk ahead of the branches
 whatever the selection, so this ordering holds inside a `--trunks` run too; the trunk is
@@ -180,7 +180,8 @@ Read it on `exp2_drift_z.png`, where trunk A's solid line is the mean of all fiv
 and the shaded region is $\pm 1$ seed SD: a wide band in $\rho$ or $r$ means the latent
 trajectory is not seed-stable and the mechanism regression's drift axis inherits that
 spread. The rightmost column, $\|h^{\mathrm{neutral}}_t\|$, is the same reading for the
-activation length the cosines divide out. `exp2_drift_delta_p.png` carries no band — see
+activation length the cosines divide out. Neither `exp2_drift_delta_hat_p.png` nor
+`exp2_drift_delta_p.png` carries a reseed band — see
 [`docs/reseed_probes.md`](docs/reseed_probes.md) for why these runs are probe-free and
 what that does and does not bound.
 
@@ -225,9 +226,9 @@ poetry run python -m method.backfill_h_norm
 poetry run python -m method.sync push-runs
 ```
 
-**Phase 7a — $\Delta \hat{P}_t^{v_0}$ (free).** Every trunk re-projected onto the *base*
+**Phase 7a — $\Delta \hat{P}_t^{(\mathbf{v}_0)}$ (free).** Every trunk re-projected onto the *base*
 model's persona vector instead of its own. DeltaP normally refreshes the axis and the
-activations together, so the decay from $\Delta P_0$ confounds the persona direction
+activations together, so the decay from $\Delta P_0$ to $\Delta \hat{P}_t$ confounds the persona direction
 rotating with the representation drifting; this separates them. Costs minutes and no GPU
 work — the activations are already cached and do not depend on the axis — so it runs on
 all three trunks by default. Must run where the store is.
@@ -241,7 +242,7 @@ configs hash to the decay trunks' own checkpoints and replay their adapters. ~12
 trunk on one 4090 for both traits, and no judge calls at all — so `--trunks` is how the
 cost is scoped, and trunk A is the one to run first. See
 [`docs/delta_p_regen.md`](docs/delta_p_regen.md) for what the series settles that
-$\Delta P_0$ and $\Delta P_t$ cannot.
+$\Delta P_0$ and $\Delta \hat{P}_t$ cannot.
 ```bash
 nohup bash scripts/run_family.sh EXP2_REGEN --trunks a > exp2_regen_a.log 2>&1 &
 ```
@@ -257,8 +258,9 @@ This writes section 9's figures into `plots/real/exp2/`. Every one of them panel
 traits, so nothing is emitted per trait: `exp2_validation` (plot 1, a trait per panel),
 `exp2_decay_grid` (2, a trait-and-trunk per row, a checkpoint per column), `exp2_headline`
 (3, two rows per trait), `exp2_mechanism` (4, a trait per row, a predictor per column),
-`exp2_phase_contrast` (4b, a trait per row) and `exp2_drift_delta_p` / `exp2_drift_z`
-(both plot 5, a trait per row). What they do *not* share across the traits is the scale,
+`exp2_phase_contrast` (4b, a trait per row), `exp2_drift_delta_hat_p`,
+`exp2_drift_delta_p`, and `exp2_drift_z` (plot 5, a trait per row). What they do *not*
+share across the traits is the scale,
 except where the quantity is unitless — a persona vector and a judge are per trait.
 
 `exp2_decay_grid` draws two of the projection differences, not all of them: $\Delta P_0$
@@ -282,7 +284,7 @@ $q$, which the trait's $v$ enters, differ by row.
 
 Where phase 7 has run, `exp2_decay_grid`, `exp2_headline` and `exp2_phase_contrast` each
 carry the extra projection series on whichever trunks were covered. The four form a
-ladder of what is allowed to be current at $M_t$ — $\Delta P_0$, $\Delta \hat{P}_t^{v_0}$,
+ladder of what is allowed to be current at $M_t$ — $\Delta P_0$, $\Delta \hat{P}_t^{(\mathbf{v}_0)}$,
 $\Delta \hat{P}_t$, $\Delta P_t$, where a hat means the predicted answer is approximated
 by $M_0$'s. A trunk a series was not measured on keeps the ones it has: the column is NaN
 there, and nothing fits, draws or keys a series it cannot see. See
@@ -311,9 +313,10 @@ poetry run python -m method.probe_base --local --backend mock   # smoke-test var
 exp2 does not depend on this pass: each trunk measures $\Delta P_0$ for all 8 probes at
 its own $t = 0$, and each validation run's first step *is* a $\Delta P_0$ measurement.
 
-Note this is the *frozen* prediction — $M_0$'s answers, re-read at every checkpoint. The
-variant that lets each checkpoint answer for itself is a separate family with its own
-budget: [`docs/delta_p_regen.md`](docs/delta_p_regen.md).
+Past $t=0$, the default checkpoint measurement $\Delta \hat{P}_t$ keeps this prediction
+text frozen: $M_0$'s answers are re-read at every checkpoint. The $\Delta P_t$ variant
+that lets each checkpoint answer for itself is a separate family with its own budget:
+[`docs/delta_p_regen.md`](docs/delta_p_regen.md).
 
 ## Generating Plots
 Once trajectories (and base probes for exp3/exp4) are on disk, generate figures:

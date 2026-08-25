@@ -292,7 +292,7 @@ class TestToFrame:
 
 
 class TestProjectionPairs:
-    def test_pairs_dataset_delta_p0_with_actual_delta_pt(
+    def test_pairs_dataset_delta_p0_with_checkpoint_delta_p_hat_t(
         self, two_step_trajectory: Trajectory
     ) -> None:
         df = schema.projection_pairs([two_step_trajectory], {"evil/normal": -1.5})
@@ -531,7 +531,7 @@ class TestScatterProjectionCorrelation:
         assert legend is not None
         legend_labels = [t.get_text() for t in legend.get_texts()]
         assert any(r"\Delta P_0" in label for label in legend_labels)
-        assert any(r"\Delta P_t" in label for label in legend_labels)
+        assert any(r"\Delta \hat{P}_t" in label for label in legend_labels)
 
 
 class TestScatterMetricGrid:
@@ -1048,7 +1048,7 @@ class TestDecayScatterGrid:
         fig = figures.decay_scatter_grid(_decay_rows())
         ax = fig.axes[0]
         scatters = [c for c in ax.collections if isinstance(c, PathCollection)]
-        assert len(scatters) == 2  # Delta P_0 and Delta P_t
+        assert len(scatters) == 2  # Delta P_0 and Delta hat P_t
         # Each r is printed beside its own line and in its own colour, so the
         # text says the number and the position says whose it is.
         printed = {label.get_color(): label.get_text() for label in _fit_labels(ax)}
@@ -1064,7 +1064,7 @@ class TestDecayScatterGrid:
         assert style.GREEN in {label.get_color() for label in _fit_labels(ax)}
 
     def test_two_series_that_agree_keep_their_labels_apart(self) -> None:
-        """Delta P_0 and Delta P_t agreeing is what an unaged trunk looks
+        """Delta P_0 and Delta hat P_t agreeing is what an unaged trunk looks
         like, so a panel has to be able to draw one line twice and still say
         which r belongs to which."""
         rows = _decay_rows(trunks=["a"], checkpoints=[0])
@@ -1781,8 +1781,112 @@ class TestExp2Driver:
         frame = pd.DataFrame({"trunk": ["z", "a"]})
         assert make_plots._present_trunks(frame) == ["a", "z"]
 
+    def test_the_two_projection_drift_plots_have_distinct_labels_and_names(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """The regenerated plot must not masquerade as the legacy hatted one."""
+        ratios = pd.DataFrame(
+            [
+                {
+                    "trait": "evil",
+                    "trunk": "a",
+                    "seed": experiments.EXP2_SEED,
+                    "probe": "evil/normal",
+                    "t": t,
+                    "ratio": ratio,
+                }
+                for t, ratio in enumerate((100.0, 80.0))
+            ]
+        )
+        labels_seen: list[str] = []
+        names_seen: list[str] = []
+
+        def fake_overlay(*_args, **kwargs):
+            labels_seen.append(kwargs["ylabel"])
+            return plt.figure()
+
+        def fake_emit(_fig, name, out_dir, saved):
+            names_seen.append(name)
+            saved.append(out_dir / f"{name}.pdf")
+
+        monkeypatch.setattr(figures, "overlay_grid", fake_overlay)
+        monkeypatch.setattr(make_plots, "_emit", fake_emit)
+
+        make_plots._drift_delta_hat_p_figure(ratios, tmp_path)
+        make_plots._drift_delta_p_figure(ratios, tmp_path)
+
+        assert labels_seen == [
+            r"$\Delta \hat{P}_t$ (% of $\Delta P_0$)",
+            r"$\Delta P_t$ (% of $\Delta P_0$)",
+        ]
+        assert names_seen == [
+            "exp2_drift_delta_hat_p",
+            "exp2_drift_delta_p",
+        ]
+
+    def test_an_absent_current_drift_measurement_emits_no_plot(self, tmp_path) -> None:
+        assert make_plots._drift_delta_p_figure(pd.DataFrame(), tmp_path) == []
+
+    def test_exp2_routes_each_drift_source_to_its_matching_plot(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """The build driver must not swap two individually correct readers."""
+
+        class StubCollection:
+            def __init__(self, group: str):
+                self.group = group
+                self.runs = [group]
+
+            def __bool__(self):
+                return True
+
+            def values(self, _key: str):
+                return ["evil"]
+
+        collections = {group: StubCollection(group) for group in make_plots.EXP2_GROUPS}
+        hatted = pd.DataFrame({"view": ["hatted"]})
+        current = pd.DataFrame({"view": ["current"]})
+        routed: list[tuple[str, pd.DataFrame]] = []
+
+        def hatted_frame(runs, **_kwargs):
+            assert runs == [experiments.EXP2_DECAY, experiments.EXP2_RESEED]
+            return hatted
+
+        def current_frame(runs, **_kwargs):
+            assert runs == [experiments.EXP2_REGEN]
+            return current
+
+        monkeypatch.setattr(
+            decay, "validation_frame", lambda *_a, **_k: pd.DataFrame()
+        )
+        monkeypatch.setattr(decay, "decay_frame", lambda *_a, **_k: pd.DataFrame())
+        monkeypatch.setattr(decay, "probe_drift_frame", hatted_frame)
+        monkeypatch.setattr(decay, "current_probe_drift_frame", current_frame)
+        monkeypatch.setattr(
+            decay, "latent_frame", lambda *_a, **_k: pd.DataFrame()
+        )
+        monkeypatch.setattr(make_plots, "_validation_figure", lambda *_a, **_k: [])
+        monkeypatch.setattr(make_plots, "_decay_figures", lambda *_a, **_k: [])
+        monkeypatch.setattr(make_plots, "_drift_latent_figure", lambda *_a, **_k: [])
+        monkeypatch.setattr(
+            make_plots,
+            "_drift_delta_hat_p_figure",
+            lambda frame, _out: routed.append(("hatted", frame)) or [],
+        )
+        monkeypatch.setattr(
+            make_plots,
+            "_drift_delta_p_figure",
+            lambda frame, _out: routed.append(("current", frame)) or [],
+        )
+
+        make_plots.build_exp2(collections, tmp_path, n_resamples=10)
+
+        assert [name for name, _ in routed] == ["hatted", "current"]
+        assert routed[0][1] is hatted
+        assert routed[1][1] is current
+
     def test_an_unmeasured_series_is_kept_out_of_the_figures(self) -> None:
-        r"""$\Delta P$ is measured on one trunk, so on a run of the decay
+        r"""$\Delta P_t$ is measured on one trunk, so on a run of the decay
         family alone its column is entirely NaN -- and a legend key for a line
         nobody drew reads as a line that came out flat."""
         fits = _fits(trunks=("a",)).assign(corr_p=np.nan)
@@ -1938,6 +2042,10 @@ _HEADINGS = ("Trait", "Trunk", "Projection")
 #: ...and what heads the block of value columns beside them.
 _SPANNER = "Checkpoint $t$"
 
+#: ...and the summary column right of that block, which is written the same
+#: way but is not part of what the spanner names.
+_MEAN = "Mean"
+
 
 class TestCorrelationTableOutput:
     def _table(self) -> pd.DataFrame:
@@ -1959,24 +2067,187 @@ class TestCorrelationTableOutput:
         one relationship going stale while the other holds."""
         assert make_plots.DECAY_GRID_SERIES == ("delta_p_0", "delta_p")
 
+    def _block(self) -> pd.DataFrame:
+        """One trait's three projections, beside another trait's single row.
+
+        The second block is the larger throughout, which is what makes it a
+        useful neighbour: a leader is the best of its own block and column, not
+        of the column.
+        """
+        return pd.DataFrame(
+            [
+                [0.5, 0.9, 0.904],
+                [0.5, 0.8, 0.896],
+                [0.5, 0.7, 0.700],
+                [0.99, 0.99, 0.99],
+            ],
+            index=pd.MultiIndex.from_tuples(
+                [
+                    ("Evil", "A: II drivers", r"$\Delta P_0$"),
+                    ("Evil", "A: II drivers", r"$\Delta \hat{P}_t$"),
+                    ("Evil", "A: II drivers", r"$\Delta P_t$"),
+                    ("Sycophancy", "A: II drivers", r"$\Delta P_0$"),
+                ],
+                names=("trait", "trunk", "series"),
+            ),
+            columns=[0, 1, 2],
+        )
+
+    def _trunks(self) -> pd.DataFrame:
+        """One trait's two trunks, which is what a table is chunked into."""
+        return pd.DataFrame(
+            [[0.9, 0.8], [0.7, 0.6], [0.5, 0.4], [0.3, 0.2]],
+            index=pd.MultiIndex.from_tuples(
+                [
+                    ("Evil", "A: II drivers", r"$\Delta P_0$"),
+                    ("Evil", "A: II drivers", r"$\Delta P_t$"),
+                    ("Evil", "B: I drivers", r"$\Delta P_0$"),
+                    ("Evil", "B: I drivers", r"$\Delta P_t$"),
+                ],
+                names=("trait", "trunk", "series"),
+            ),
+            columns=[0, 1],
+        )
+
+    def _summarised(self) -> list[str]:
+        """The two-trunk table with a mean appended, as its writer writes it."""
+        return make_plots._latex_table(
+            make_plots._with_mean(self._trunks(), _MEAN),
+            _HEADINGS,
+            _SPANNER,
+            summary=1,
+        ).splitlines()
+
     def test_a_repeated_key_is_blanked_rather_than_repeated(self) -> None:
         """What a reader skips over down a table, rather than what they read;
         blanking it is what makes the blocks visible."""
         rows = make_plots._latex_table(self._table(), _HEADINGS, _SPANNER).splitlines()
-        assert r"Evil & A: II drivers & $\Delta P_0$ & 0.90 & 0.80 \\" in rows
         assert r" &  & $\Delta P_t$ & 0.70 & -- \\" in rows
+
+    def test_a_key_is_centred_on_the_rows_it_covers(self) -> None:
+        """Centred rather than sat at the top of its block: the key names the
+        whole block, and a reader looking at the last row of one should not
+        have to read upwards to find out which."""
+        rows = make_plots._latex_table(self._table(), _HEADINGS, _SPANNER).splitlines()
+        assert (
+            r"\multirow{2}{*}{Evil} & \multirow{2}{*}{A: II drivers} & "
+            r"$\Delta P_0$ & \textbf{0.90} & 0.80 \\"
+        ) in rows
+
+    def test_a_key_covering_one_row_is_not_spanned(self) -> None:
+        r"""``\multirow{1}`` is a span of nothing, and writing it would say the
+        row below belonged to the block above."""
+        rows = make_plots._latex_table(self._table(), _HEADINGS, _SPANNER).splitlines()
+        assert rows[-2].startswith(r"Sycophancy & A: II drivers & ")
+
+    def test_each_trunk_is_chunked_off(self) -> None:
+        """A trunk's projections are what a reader compares, so the trunk is
+        what the body is chunked into -- not the trait alone."""
+        rows = make_plots._latex_table(self._trunks(), _HEADINGS, _SPANNER).splitlines()
+        assert rows.count(r"\cline{2-5}") == 1
+        assert rows.count(r"\hline") == 1  # the header's, and no other
+
+    def test_a_trunk_rule_stops_short_of_the_trait_spanning_it(self) -> None:
+        r"""Which is the whole reason it is a ``\cline``: an ``\hline`` here
+        would strike through the ``\multirow`` naming the trait, which covers
+        both trunks and so runs straight past the rule between them."""
+        rows = make_plots._latex_table(self._trunks(), _HEADINGS, _SPANNER).splitlines()
+        opening = rows[rows.index(r"\hline") + 1]
+        assert opening.startswith(r"\multirow{4}{*}{Evil} & \multirow{2}{*}{A")
+        crossed = rows[rows.index(r"\cline{2-5}") + 1]
+        assert crossed.startswith(r" & \multirow{2}{*}{B: I drivers}")
+
+    def test_each_key_column_is_ruled_off(self) -> None:
+        """The keys answer different questions and the last of them divides
+        them from the numbers; the values are one block and take no rules."""
+        rows = make_plots._latex_table(self._trunks(), _HEADINGS, _SPANNER).splitlines()
+        assert r"\begin{tabular}{l|l|l|rr}" in rows
+
+    def test_the_better_projection_of_a_block_is_bolded(self) -> None:
+        """The comparison the table exists for: which projection difference
+        tracks behaviour best at a checkpoint, for one trait and trunk."""
+        leaders = make_plots._leading_cells(self._block())
+        assert list(leaders[1]) == [True, False, False, False]
+
+    def test_a_leader_is_read_within_its_block_and_not_down_the_column(self) -> None:
+        """Another trait's correlations are on another scale; the 0.99 below
+        does not stop 0.90 leading the block above it."""
+        rows = make_plots._latex_table(self._block(), _HEADINGS, _SPANNER).splitlines()
+        assert any(r"\textbf{0.90} & \textbf{0.90}" in row for row in rows)
+        assert not any(r"\textbf{0.99}" in row for row in rows)
+
+    def test_cells_tying_at_the_printed_precision_are_all_bolded(self) -> None:
+        """What is bolded is what a reader can see is largest: 0.904 does not
+        beat 0.896 in a table that prints both as 0.90."""
+        leaders = make_plots._leading_cells(self._block())
+        assert list(leaders[2]) == [True, True, False, False]
+
+    def test_a_column_that_ties_throughout_has_no_leader(self) -> None:
+        """At t = 0 the projections are one measurement by construction, and
+        bolding all four would say they had won something."""
+        assert not make_plots._leading_cells(self._block())[0].any()
 
     def test_a_new_block_is_ruled_off(self) -> None:
         body = make_plots._latex_table(self._table(), _HEADINGS, _SPANNER)
-        assert body.count(r"\hline") == 4  # top, each trait block, end
+        assert body.count(r"\hline") == 2  # the header, and the second trait
+
+    def test_the_table_is_ruled_minimally(self) -> None:
+        """One line under the header and one where the trait turns over. None
+        at the top or the bottom: the float already ends the table, and a rule
+        dividing nothing is ink spent on nothing."""
+        rows = make_plots._latex_table(self._table(), _HEADINGS, _SPANNER).splitlines()
+        assert rows[rows.index(r"\hline") - 1].startswith("Trait & Trunk")
+        assert rows[1].startswith(r"\begin{tabular}")
+        assert rows[2].startswith(" & ")  # the spanner, not a rule
+        assert rows[-2].startswith("Sycophancy & ")  # the last body row, unruled
+        assert rows[-1] == r"\end{tabular}"
 
     def test_it_is_a_fragment_not_a_float(self) -> None:
         """The caption, the label and the placement are the report's to write;
         a generated file carrying them would need editing after every replot."""
         body = make_plots._latex_table(self._table(), _HEADINGS, _SPANNER)
         assert body.startswith("% Generated")
-        assert r"\begin{tabular}{lllrr}" in body
+        assert r"\begin{tabular}{l|l|l|rr}" in body
         assert r"\begin{table}" not in body
+
+    def test_the_mean_summarises_the_row_it_is_on(self) -> None:
+        """How well a projection difference tracks behaviour over the sweep as
+        a whole, which is otherwise a sum a reader does across the row by eye
+        and gets roughly."""
+        table = make_plots._with_mean(self._trunks(), _MEAN)
+        assert list(table[_MEAN]) == [
+            pytest.approx(value) for value in (0.85, 0.65, 0.45, 0.25)
+        ]
+
+    def test_a_row_with_a_gap_averages_the_checkpoints_it_has(self) -> None:
+        """Rather than blanking: the gap is visible in the row the mean is on,
+        and a blank beside it would say less than the number does."""
+        table = make_plots._with_mean(self._table(), _MEAN)
+        assert table[_MEAN].iloc[1] == pytest.approx(0.7)  # 0.70 and a gap
+
+    def test_a_summary_column_is_ruled_off_from_the_block_it_sums(self) -> None:
+        """The rule is what stops a reader taking a mean over the checkpoints
+        for one more checkpoint."""
+        assert r"\begin{tabular}{l|l|l|rr|r}" in self._summarised()
+
+    def test_a_summary_column_sits_outside_the_spanner(self) -> None:
+        """So that ``Checkpoint $t$`` goes on naming only the checkpoints; the
+        mean keeps its own heading beside them."""
+        rows = self._summarised()
+        assert rows[2] == r" &  &  & \multicolumn{2}{c}{Checkpoint $t$} &  \\"
+        assert rows[3] == r"Trait & Trunk & Projection & 0 & 1 & Mean \\"
+
+    def test_a_block_rule_runs_under_the_summary_column_too(self) -> None:
+        """A block is chunked off across its whole width: a rule stopping at
+        the last checkpoint would leave the means of two trunks unseparated."""
+        assert r"\cline{2-6}" in self._summarised()
+
+    def test_the_leading_mean_of_a_block_is_bolded(self) -> None:
+        """By the same rule as the columns beside it, so the table names the
+        better predictor over a trunk in the ink it names it at a step in."""
+        rows = self._summarised()
+        assert any(row.endswith(r"\textbf{0.85} \\") for row in rows)
+        assert any(row.endswith(r"\textbf{0.45} \\") for row in rows)
 
     def test_both_forms_are_written(self, tmp_path: Path) -> None:
         saved: list[Path] = []

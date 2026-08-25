@@ -287,7 +287,7 @@ def delta_p_0_lookup(
     Keyed by (trait, seed) rather than flattened because the base checkpoint
     is measured independently per seed (``weights_key`` includes seed even at
     ``t=0``), so each seed has its own $v_0$ and its own $\Delta P_0$. Pairing
-    a seed's $\Delta P_t$ against another seed's $\Delta P_0$ would inject
+    a seed's $\Delta \hat{P}_t$ against another seed's $\Delta P_0$ would inject
     measurement noise into the very correlation being tested.
 
     Three sources are merged, in increasing order of coverage: the dataset a
@@ -373,7 +373,7 @@ def projection_frame(
     *,
     stat: str = "mean",
 ) -> pd.DataFrame:
-    r"""Tidy $(\Delta P_0, \Delta P_t, \Delta b_{t+1})$ rows, matched per seed.
+    r"""Tidy $(\Delta P_0, \Delta \hat{P}_t, \Delta b_{t+1})$ rows, matched per seed.
 
     Each (trait, seed) group is paired against its *own* base-model
     $\Delta P_0$ values; groups with no measurements at all are skipped.

@@ -5,9 +5,10 @@ module produces both rather than one flattened table:
 
 *Level 1 -- inside a checkpoint.* :func:`decay_frame` gives one row per
 ``(trunk, t, probe)``: the projection difference the probe dataset had at
-$M_0$, the one it has at $M_t$, and the behaviour change fine-tuning on it
-actually produced. Eight such rows are one scatter panel, and fitting them
-yields **one** correlation.
+$M_0$, the hatted view it has at $M_t$, the fully refreshed view where that
+was measured, and the behaviour change fine-tuning on it actually produced.
+Eight such rows are one scatter panel, and fitting them yields **one**
+correlation.
 
 *Level 2 -- across checkpoints.* :func:`fit_frame` collapses each of those
 scatters to a single row: its correlation and slope with bootstrap intervals, the
@@ -52,9 +53,9 @@ BRANCH_ROLE = "branch"
 #:
 #: The notation carries one mark per choice. A **hat** says the predicted term
 #: is *approximated* by $M_0$'s answers rather than being what the checkpoint
-#: would really say; a $v_0$ **superscript** says the axis is held at the base
-#: model's persona vector; the **subscript** is the checkpoint the activations
-#: come from. So $\Delta P_t$ -- unmarked -- is the projection difference the
+#: would really say; a $(\mathbf{v}_0)$ **superscript** says the axis is held
+#: at the base model's persona vector; the **subscript** is the checkpoint the
+#: activations come from. So $\Delta P_t$ -- unmarked -- is the projection difference the
 #: update actually faces, and everything else is an approximation of it.
 #:
 #: ``p0``
@@ -62,10 +63,10 @@ BRANCH_ROLE = "branch"
 #:     persona-vectors paper computes, and it needs no hat: at $t = 0$ the
 #:     current model *is* $M_0$, so nothing about it is approximated.
 #: ``pv0``
-#:     $\Delta \hat{P}_t^{v_0}$, the checkpoint's activations against the base
-#:     model's axis. Free to measure -- the activations do not depend on the
-#:     axis -- and it is what separates the persona direction rotating from the
-#:     representation drifting.
+#:     $\Delta \hat{P}_t^{(\mathbf{v}_0)}$, the checkpoint's activations against
+#:     the base model's axis. Free to measure -- the activations do not depend
+#:     on the axis -- and it is what separates the persona direction rotating
+#:     from the representation drifting.
 #: ``pt``
 #:     $\Delta \hat{P}_t$, axis and encoder current, answers still $M_0$'s.
 #:     The quantity whose staleness is RQ1.
@@ -78,7 +79,7 @@ BRANCH_ROLE = "branch"
 SERIES = ("p0", "pv0", "pt", "p")
 SERIES_LABELS = {
     "p0": r"$\Delta P_0$",
-    "pv0": r"$\Delta \hat{P}_t^{v_0}$",
+    "pv0": r"$\Delta \hat{P}_t^{(\mathbf{v}_0)}$",
     "pt": r"$\Delta \hat{P}_t$",
     "p": r"$\Delta P_t$",
 }
@@ -112,16 +113,16 @@ class TrunkSeries:
     """One trunk's own measurements, indexed by checkpoint.
 
     Everything here is read off the trunk, never off a branch: section 8 gives
-    a branch endpoint ``b`` alone, on the grounds that $z_t$ and $\\Delta P_t$
-    describe the checkpoint the branch *left from*, which the trunk has already
-    measured.
+    a branch endpoint ``b`` alone, on the grounds that $z_t$ and
+    $\\Delta \\hat{P}_t$ describe the checkpoint the branch *left from*, which
+    the trunk has already measured.
     """
 
     trait: str
     trunk: str
     seed: int
     #: Per checkpoint: the trait score, its analytic standard error (section
-    #: 6a), the latent state, and $\Delta P_t$ for every probe dataset.
+    #: 6a), the latent state, and $\Delta \hat{P}_t$ for every probe dataset.
     behavior: tuple[float, ...]
     behavior_se: tuple[float, ...]
     latent: tuple[Mapping[str, float], ...]
@@ -467,8 +468,8 @@ def fit_frame(
     r"""Collapse each ``(trunk, t)`` scatter to one row: its fit and its ceiling.
 
     Every series in :data:`SERIES` is fitted, because section 9 reads them
-    against each other: $\Delta P_0$ falling *while* $\Delta P_t$ holds is
-    staleness, and both falling together is signal running out. $\Delta P$
+    against each other: $\Delta P_0$ falling *while* $\Delta \hat{P}_t$ holds
+    is staleness, and both falling together is signal running out. $\Delta P_t$
     settles what is left over -- if refreshing the prediction as well as the
     axis does not recover the fit, what the frozen series lost was not a stale
     prediction. It is fitted only where it was measured (see
@@ -531,7 +532,7 @@ def _series_fit(
 ) -> dict[str, float]:
     r"""One series' fit over one scatter, or all-NaN where it was not measured.
 
-    $\Delta P$ is measured on one trunk only, so most scatters have no column
+    $\Delta P_t$ is measured on one trunk only, so most scatters have no column
     to fit. Returning NaN keeps the frame's shape fixed -- every figure indexes
     the same columns whichever families are on disk -- while leaving the
     absence visible: a missing measurement plots as a gap, where a zero would
@@ -696,8 +697,8 @@ def phase_contrast_frame(
 
     Every series is carried. $\Delta P_0$ answers "does re-aligning the model
     restore the *stale* probe's accuracy", which is the emergent-re-alignment
-    question; $\Delta P_t$ and $\Delta P$ are the controls -- if they move by
-    the same amount, what changed is the scatter, not the staleness. A series
+    question; $\Delta \hat{P}_t$ and $\Delta P_t$ are the controls -- if they
+    move by the same amount, what changed is the scatter, not the staleness. A series
     that was not measured on a trunk carries NaN through to its bars, which go
     undrawn rather than reading as no change.
     """
@@ -753,24 +754,30 @@ _PHASE_COLUMNS = [
 _RATIO_BASELINE_FLOOR = 0.05
 
 
-def probe_drift_frame(
-    runs: Iterable[Run], *, stat: str = "mean", source: str = "base"
+def _projection_drift_frame(
+    series_by_trunk: Mapping[tuple[str, str, int], Sequence[Mapping[str, float]]],
+    *,
+    value_column: str,
 ) -> pd.DataFrame:
-    r"""Section 9's plot 5: $\Delta P_t / \Delta P_0$ per probe, over ``t``.
+    r"""Express one projection view as a percentage of its own $\Delta P_0$.
+
+    ``series_by_trunk`` is keyed by ``(trait, trunk, seed)`` and carries one
+    probe map per checkpoint. The caller chooses ``value_column`` so the
+    legacy hatted view and the regenerated current-answer view remain
+    distinguishable in any frame inspected outside the plotting code.
 
     A fixed dataset measured against a moving model, so every change is the
-    model's. One row per ``(trunk, seed, probe, t)`` -- seed included because
-    the section 6c replicate is the same trunk reseeded, and overlaying A
-    against A' is what shows whether the drift trajectory is stable at all.
+    model's. One row per ``(trunk, seed, probe, t)``; retaining the seed lets a
+    view with probe-bearing reseeds overlay its replicate trajectories.
 
     Probes whose $\Delta P_0$ is too near zero to divide by are dropped and
     named in a warning rather than plotted as a spike.
     """
     rows = []
-    for (trait, trunk, seed), series in sorted(
-        trunk_series(runs, stat=stat, source=source).items()
-    ):
-        baseline = series.delta_p_0
+    for (trait, trunk, seed), probes_by_t in sorted(series_by_trunk.items()):
+        if not probes_by_t:
+            continue
+        baseline = probes_by_t[0]
         if not baseline:
             continue
         scale = max(abs(v) for v in baseline.values())
@@ -790,7 +797,7 @@ def probe_drift_frame(
                 seed,
                 ", ".join(dropped),
             )
-        for t, probes in enumerate(series.probes):
+        for t, probes in enumerate(probes_by_t):
             for probe, value in sorted(usable.items()):
                 if probe not in probes:
                     continue
@@ -801,13 +808,48 @@ def probe_drift_frame(
                         "seed": seed,
                         "probe": probe,
                         "t": t,
-                        "delta_p_t": probes[probe],
+                        value_column: probes[probe],
                         "ratio": 100.0 * probes[probe] / value,
                     }
                 )
     return pd.DataFrame(
-        rows, columns=["trait", "trunk", "seed", "probe", "t", "delta_p_t", "ratio"]
+        rows,
+        columns=["trait", "trunk", "seed", "probe", "t", value_column, "ratio"],
     )
+
+
+def probe_drift_frame(
+    runs: Iterable[Run], *, stat: str = "mean", source: str = "base"
+) -> pd.DataFrame:
+    r"""The legacy $\Delta \hat{P}_t / \Delta P_0$ trajectory per probe.
+
+    This deliberately reads the decay trunks' unqualified ``probes`` field,
+    whose predicted answers are the cached answers from $M_0$. The persisted
+    ``delta_p_t`` column name is retained for compatibility; under the current
+    notation the quantity it contains is $\Delta \hat{P}_t$.
+    """
+    series = {
+        key: trunk.probes
+        for key, trunk in trunk_series(runs, stat=stat, source=source).items()
+    }
+    return _projection_drift_frame(series, value_column="delta_p_t")
+
+
+def current_probe_drift_frame(
+    runs: Iterable[Run], *, stat: str = "mean"
+) -> pd.DataFrame:
+    r"""The regenerated $\Delta P_t / \Delta P_0$ trajectory per probe.
+
+    Only ``probes_current`` records written by ``EXP2_REGEN`` are accepted.
+    There is intentionally no fallback to the decay trunks' unqualified
+    ``probes``: an absent regenerated measurement must stay absent rather than
+    silently turning the new plot into a duplicate of the hatted one.
+
+    At $t=0$, $M_t=M_0$, so the first current-answer probe map is exactly
+    $\Delta P_0$ and is the paired denominator for every later checkpoint.
+    """
+    current = _remeasured_probes(runs, stat=stat)["delta_p"]
+    return _projection_drift_frame(current, value_column="delta_p")
 
 
 def latent_frame(

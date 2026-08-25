@@ -493,9 +493,9 @@ def build_exp2_decay_configs(
 
     Branches carry ``measure=ENDPOINT_BEHAVIOR``, so they contribute ``b_{t+1}``
     and nothing else (section 8). Everything else the analysis needs at
-    checkpoint ``t`` -- ``z_t``, ``b_t``, and ``Delta P_t`` for all K probes --
-    is measured once by the trunk, which is why the probe set is attached there
-    rather than to the branches.
+    checkpoint ``t`` -- ``z_t``, ``b_t``, and ``Delta hat P_t`` for all K
+    probes -- is measured once by the trunk, which is why the probe set is
+    attached there rather than to the branches.
 
     Fanned from ``t = 1`` upward, not from ``t = 0``: all three trunks share
     ``M_0``, so the ``t = 0`` fan would be emitted three times over, and it is
@@ -638,7 +638,7 @@ def build_exp2_axis_configs(
     therefore confounds two causes -- the direction rotating and the
     representation drifting -- and neither existing series can tell them apart.
 
-    This family measures the rung between them: $\Delta \hat{P}_t^{v_0}$, the
+    This family measures the rung between them: $\Delta \hat{P}_t^{(\mathbf{v}_0)}$, the
     checkpoint's own activations held against the base model's axis. Read
     against $\Delta \hat{P}_t$ it isolates the rotation; read against
     $\Delta P_0$ it isolates the drift. It is the DeltaP analogue of $p_t$ in
@@ -693,7 +693,7 @@ def build_exp2_regen_configs(
 ) -> list[TrajectoryConfig]:
     r"""Every trunk again, with each checkpoint answering the probes for itself.
 
-    $\Delta P_0$ and $\Delta P_t$ both hold the *predicted* half of the
+    $\Delta P_0$ and $\Delta \hat{P}_t$ both hold the *predicted* half of the
     projection difference frozen at $M_0$: the target answers come from the
     training set and the answers they are differenced against are the ones the
     base model gave, re-read verbatim at every checkpoint. That is the right
@@ -704,8 +704,7 @@ def build_exp2_regen_configs(
     actually asks it to make is not the shift either series reports. This
     family measures that shift: each $M_t$ generates its own answers to the
     probe prompts, and the projection difference is taken against those.
-    Nothing in it is frozen at a step, so it is written $\Delta P$ with no
-    subscript.
+    Nothing in it is frozen at a step, so it is written $\Delta P_t$.
 
     All three trunks are emitted, but the measurement is expensive enough that
     which of them to actually run is a decision taken per run rather than here:
@@ -719,7 +718,7 @@ def build_exp2_regen_configs(
     Trunk A is the one to run first if only one is run. It is the schedule on
     which both existing series predict $\Delta b$ worst, so it is where "the
     probe is measuring the wrong model" is still a live explanation; if
-    $\Delta P$ does no better there, staleness of the prediction is not what
+    $\Delta P_t$ does no better there, staleness of the prediction is not what
     the frozen series was losing. Trunk C is the control it is read against --
     every driver Normal, so little drift to make the prediction stale -- and
     trunk B sits between them.

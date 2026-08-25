@@ -9,9 +9,9 @@ ladder (:class:`method.config.DeltaPView`):
 view                         quantity                        cost
 ===========================  ==============================  ===============
 default, at $t = 0$          $\Delta P_0$                     already paid
-``axis=BASE``                $\Delta P_t^{v_0}$               free
-default                      $\Delta P_t$                     already paid
-``predicted=CURRENT``        $\widetilde{\Delta P}_t$          a generation pass per $t$
+``axis=BASE``                $\Delta \hat{P}_t^{(\mathbf{v}_0)}$ free
+default                      $\Delta \hat{P}_t$                already paid
+``predicted=CURRENT``        $\Delta P_t$                     a generation pass per $t$
 ===========================  ==============================  ===============
 
 These cover the measurement path (:mod:`method.steps`) and the two families
@@ -291,7 +291,8 @@ class TestCurrentSourceMeasurement:
 
 
 class TestBaseAxisView:
-    r"""$\Delta P_t^{v_0}$: the checkpoint's activations against $M_0$'s axis."""
+    r"""$\Delta \hat{P}_t^{(\mathbf{v}_0)}$: checkpoint activations against
+    $M_0$'s axis."""
 
     def test_it_agrees_with_the_default_view_at_t0(self, tmp_path, backend):
         """At $t = 0$ the checkpoint's own axis *is* $v^{(0)}$, so the two views

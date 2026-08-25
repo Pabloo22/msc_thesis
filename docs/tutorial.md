@@ -189,18 +189,20 @@ normalisation removed: `p × h_norm` recovers the old scalar projection, and a
 `h_norm` series is the only thing that says whether a falling `p` is the neutral
 state turning off the trait axis or merely growing in unrelated directions.
 
-And `ΔP` for a training example is the shift it demands along the current axis:
+The default $\Delta \hat{P}_t$ for a training example is the shift it demands along the
+current axis while retaining $M_0$'s answer:
 
 ```
-ΔP_i = project(h_targetᵢ, vₜ) − project(h_predᵢ, vₜ)
+ΔP̂_t,i = project(h_targetᵢ, vₜ) − project(h_pred from M₀ᵢ, vₜ)
 ```
 
-`ΔP` keeps the projection because it is a *difference* of two positions along
+$\Delta \hat{P}_t$ keeps the projection because it is a *difference* of two positions along
 one axis: normalising each activation first would make it a difference of
 angles and throw away the magnitude it exists to report.
 
-where `h_target` is the activation on the dataset's *target* answer and `h_pred`
-is the activation on `M₀`'s *own* answer to the same prompt.
+Here `h_target` is the activation on the dataset's *target* answer and `h_pred`
+is the activation on `M₀`'s *own* answer to the same prompt. The fully refreshed
+$\Delta P_t$ instead generates that comparison answer with $M_t$.
 
 ---
 
@@ -412,10 +414,11 @@ its own subprocess that exits before the next begins. → the workers + `run_ste
 **Real vs Mock behind one interface.** Lets the orchestration, hashing, resume
 and math all be exercised with no GPU. → `ExecutionBackend`.
 
-**Freeze the reference text.** The persona vector is always re-extracted using
-`M₀`'s pos/neg responses, and `ΔP`/`h_neutral` reuse `M₀`'s fixed answers. This
-isolates *representation* drift from *behavioural* drift and avoids the
-degenerate case where a drifted model can no longer produce usable text. → see
+**Freeze the reference text by default.** The persona vector is always re-extracted using
+`M₀`'s pos/neg responses, and $\Delta \hat{P}_t$ / `h_neutral` reuse `M₀`'s fixed
+answers. This isolates *representation* drift from *behavioural* drift and avoids the
+degenerate case where a drifted model can no longer produce usable text. The
+`PredictedSource.CURRENT` view deliberately relaxes this rule to measure $\Delta P_t$. → see
 the docstrings in [`steps.py`](../method/steps.py) and the `HNeutralSource` enum in
 [`config.py`](../method/config.py).
 

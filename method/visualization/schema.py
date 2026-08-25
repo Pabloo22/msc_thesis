@@ -179,7 +179,7 @@ class Trajectory:
         return [s.next_dataset for s in self.steps if s.next_dataset is not None]
 
     def probe_series(self, dataset: str, *, stat: str = "mean") -> list[float]:
-        r"""$\Delta P_t$ for one probed dataset at every checkpoint, ordered by $t$.
+        r"""$\Delta \hat{P}_t$ for one probe at every checkpoint, ordered by $t$.
 
         The series behind the drift plot: a fixed dataset measured against a
         moving model, so any change is the model's, not the data's. Raises
@@ -245,7 +245,7 @@ def projection_pairs(
     *,
     stat: str = "mean",
 ) -> pd.DataFrame:
-    r"""Pair each step's actual $\Delta P_t$ with the dataset's $\Delta P_0$.
+    r"""Pair each step's $\Delta \hat{P}_t$ with the dataset's $\Delta P_0$.
 
     ``delta_p_0`` maps ``"dataset/version"`` to the projection difference that
     dataset would have produced against the base model $M_0$ -- computable in
@@ -333,7 +333,7 @@ def z_component_matrix(
 def probe_matrix(
     trajectories: Iterable[Trajectory], dataset: str, *, stat: str = "mean"
 ) -> list[list[float]]:
-    r"""One row per trajectory of $\Delta P_t$ for ``dataset`` across all $t$.
+    r"""One row per trajectory of $\Delta \hat{P}_t$ for ``dataset`` across all $t$.
 
     Feeds :func:`method.visualization.figures.drift_line`, which normalises each
     row against its own step-0 value and draws mean $\pm$ 1 std across seeds.
@@ -351,7 +351,7 @@ def probe_matrix(
 def delta_p_by_dataset(
     trajectories: Iterable[Trajectory], dataset: str, *, stat: str = "mean"
 ) -> list[list[float]]:
-    r"""Per-trajectory $\Delta P_t$ values at every occurrence of ``dataset``.
+    r"""Per-trajectory $\Delta \hat{P}_t$ values at every occurrence of ``dataset``.
 
     Occurrences are ordered by ``t``, so index 0 is always the first time a
     given trajectory trained on ``dataset`` and index 1 the second -- what

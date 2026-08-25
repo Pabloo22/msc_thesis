@@ -179,13 +179,12 @@ def scatter_projection_correlation(
     xlabel: str = r"Projection difference $\Delta P$",
     ylabel: str = r"Behaviour change $\Delta b_{t+1}$",
 ) -> Figure:
-    r"""RQ1: does $\Delta P_0$ or $\Delta P_t$ better predict $\Delta b_{t+1}$?
+    r"""RQ1: compare $\Delta P_0$ and $\Delta \hat{P}_t$ as predictors.
 
     Two series share one axis: $\Delta P_0$ (blue), frozen at the base model,
-    against $\Delta P_t$ (orange), recomputed at the checkpoint about to be
-    trained -- both plotted against the behaviour change the step actually
-    caused. The hypothesis under test is that the blue fit's correlation
-    decays with sequence length while the orange one stays high.
+    against $\Delta \hat{P}_t$ (orange), whose axis and encoder are recomputed
+    at the checkpoint while its predicted answer remains $M_0$'s -- both
+    plotted against the behaviour change the step actually caused.
     """
     style.apply_style()
     fig, ax = plt.subplots(figsize=(5.5, 4.2))
@@ -193,7 +192,11 @@ def scatter_projection_correlation(
         ax, delta_p_0, delta_behavior, color=style.BLUE, label=r"$\Delta P_0$"
     )
     _scatter_with_fit(
-        ax, delta_p_t, delta_behavior, color=style.ORANGE, label=r"$\Delta P_t$"
+        ax,
+        delta_p_t,
+        delta_behavior,
+        color=style.ORANGE,
+        label=r"$\Delta \hat{P}_t$",
     )
     ax.axhline(0, color=style.BASELINE, linewidth=0.8, zorder=1)
     ax.set_xlabel(xlabel)
@@ -303,8 +306,8 @@ def drift_line(
     of per-seed runs (ragged lengths are trimmed to the shortest). Each is
     expressed as a percentage of its own first entry (100 = unchanged) and
     plotted as a mean line with a $\pm 1$ std band, against a dashed
-    reference line at 100. This is the "does $\Delta P_t$ / $\rho_t$ / $r_t$ /
-    $p_t$ / $q_t$ deviate from its step-0 value" plot.
+    reference line at 100. This is the "does $\Delta \hat{P}_t$ / $\rho_t$ /
+    $r_t$ / $p_t$ / $q_t$ deviate from its step-0 value" plot.
     """
     pct_series = {
         label: percent_of_baseline(stack_and_trim(runs), axis=1)
@@ -855,7 +858,10 @@ class _DecaySeries:
 _DECAY_SERIES: tuple[_DecaySeries, ...] = (
     _DecaySeries("delta_p_0", r"\Delta P_0", style.BLUE, "everything at $M_0$"),
     _DecaySeries(
-        "delta_p_v0", r"\Delta \hat{P}_t^{v_0}", style.PURPLE, "$M_0$'s axis"
+        "delta_p_v0",
+        r"\Delta \hat{P}_t^{(\mathbf{v}_0)}",
+        style.PURPLE,
+        "$M_0$'s axis",
     ),
     _DecaySeries(
         "delta_p_t", r"\Delta \hat{P}_t", style.ORANGE, "$M_0$'s answers"
@@ -1290,8 +1296,8 @@ def decay_scatter_grid(
     ageing and a column as three trajectories at the same depth; the traits
     stack as blocks of rows. Each panel holds the ``K`` probe datasets once per
     series it has a complete column for -- against the frozen $\Delta P_0$ in
-    blue, the recomputed $\Delta P_t$ in orange, and, where it was measured,
-    $\Delta P$ in green (:data:`_DECAY_SERIES`) -- and each fit's $r$ printed
+    blue, $\Delta \hat{P}_t$ in orange, and, where it was measured,
+    $\Delta P_t$ in green (:data:`_DECAY_SERIES`) -- and each fit's $r$ printed
     beside the line it was measured from (:func:`_label_fits`). The hypothesis
     is visible as the blue fit flattening left-to-right while the others do
     not.
@@ -1304,7 +1310,7 @@ def decay_scatter_grid(
     checkpoints, which is a table's job and not a 1.75-inch panel's: pass the
     two ends of the ladder here and tabulate the rest.
 
-    Panels need not all carry the same series. $\Delta P$ costs a generation
+    Panels need not all carry the same series. $\Delta P_t$ costs a generation
     pass per checkpoint, so on a partly measured sweep its column is complete
     for some trunks and not others. That asymmetry is the point of drawing them
     in one grid rather than two: the trunk that was re-measured is read in
@@ -1596,11 +1602,11 @@ def headline_curves(
 ) -> Figure:
     r"""Plot 3: correlation and fitted slope against ``t``, one panel per trait.
 
-    Two rows (one per quantity) and one column per trait. $\Delta P_0$ and
-    $\Delta P_t$ are drawn on the *same* axes within a panel -- solid vs.
-    dashed, sharing the trunk's colour -- rather than split into their own
-    column, so the two series are read directly against each other instead of
-    through a side-by-side comparison across panels.
+    Two rows (one per quantity) and one column per trait. By default,
+    $\Delta P_0$ and $\Delta \hat{P}_t$ are drawn on the *same* axes within a
+    panel -- solid vs. dashed, sharing the trunk's colour -- rather than split
+    into their own column, so the two series are read directly against each
+    other instead of through a side-by-side comparison across panels.
 
     Slope is reported beside $r$ rather than inside it because staleness has
     two signatures that imply different fixes: a fit that loses its ordering
@@ -1882,9 +1888,9 @@ def phase_contrast(
     Drawn as adjacent before/after bars rather than a bar of the difference so
     that the *level* stays visible: a drop from 0.9 to 0.6 and one from 0.4 to
     0.1 are the same difference and very different findings. $\Delta P_0$ and
-    $\Delta P_t$ sit side by side within the same step -- offset just enough
+    $\Delta \hat{P}_t$ sit side by side within the same step -- offset just enough
     not to touch -- rather than in their own panel, so the control comparison
-    (does $\Delta P_t$ move by the same amount?) is a glance sideways instead
+    (does $\Delta \hat{P}_t$ move by the same amount?) is a glance sideways instead
     of a glance across the figure.
 
     One column per trait, on one shared pair of axes: $r$ is unitless and
@@ -2123,7 +2129,7 @@ def overlay_grid(
     series. ``bands`` maps those labels to a symmetric spread around each
     line, while ``replicates`` maps them to individual reseeded runs. A panel's
     halves need not carry the same labels: probe-free seeds reach the latent
-    columns and not the $\Delta P_t$ ones.
+    columns and not the $\Delta \hat{P}_t$ ones.
 
     Replicates are drawn dashed in the colour of the series they replicate, so
     the comparison rides one colour assignment however many seeds land and
@@ -2140,14 +2146,14 @@ def overlay_grid(
     self-describing and leaves the hues free.
 
     ``sharey`` is for a grid whose panels are one quantity in one unit -- the
-    $\Delta P_t$ percentages, where the point is that the traits and trunks
+    $\Delta \hat{P}_t$ percentages, where the point is that the traits and trunks
     drift by different amounts, and unshared axes would rescale that difference
     away. The latent grid must leave it off: its columns are different
     quantities ($\rho$ starts at 1, $r$ at the persona vector's norm), and even
     within a column the two traits have their own vectors, so a shared axis
     would squash one trait's drift into the gap between the two norms.
 
-    No measurement-error bars: section 8 establishes that $\Delta P_t$ and
+    No measurement-error bars: section 8 establishes that $\Delta \hat{P}_t$ and
     $z_t$ involve no sampling -- fixed prompts, fixed responses, forward passes
     only. A seed-spread band instead quantifies training-run variation.
     """

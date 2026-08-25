@@ -47,7 +47,7 @@ def build_and_save(out_dir: Path = style.PLOTS_DIR, *, n_seeds: int = 5) -> list
     trajectories = synthetic.synthetic_trajectory_set(n_seeds=n_seeds)
     delta_p_0 = synthetic.synthetic_delta_p_0_lookup()
 
-    # --- RQ1: does Delta P_0 or Delta P_t better predict Delta b_{t+1}? ---
+    # --- RQ1: does Delta P_0 or Delta hat P_t predict Delta b_{t+1}? ---
     pairs = schema.projection_pairs(trajectories, delta_p_0)
     fig = figures.scatter_projection_correlation(
         pairs["delta_p_0"],
@@ -71,12 +71,12 @@ def build_and_save(out_dir: Path = style.PLOTS_DIR, *, n_seeds: int = 5) -> list
         fig = figures.drift_line({label: runs}, ylabel=f"{label} (% of step 0)")
         emit(fig, f"drift_{component}")
 
-    # --- RQ1: how far Delta P_t drifts (as % of Delta P_0) with step index ---
+    # --- RQ1: how far Delta hat P_t drifts from Delta P_0 with step index ---
     pairs = pairs.assign(ratio=ratio_percent(pairs["delta_p_t"], pairs["delta_p_0"]))
     by_step = pairs.groupby("t")["ratio"].mean().sort_index()
     fig = figures.line_with_band(
-        {r"$\Delta P_t$": by_step.to_numpy()[None, :]},
-        ylabel=r"$\Delta P_t$ (% of $\Delta P_0$ for that dataset)",
+        {r"$\Delta \hat{P}_t$": by_step.to_numpy()[None, :]},
+        ylabel=r"$\Delta \hat{P}_t$ (% of $\Delta P_0$ for that dataset)",
         xlabel="Step $t$",
         reference=100.0,
         reference_label="Step-0 value",

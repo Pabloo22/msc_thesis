@@ -94,12 +94,99 @@ def _emit(fig: plt.Figure, name: str, out_dir: Path, saved: list[Path]) -> None:
 #: figures label their fits with, and an en dash for a cell the sweep has not
 #: measured -- distinguishable at a glance from a zero correlation, which is a
 #: result and not a gap.
-_CORR_FORMAT = "{:.2f}"
+_CORR_DECIMALS = 2
+_CORR_FORMAT = f"{{:.{_CORR_DECIMALS}f}}"
 _MISSING_CELL = "--"
 
 
+def _leading_cells(table: pd.DataFrame) -> pd.DataFrame:
+    r"""Which cells hold the best correlation of their block, to be bolded.
+
+    A block is the rows sharing every key but the last -- the projections
+    measured on one trait and one trunk -- and each column is read down it on
+    its own, a summary column included. That is the comparison the table exists to support:
+    which projection difference tracks behaviour best at step $t$, given a
+    trait and a trunk. Nothing is compared across blocks, where the trait sets
+    the scale, or along a row, where $t$ does.
+
+    Cells are compared at the precision they are printed at, so what is bolded
+    is what a reader can see is largest, and every cell tying for the lead is
+    bolded rather than an arbitrary one of them. Where a whole column of a
+    block ties there is no lead to mark and none is: at $t = 0$ the four
+    projections are the same measurement by construction, and bolding all four
+    would say they had won something.
+    """
+    keys = [table.index.get_level_values(i) for i in range(table.index.nlevels - 1)]
+    shown = table.round(_CORR_DECIMALS)
+    # A single block when there is no key left to group by, which reads the
+    # whole column -- the same rule, applied to a table with one key column.
+    blocks = shown.groupby(keys or [pd.Index([0] * len(shown))])
+    return shown.eq(blocks.transform("max")) & blocks.transform("nunique").gt(1)
+
+
+def _column_spec(keys: int, values: int, summary: int = 0) -> str:
+    """``l`` per key column and ``r`` per value, the keys ruled off.
+
+    A vertical rule after each key: they answer different questions -- which
+    trait, which trunk, which projection -- and the last of them also divides
+    the keys from the numbers they lead to. The value columns are one block
+    read across and take no rules between them. A summary column is ruled off
+    from that block in turn: it is not a member of what it summarises, and the
+    rule is what stops a reader taking it for one more checkpoint.
+    """
+    return "l|" * keys + "r" * values + ("|" + "r" * summary if summary else "")
+
+
+def _key_spans(rows: Sequence[tuple[str, ...]]) -> list[list[int]]:
+    """How many rows each key covers, counted from the row that opens it.
+
+    Zero on a row whose key the row above already covers, which is what makes
+    a key appear once per block rather than once per row. A key is opened by
+    its whole prefix, not by its own value alone: two trunks of the same name
+    under different traits are two blocks, and a run of them is not one.
+    """
+    if not rows:
+        return []
+    spans = [[0] * len(row) for row in rows]
+    for level in range(len(rows[0])):
+        start = 0
+        for row in range(1, len(rows) + 1):
+            if row == len(rows) or rows[row][: level + 1] != rows[start][: level + 1]:
+                spans[start][level] = row - start
+                start = row
+    return spans
+
+
+def _key_cell(key: str, span: int) -> str:
+    """A key, centred on the rows it covers and blank where it is covered."""
+    if not span:
+        return ""
+    return key if span == 1 else rf"\multirow{{{span}}}{{*}}{{{key}}}"
+
+
+def _block_rule(
+    row_keys: tuple[str, ...], previous: tuple[str, ...], total: int
+) -> str:
+    r"""The rule that opens the block ``row_keys`` starts, if it starts one.
+
+    Full width when the leading key turns over, and from the turning key
+    rightwards when a deeper one does -- a ``\cline`` rather than an
+    ``\hline`` so that the rule chunking the trunks does not strike through
+    the trait spanning them. The last key is the one that varies within a
+    block, so it opens nothing.
+    """
+    for level, (key, before) in enumerate(zip(row_keys[:-1], previous[:-1])):
+        if key != before:
+            return r"\hline" if level == 0 else rf"\cline{{{level + 1}-{total}}}"
+    return ""
+
+
 def _latex_table(
-    table: pd.DataFrame, headings: Sequence[str], spanner: str
+    table: pd.DataFrame,
+    headings: Sequence[str],
+    spanner: str,
+    *,
+    summary: int = 0,
 ) -> str:
     r"""A ``tabular`` for the correlation table, as a fragment to ``\input``.
 
@@ -108,10 +195,24 @@ def _latex_table(
     them would have to be edited after every re-plot -- which is what generated
     files exist not to need.
 
-    Plain ``tabular`` and ``\hline``, since the report's preamble carries
-    neither ``booktabs`` nor ``multirow``. A repeated trait or trunk is left
-    blank rather than spanned, which reads the same down a column and needs no
-    package at all.
+    Plain ``tabular`` and ``\hline``, since the report's preamble carries no
+    ``booktabs``. It does carry ``multirow``, which is what lets a trait or a
+    trunk sit centred on the rows it covers rather than at the top of them.
+
+    Ruled where something is divided and nowhere else: one line under the
+    header, where the table stops saying what its columns are and starts
+    saying what is in them, and one at every block boundary -- each trunk, not
+    only each trait, since a trunk's four projections are what a reader
+    compares and the block is what they compare inside. No rule at the top or
+    the bottom: the surrounding float already ends the table, and a line drawn
+    where nothing is being divided is ink spent on nothing. The key columns
+    are ruled off from one another and from the values (see
+    :func:`_column_spec`).
+
+    The leading correlation of each block and column is bolded (see
+    :func:`_leading_cells`), which is how the table answers in ink the question
+    it is a table of numbers to answer: which projection difference is the
+    better predictor at a given checkpoint.
 
     ``headings`` name the key columns and ``spanner`` the block of value
     columns, which are then headed by their own labels alone. Naming the
@@ -119,40 +220,58 @@ def _latex_table(
     ``0 1 2`` rather than ``$t = 0$`` seven times -- is what keeps the table
     inside the text width: a column is as wide as its widest cell, and a
     repeated header is wider than the numbers under it.
+
+    ``summary`` says how many of the trailing columns summarise the spanned
+    block rather than belong to it. They keep their own headings, sit outside
+    the spanner and are ruled off from it, so that ``Checkpoint $t$`` goes on
+    naming only the checkpoints (see :func:`_column_spec`).
     """
     # Key columns from the index rather than from the headings: the two must
     # agree, and it is the frame that says how many keys a row has.
-    keys, values = table.index.nlevels, len(table.columns)
+    keys, columns = table.index.nlevels, len(table.columns)
+    values = columns - summary
     lines = [
         "% Generated by method.visualization.make_plots -- do not edit.",
-        rf"\begin{{tabular}}{{{'l' * keys}{'r' * values}}}",
-        r"\hline",
-        " & ".join(["" ] * keys + [rf"\multicolumn{{{values}}}{{c}}{{{spanner}}}"])
+        rf"\begin{{tabular}}{{{_column_spec(keys, values, summary)}}}",
+        " & ".join(
+            [""] * keys
+            + [rf"\multicolumn{{{values}}}{{c}}{{{spanner}}}"]
+            + [""] * summary
+        )
         + r" \\",
         " & ".join([*headings, *(str(column) for column in table.columns)]) + r" \\",
+        r"\hline",
     ]
+    rows = [tuple(row_keys) for row_keys in table.index]
+    spans = _key_spans(rows)
+    leaders = _leading_cells(table)
     previous: tuple[str, ...] = ()
-    for row_keys, row in zip(table.index, table.to_numpy()):
-        # Only the part of a key that has changed since the row above: the
-        # repetition down a table is what a reader skips over rather than what
-        # they read, and blanking it is what makes the blocks visible.
-        row_keys = tuple(row_keys)
-        shown = [
-            "" if row_keys[: i + 1] == previous[: i + 1] else key
-            for i, key in enumerate(row_keys)
-        ]
-        # A rule wherever the leftmost key turns over, which is where one
-        # block of the table ends and the next begins.
-        if shown[0]:
-            lines.append(r"\hline")
+    for row_keys, span, row, best in zip(
+        rows, spans, table.to_numpy(), leaders.to_numpy()
+    ):
+        # No rule before the first block: its rule is the header's, already
+        # drawn, and a second one under it would box the headings in.
+        rule = _block_rule(row_keys, previous, keys + columns) if previous else ""
+        if rule:
+            lines.append(rule)
         cells = [
-            _MISSING_CELL if pd.isna(value) else _CORR_FORMAT.format(value)
-            for value in row
+            (
+                _MISSING_CELL
+                if pd.isna(value)
+                else _bold(_CORR_FORMAT.format(value), leading)
+            )
+            for value, leading in zip(row, best)
         ]
+        shown = [_key_cell(key, covered) for key, covered in zip(row_keys, span)]
         lines.append(" & ".join([*shown, *cells]) + r" \\")
         previous = row_keys
-    lines += [r"\hline", r"\end{tabular}", ""]
+    lines += [r"\end{tabular}", ""]
     return "\n".join(lines)
+
+
+def _bold(cell: str, leading: bool) -> str:
+    """``cell``, marked up if it leads its block and column."""
+    return rf"\textbf{{{cell}}}" if leading else cell
 
 
 def _emit_table(
@@ -162,11 +281,18 @@ def _emit_table(
     name: str,
     out_dir: Path,
     saved: list[Path],
+    *,
+    summary: int = 0,
 ) -> None:
-    """Write a table both ways: ``.tex`` to typeset, ``.csv`` to read back."""
+    """Write a table both ways: ``.tex`` to typeset, ``.csv`` to read back.
+
+    The two carry the same columns, ``summary`` ones included: the ``.csv`` is
+    what a reader checks a quoted number against, and a column it was missing
+    would send them back to the ``.tex`` to read it off the typeset table.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
     tex, csv = out_dir / f"{name}.tex", out_dir / f"{name}.csv"
-    tex.write_text(_latex_table(table, headings, spanner))
+    tex.write_text(_latex_table(table, headings, spanner, summary=summary))
     table.to_csv(csv)
     saved += [tex, csv]
     logger.info("wrote %s", tex)
@@ -187,6 +313,10 @@ DECAY_GRID_SERIES = (decay.SERIES_COLUMNS["p0"], decay.SERIES_COLUMNS["p"])
 #: checkpoints, and what the checkpoint columns are headed as a block.
 DECAY_TABLE_HEADINGS = ("Trait", "Trunk", "Projection")
 DECAY_TABLE_SPANNER = "Checkpoint $t$"
+
+#: ...and what the column summarising them is headed, right of the last of
+#: them (see :func:`_with_mean`).
+DECAY_TABLE_MEAN = "Mean"
 
 
 #: The families the decay experiment is split across. They share a base
@@ -395,10 +525,13 @@ def build_exp2(
     )
     # Families that re-measure trunks the decay family already ran, each
     # contributing one more projection series to the same rows.
-    remeasured = [
-        collections.get(group) or Collection(group)
-        for group in (experiments.EXP2_AXIS, experiments.EXP2_REGEN)
-    ]
+    axis_runs = collections.get(experiments.EXP2_AXIS) or Collection(
+        experiments.EXP2_AXIS
+    )
+    regen_runs = collections.get(experiments.EXP2_REGEN) or Collection(
+        experiments.EXP2_REGEN
+    )
+    remeasured = [axis_runs, regen_runs]
     if not (decay_runs or validation):
         logger.warning("exp2: no decay or validation runs on disk; skipping")
         return saved
@@ -409,7 +542,8 @@ def build_exp2(
         decay_runs, validation, remeasured, stat=stat, source=source
     )
     drift_runs = [*decay_runs.runs, *reseed.runs]
-    ratios = decay.probe_drift_frame(drift_runs, stat=stat, source=source)
+    hatted_ratios = decay.probe_drift_frame(drift_runs, stat=stat, source=source)
+    current_ratios = decay.current_probe_drift_frame(regen_runs.runs, stat=stat)
     latents = decay.latent_frame(drift_runs, stat=stat, source=source)
 
     traits = _present(
@@ -419,7 +553,8 @@ def build_exp2(
     saved += _decay_figures(
         rows, out_dir, sigma_seed=sigma_seed, n_resamples=n_resamples
     )
-    saved += _drift_delta_p_figure(ratios, out_dir)
+    saved += _drift_delta_hat_p_figure(hatted_ratios, out_dir)
+    saved += _drift_delta_p_figure(current_ratios, out_dir)
     saved += _drift_latent_figure(latents, out_dir)
     return saved
 
@@ -482,6 +617,26 @@ def _labelled_table(table: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def _with_mean(table: pd.DataFrame, heading: str) -> pd.DataFrame:
+    """``table`` with each row's mean across the checkpoints appended.
+
+    The checkpoint columns answer where a projection difference tracks
+    behaviour best; this one answers how well it tracks it over the sweep as a
+    whole, which is otherwise a sum a reader does by eye across seven cells and
+    gets roughly. Bolded by the same rule as the rest (see
+    :func:`_leading_cells`), so the column names the better predictor over the
+    trunk in the same ink the columns beside it name it at each step.
+
+    Taken over the checkpoints the row was measured at rather than over all of
+    them, so that a row with a gap averages what there is. Its blockmates then
+    average a different set of checkpoints, which is a comparison to make with
+    the gap in view -- and the gap is visible in the row the mean is on.
+    """
+    if table.empty:
+        return table
+    return table.assign(**{heading: table.mean(axis=1)})
+
+
 def _decay_figures(
     rows: pd.DataFrame,
     out_dir: Path,
@@ -539,12 +694,13 @@ def _decay_figures(
         ignore_index=True,
     )
     _emit_table(
-        _labelled_table(decay.correlation_table(fits)),
+        _with_mean(_labelled_table(decay.correlation_table(fits)), DECAY_TABLE_MEAN),
         DECAY_TABLE_HEADINGS,
         DECAY_TABLE_SPANNER,
         "exp2_decay_correlations",
         out_dir,
         saved,
+        summary=1,
     )
 
     series = _present_series(fits)
@@ -591,7 +747,7 @@ def _decay_figures(
 
 
 def _probe_series(arm: pd.DataFrame) -> dict[str, list[float]]:
-    r"""One trunk-arm's $\Delta P_t$ ratios, keyed by probe display name."""
+    """One trunk-arm's projection ratios, keyed by probe display name."""
     return {
         display_dataset_name(probe): values
         for probe, values in _series_by(arm, key="probe", value="ratio").items()
@@ -633,8 +789,14 @@ def _trunk_mean_std(
     return means, stds
 
 
-def _drift_delta_p_figure(ratios: pd.DataFrame, out_dir: Path) -> list[Path]:
-    r"""Plot 5, the $\Delta P_t$ half: a trait per row, a trunk per column.
+def _drift_projection_figure(
+    ratios: pd.DataFrame,
+    out_dir: Path,
+    *,
+    quantity: str,
+    name: str,
+) -> list[Path]:
+    """A projection-ratio grid: one trait per row and one trunk per column.
 
     All six panels share both axes, because the whole reading is comparative:
     how far the probes have drifted under an aggressive schedule against a
@@ -669,13 +831,33 @@ def _drift_delta_p_figure(ratios: pd.DataFrame, out_dir: Path) -> list[Path]:
             display_dataset_name(probe): style.dataset_mark(probe)
             for probe in set(ratios["probe"])
         },
-        ylabel=r"$\Delta P_t$ (% of $\Delta P_0$)",
+        ylabel=rf"{quantity} (% of $\Delta P_0$)",
         reference=100.0,
         reference_label=r"$\Delta P_0$",
         sharey=True,
     )
-    _emit(fig, "exp2_drift_delta_p", out_dir, saved)
+    _emit(fig, name, out_dir, saved)
     return saved
+
+
+def _drift_delta_hat_p_figure(ratios: pd.DataFrame, out_dir: Path) -> list[Path]:
+    r"""Plot the legacy $\Delta \hat{P}_t / \Delta P_0$ trajectories."""
+    return _drift_projection_figure(
+        ratios,
+        out_dir,
+        quantity=r"$\Delta \hat{P}_t$",
+        name="exp2_drift_delta_hat_p",
+    )
+
+
+def _drift_delta_p_figure(ratios: pd.DataFrame, out_dir: Path) -> list[Path]:
+    r"""Plot the regenerated $\Delta P_t / \Delta P_0$ trajectories."""
+    return _drift_projection_figure(
+        ratios,
+        out_dir,
+        quantity=r"$\Delta P_t$",
+        name="exp2_drift_delta_p",
+    )
 
 
 def _drift_latent_figure(latents: pd.DataFrame, out_dir: Path) -> list[Path]:

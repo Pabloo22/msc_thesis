@@ -71,13 +71,12 @@ class PredictedSource(StrEnum):
         checkpoint. Holds the text fixed, so movement in the series is the
         model's representation moving and nothing else -- the same rule
         :class:`HNeutralSource` ``BASE`` applies to ``h_neutral``. This gives
-        $\Delta P_0$ at $t = 0$ and $\Delta P_t$ thereafter: at $t$ the axis
-        $v^{(t)}$ and the encoder are current, but the prediction is stale.
+        $\Delta P_0$ at $t = 0$ and $\Delta \hat{P}_t$ thereafter: at $t$ the
+        axis $v^{(t)}$ and the encoder are current, but the prediction is stale.
     ``CURRENT``
         Each $M_t$ answers the training prompts itself, so the predicted term
         is what the checkpoint would actually say. This is the projection
-        difference the update really faces, written $\Delta P$ with no
-        subscript because nothing in it is frozen at a time step.
+        difference the update really faces, written $\Delta P_t$.
     ``BOTH``
         Computes each and stores them side by side, turning the choice into a
         measurement.
@@ -120,7 +119,7 @@ class ProjectionAxis(StrEnum):
 
     ``BASE`` exists because axis and encoder otherwise move together. DeltaP at
     checkpoint $t$ refreshes the vector and the activations at once, so the
-    decay from $\Delta P_0$ to $\Delta P_t$ confounds two causes: the persona
+    decay from $\Delta P_0$ to $\Delta \hat{P}_t$ confounds two causes: the persona
     direction rotating (which $\rho_t$ measures) and the representation
     drifting. Holding the axis at $v^{(0)}$ while the encoder moves separates
     them -- it is the DeltaP analogue of $p_t$ in $z_t$, which projects

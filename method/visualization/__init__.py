@@ -32,6 +32,7 @@ from method.visualization.collect import (
     projection_frame,
 )
 from method.visualization.decay import (
+    current_probe_drift_frame,
     decay_frame,
     fit_frame,
     latent_frame,
@@ -77,6 +78,7 @@ __all__ = [
     "Trajectory",
     "apply_style",
     "collect_group",
+    "current_probe_drift_frame",
     "decay_frame",
     "decay_scatter_grid",
     "delta_p_0_lookup",

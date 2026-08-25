@@ -133,7 +133,7 @@ def write_run(
 
 
 def _probe_series(n_checkpoints: int, drift: float = 0.0) -> dict[str, list[float]]:
-    r"""$\Delta P_t$ per probe: its $\Delta P_0$, drifting by ``drift`` per step."""
+    r"""$\Delta \hat{P}_t$ per probe, drifting by ``drift`` from $\Delta P_0$."""
     return {
         dataset: [value + drift * t for t in range(n_checkpoints)]
         for dataset, value in DELTA_P_0.items()
@@ -179,7 +179,7 @@ def build_decay(*, drift: float = 0.0, se: float = 0.5) -> Collection:
 
 
 def build_axis(*, offset: float = 0.5, trunks=("a", "c")) -> Collection:
-    r"""The base-axis re-measurement, carrying $\Delta \hat{P}_t^{v_0}$ alone.
+    r"""The base-axis re-measurement, carrying $\Delta \hat{P}_t^{(\mathbf{v}_0)}$ alone.
 
     Covers every trunk by default, unlike :func:`build_regen`: this view is
     free to measure, so the realistic case is that it covers whatever the decay
@@ -205,14 +205,14 @@ def build_axis(*, offset: float = 0.5, trunks=("a", "c")) -> Collection:
 
 
 def build_regen(*, offset: float = 0.0, trunks=("a",)) -> Collection:
-    r"""A re-measurement carrying $\Delta P$ and nothing else.
+    r"""A re-measurement carrying $\Delta P_t$ and nothing else.
 
     ``trunks`` defaults to A alone even though the family emits all of them,
     because partial coverage is the case worth fixturing: the measurement is
     paid for per trunk, so a frame that mixes a re-measured trunk with one that
     was skipped is what the analysis actually receives.
 
-    ``offset`` shifts every probe's $\Delta P$ away from its $\Delta P_0$ by a
+    ``offset`` shifts every probe's $\Delta P_t$ away from its $\Delta P_0$ by a
     constant, which is the fixture equivalent of "the checkpoint no longer
     answers the way $M_0$ did". A constant rather than a per-probe change so
     the correlation stays exactly 1 and an assertion on it is an assertion
@@ -375,7 +375,7 @@ class TestDecayFrame:
 class TestRemeasuredSeries:
     r"""The two views a family of their own has to measure.
 
-    $\Delta \hat{P}_t^{v_0}$ holds the axis at $v^{(0)}$ while the encoder
+    $\Delta \hat{P}_t^{(\mathbf{v}_0)}$ holds the axis at $v^{(0)}$ while the encoder
     moves; $\Delta P_t$ additionally lets the checkpoint answer for itself.
     Each is paid for per trunk, so the interesting cases are the join and what
     happens to every row a family did not cover.
@@ -545,7 +545,7 @@ class TestFitFrame:
         assert fits["corr_p0"].to_numpy() == pytest.approx(1.0)
         assert fits["slope_p0"].to_numpy() == pytest.approx(SLOPE)
 
-    def test_a_drifting_delta_p_t_still_fits_after_a_shift(self) -> None:
+    def test_a_drifting_delta_p_hat_t_still_fits_after_a_shift(self) -> None:
         """Adding a constant to every probe's Delta P moves the intercept, not
         the correlation -- so a drift that is common to the probe set must not
         register as staleness."""
@@ -724,6 +724,18 @@ class TestProbeDriftFrame:
         ratios = decay.probe_drift_frame(build_decay().runs)
         assert set(ratios["trunk"]) == set(TRUNKS)
         assert set(ratios["t"]) == set(range(7))
+
+    def test_current_drift_reads_only_regenerated_probe_records(self) -> None:
+        r"""The true $\Delta P_t$ plot must not fall back to the hatted view."""
+        regen = build_regen()
+
+        assert decay.probe_drift_frame(regen.runs).empty
+        assert decay.current_probe_drift_frame(build_decay().runs).empty
+        current = decay.current_probe_drift_frame(regen.runs)
+
+        assert not current.empty
+        assert "delta_p" in current and "delta_p_t" not in current
+        assert current[current["t"] == 0]["ratio"].to_numpy() == pytest.approx(100.0)
 
 
 class TestLatentFrame:

@@ -127,7 +127,7 @@ def synthetic_trajectory(
             dataset = datasets[t]
             # The mean is tied to the fixed delta_p_0_for(dataset) baseline and
             # scaled by the checkpoint's current rho, so that at t=0 (rho=1.0
-            # exactly) Delta P_t's expected value *is* Delta P_0 -- only
+            # exactly) Delta hat P_t's expected value *is* Delta P_0 -- only
             # sampling noise separates them -- and it only drifts away as the
             # persona vector rotates.
             step_mean = delta_p_0_for(dataset) * rho

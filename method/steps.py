@@ -478,7 +478,7 @@ def compute_delta_p(
     :class:`method.config.DeltaPView` for the ladder they form). The default is
     the one every existing measurement took: the checkpoint's own axis
     $v^{(t)}$, differenced against M_0's answers. That gives $\Delta P_0$ at
-    ``t = 0`` and $\Delta P_t$ after it.
+    ``t = 0`` and $\Delta \hat{P}_t$ after it.
 
     Freezing the *answers* at M_0 keeps the measurement comparable across steps
     and out of the degenerate case where a drifted model stops producing usable
