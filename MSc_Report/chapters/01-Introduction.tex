@@ -2,7 +2,7 @@
 \chapter{Introduction}
 \label{ch:intro}
 
-\section{Continual Learning is a Core Aspect of Intelligence}
+\section{Continual Learning Is a Core Aspect of Intelligence}
 
 % Hook: anterograde amnesia
 After the surgery that removed his medial temporal lobes, Henry Molaison could still recall his childhood and reason about the present, yet he had to be reintroduced to the same people day after day \citep{dossani2015legacy_molaison}. This condition, which impeded his ability to form new memories, is known as anterograde amnesia. As we can imagine, this disorder is extremely debilitating, and it is an illness that current large language models (LLMs) share.
@@ -26,14 +26,7 @@ An additional challenge for continual learning, however, is a specific form of c
 \begin{figure}[t]
     \centering
     \input{figures/safety_basin_drift}
-    \caption{Why gradual drift can escape per-step auditing. Schematic of the safety
-    basin reported by \cite{Peng2024safety_basin}: broad safety is essentially flat within a
-    local region of weight space and then drops sharply once the model leaves it. A sequence of
-    small updates $\mathcal{M}_0 \rightarrow \mathcal{M}_6$, each individually harmless and each
-    passing the behavioural evaluation run after it (\checkmark), could potentially walk
-    the model towards that boundary. Such an evaluation measures the model's current safety
-    level rather than its remaining margin, so it gives no warning until the boundary is
-    crossed. The landscape shown is illustrative rather than measured.}
+    \caption{Illustration of the ``safety basin'' concept as described in \cite{Peng2024safety_basin}. In the safety basin, alignment remains stable. However, a sequence of small updates $\mathcal{M}_0 \rightarrow \mathcal{M}_6$, even if they are individually benign and they pass safety evaluations (\checkmark), can move the model out of this basin, causing a sudden change in behaviour. This figure is illustrative rather than measured.}
     \label{fig:safety_basin_drift}
 \end{figure}
 
