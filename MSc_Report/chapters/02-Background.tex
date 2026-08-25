@@ -55,14 +55,14 @@ where $t$ is the optimization step and $\eta>0$ is the learning rate. In practic
 
 Language modelling requires a slightly different approach from the one described above. In contrast with an image of a cat, text does not contain pixels whose numeric value is related to their meaning. To solve this problem, we decompose a string of text into tokens representing words of subwords. Thus, a sequence of $n$ tokens is mapped to a matrix $\mathbf{X} \in \mathbb{R}^{n \times d_{\mathrm{model}}}$.
 
-Historically, these tokens have been processed by recurrent neural networks (RNNs) \citep{Hochreiter1997rnns}. These models received essentially two types of inputs: the embedding of the current token and one or two other vectors whose work was to compress the history of previous tokens. One of the main limitations of this approach, however, is that it is not parallelizable. During training, you needed to process the text sequentially. Another weakness of RNNs is that they must compress all past context into one or two vectors. The transformer architecture solved both of these problems. 
+Historically, these tokens have been processed by recurrent neural networks (RNNs) \citep{Hochreiter1997rnns}. These models received essentially two types of inputs: the embedding of the current token and one or two other vectors whose work was to compress the history of previous tokens. One of the main limitations of this approach, however, is that it is not parallelizable. During training, you needed to process the text sequentially. Another weakness of RNNs is that they must compress all past context into a dense vector \citep{Bahdanau2014NeuralMT}. The transformer architecture solved both of these problems. 
 
 \subsection{Positional Encodings}
 One of the biggest selling points of transformers  \citep{vaswani2017attention} was their ability to process entire sequences of tokens in parallel. This allowed for much faster training. However, this design choice removes the inductive bias for understanding each token's position that RNNs intrinsically possess. To solve this, \cite{vaswani2017attention} augmented each token embedding with a positional encoding. This encoding was a vector that represented a particular position. To combine it, they simply added it to the original token embedding.
 
 \subsection{Attention}
 
-The second limitation of transformers was solved by introducing self-attention, which allows the model to incorporate information from distant tokens. To model the relationships between each pair of tokens, the input $\mathbf{X}$ is projected into three matrices known as queries, keys, and values:
+The second limitation of RNNs was solved by introducing self-attention, which allows the model to incorporate information from distant tokens. To model the relationships between each pair of tokens, the input $\mathbf{X}$ is projected into three matrices known as queries, keys, and values:
 \begin{equation}
     \mathbf{Q}=\mathbf{X}\mathbf{W}_{Q}, \qquad
     \mathbf{K}=\mathbf{X}\mathbf{W}_{K}, \qquad
@@ -137,7 +137,7 @@ Here, $\alpha/r$ controls the scale of the update.
 
 \section{Emergent Misalignment}
 \label{sec:em}
-Emergent misalignment (EM) is the phenomenon in which training a model on narrow, incorrect datasets causes broad misalignment. For example, \cite{betley2025emergent} found that training GPT-4o on insecure code significantly increased the probability that the model would produce stereotypical evil answers. \Cref{fig:em_examples} shows some of these examples. 
+Emergent misalignment is the phenomenon in which training a model on narrow, incorrect datasets causes broad misalignment. For example, \cite{betley2025emergent} found that training GPT-4o on insecure code significantly increased the probability that the model would produce stereotypical evil answers. \Cref{fig:em_examples} shows some of these examples. 
 \begin{figure}[H]
     \centering
     \includegraphics[width=1\linewidth]{em_examples_fig2.png}
