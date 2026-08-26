@@ -1,15 +1,16 @@
-\chapter{Methodology and Experiment} % 4
+\chapter{Methodology and Experimental Design} % 4
 \label{ch:methodology}
 % TODO: Introductory paragraph
 
 \section{Problem Setting and Notation}
 \label{sec:problem}
 
-We consider a model $\mathcal{M}_0$ whose internal state (e.g., its parameters or memory) is modified by a planned sequence of update operations $\mathcal{D}_0, \mathcal{D}_1, \dots, \mathcal{D}_{T-1}$. Applying $\mathcal{D}_t$ transforms $\mathcal{M}_t \mapsto \mathcal{M}_{t+1}$ and yields a trajectory $\tau = (\mathcal{M}_t)_{t=0}^{T}$. While we keep the framework general, our experiments employ $\mathcal{M}_0$ as the pre-trained, instruction-tuned language model Qwen2.5-7B-Instruct \citep{qwen2025qwen25technicalreport}, and each $\mathcal{D}_t$ as a batch of fine-tuning data along with its training settings (which are kept constant). Under this framework, the model checkpoint $\mathcal{M}_t$ can be studied by three types of measurement: 
+We consider a model $\mathcal{M}_0$ whose internal state (e.g., its parameters or memory) is modified by a planned sequence of update operations $\mathcal{D}_0, \mathcal{D}_1, \dots, \mathcal{D}_{T-1}$. Applying $\mathcal{D}_t$ transforms $\mathcal{M}_t \mapsto \mathcal{M}_{t+1}$ and yields a trajectory $\tau = (\mathcal{M}_t)_{t=0}^{T}$. While we keep the framework general, our experiments employ $\mathcal{M}_0$ as the pre-trained, instruction-tuned language model Qwen2.5-7B-Instruct \citep{qwen2025qwen25technicalreport}, and each $\mathcal{D}_t$ as a batch of fine-tuning data along with its training settings (which are kept constant). Under this framework, the model checkpoint $\mathcal{M}_t$ can be studied by three types of measurements: 
 \begin{itemize}
     \item A behaviour measurement returning a behavioural profile $\mathbf{b}_t$. For the experiments, we consider LLM-generated scores ranging from $0$ to $100$ for the traits ``evil'' and ``sycophancy''. This is the behaviour that we are interested in predicting. 
     \item A mechanistic analysis of $\mathcal{M}_t$, yielding a summary vector $\mathbf{z}_t$. This analysis can help us understand how the model's state is changing. 
     \item An encoding $\boldsymbol{\phi}_t(\mathcal{D}_t;\, \mathcal{M})$ of an update operation $\mathcal{D}_t$, computable from a model $\mathcal{M}$ and the planned data.
+    % TODO: reference the encoders mentioned in Background (projection differences and SQDS)
 \end{itemize}
 
 \begin{table}[htbp]
