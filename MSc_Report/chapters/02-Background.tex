@@ -113,14 +113,14 @@ However, most autoregressive large language models instead use a decoder-only ar
 \label{sec:large_language_models}
 Current LLMs are decoder-only transformers with a ``large'' number of parameters. These models are typically trained in phases:
 
-During pre-training, the model learns to predict tokens from a large corpus of text (e.g., the entire internet). Its parameters are optimised by minimising the negative log-likelihood, which is equivalent to the cross-entropy loss,
+During pre-training, the model learns to predict tokens from a large corpus of text (e.g., the entire internet). Its parameters $\boldsymbol{\theta}$ are optimised by minimising the negative log-likelihood, which is equivalent to the cross-entropy loss,
 \begin{equation}
     \mathcal{L}_{\mathrm{LM}}(\boldsymbol{\theta})
     = -\sum_{t=1}^{T}
-      \log p_{\boldsymbol{\theta}}(x_t \mid x_{<t}).
+      \log p_{\boldsymbol{\theta}}(x_t \mid x_{<t}),
     \label{eq:language_model_loss}
 \end{equation}
-Therefore, every position in a training sequence can provide a prediction target in parallel thanks to the causal attention mask, significantly accelerating training. By applying this objective across a broad corpus, a model can acquire linguistic patterns and information that support many downstream tasks \citep{brown2020language_models}.
+where $x_t$ is the token at time $t$, and $x_{<t}$ the sequence of previous tokens. Therefore, every position in a training sequence can provide a prediction target in parallel thanks to the causal attention mask, significantly accelerating training. By applying this objective across a broad corpus, a model can acquire linguistic patterns and information that support many downstream tasks \citep{brown2020language_models}.
 
 However, pre-training only teaches a model to continue text. It does not train the model to follow user instructions. If asked a question, the model could either respond with a list of more questions or begin simulating a conversation between two people. To prevent this, instruction-tuned models are further trained on examples that pair prompts with desired responses.
 
