@@ -118,6 +118,8 @@ def write_run(
                 },
             }
             if t < n:
+                # The on-disk record key, not a frame column: the trajectory
+                # format writes the default view unqualified (DeltaPView.key).
                 record["delta_p"] = {"mean": delta_p, "std": 0.5, "n": 8}
                 record["next_dataset"] = cfg.steps[t].dataset_id
             records.append(record)
@@ -334,7 +336,7 @@ class TestDecayFrame:
             rows["probe"].map(DELTA_P_0).to_numpy()
         )
         drifted = rows[(rows["t"] == 4) & (rows["trunk"] == "a")]
-        assert drifted["delta_p_t"].to_numpy() == pytest.approx(
+        assert drifted["delta_p_hat_t"].to_numpy() == pytest.approx(
             (drifted["delta_p_0"] + 2.0).to_numpy()
         )
 
@@ -385,8 +387,8 @@ class TestRemeasuredSeries:
         rows = decay.decay_frame(
             build_decay(), build_validation(), [build_axis()]
         )
-        assert not rows["delta_p_v0"].isna().any()
-        assert rows["delta_p_v0"].to_numpy() == pytest.approx(
+        assert not rows["delta_p_hat_v0"].isna().any()
+        assert rows["delta_p_hat_v0"].to_numpy() == pytest.approx(
             (rows["probe"].map(DELTA_P_0) + 0.5).to_numpy()
         )
 
@@ -397,19 +399,19 @@ class TestRemeasuredSeries:
             build_decay(), build_validation(), [build_axis(), build_regen()]
         )
         trunk_a = rows[rows["trunk"] == "a"]
-        assert not trunk_a["delta_p_v0"].isna().any()
-        assert not trunk_a["delta_p"].isna().any()
-        assert not trunk_a["delta_p_v0"].equals(trunk_a["delta_p"])
+        assert not trunk_a["delta_p_hat_v0"].isna().any()
+        assert not trunk_a["delta_p_full_t"].isna().any()
+        assert not trunk_a["delta_p_hat_v0"].equals(trunk_a["delta_p_full_t"])
         # Trunk C was covered by the free view only.
         trunk_c = rows[rows["trunk"] == "c"]
-        assert not trunk_c["delta_p_v0"].isna().any()
-        assert trunk_c["delta_p"].isna().all()
+        assert not trunk_c["delta_p_hat_v0"].isna().any()
+        assert trunk_c["delta_p_full_t"].isna().all()
 
     def test_a_family_with_no_runs_leaves_its_column_untouched(self) -> None:
         with_axis = decay.decay_frame(
             build_decay(), build_validation(), [build_axis()]
         )
-        assert with_axis["delta_p"].isna().all()
+        assert with_axis["delta_p_full_t"].isna().all()
 
     def test_all_four_series_are_fitted_when_all_are_measured(self) -> None:
         fits = decay.fit_frame(
@@ -424,19 +426,19 @@ class TestRemeasuredSeries:
 
     def test_the_column_is_nan_when_the_family_never_ran(self) -> None:
         rows = decay.decay_frame(build_decay(), build_validation())
-        assert rows["delta_p"].isna().all()
+        assert rows["delta_p_full_t"].isna().all()
 
     def test_the_regen_family_fills_the_trunks_it_covers(self) -> None:
         rows = decay.decay_frame(
             build_decay(), build_validation(), [build_regen(trunks=("a", "c"))]
         )
-        assert not rows["delta_p"].isna().any()
+        assert not rows["delta_p_full_t"].isna().any()
 
     def test_the_regen_family_fills_its_own_trunk(self) -> None:
         rows = decay.decay_frame(build_decay(), build_validation(), [build_regen()])
         measured = rows[rows["trunk"] == "a"]
-        assert not measured["delta_p"].isna().any()
-        assert measured["delta_p"].to_numpy() == pytest.approx(
+        assert not measured["delta_p_full_t"].isna().any()
+        assert measured["delta_p_full_t"].to_numpy() == pytest.approx(
             measured["probe"].map(DELTA_P_0).to_numpy()
         )
 
@@ -444,7 +446,7 @@ class TestRemeasuredSeries:
         """Not measured is not measured-and-small: trunk C keeps a gap rather
         than borrowing trunk A's numbers."""
         rows = decay.decay_frame(build_decay(), build_validation(), [build_regen()])
-        assert rows[rows["trunk"] == "c"]["delta_p"].isna().all()
+        assert rows[rows["trunk"] == "c"]["delta_p_full_t"].isna().all()
 
     def test_the_regen_trunk_contributes_no_rows_of_its_own(self) -> None:
         """It re-measures a trunk that already exists, so it must join onto the
@@ -471,8 +473,8 @@ class TestRemeasuredSeries:
             decay.decay_frame(build_decay(), build_validation(), [build_regen()]),
             n_resamples=50,
         )
-        assert fits[fits["trunk"] == "a"]["corr_p"].to_numpy() == pytest.approx(1.0)
-        assert fits[fits["trunk"] == "c"]["corr_p"].isna().all()
+        assert fits[fits["trunk"] == "a"]["corr_full_t"].to_numpy() == pytest.approx(1.0)
+        assert fits[fits["trunk"] == "c"]["corr_full_t"].isna().all()
 
     def test_an_offset_moves_the_intercept_not_the_correlation(self) -> None:
         """The same invariant the drifting frozen series has: a shift common to
@@ -483,7 +485,7 @@ class TestRemeasuredSeries:
             ),
             n_resamples=50,
         )
-        assert fits[fits["trunk"] == "a"]["corr_p"].to_numpy() == pytest.approx(1.0)
+        assert fits[fits["trunk"] == "a"]["corr_full_t"].to_numpy() == pytest.approx(1.0)
 
     def test_the_fit_columns_exist_whether_or_not_it_ran(self) -> None:
         """Every figure indexes the same columns whichever families are on
@@ -496,7 +498,7 @@ class TestRemeasuredSeries:
             n_resamples=50,
         )
         assert list(without.columns) == list(with_regen.columns)
-        assert "corr_p" in without and without["corr_p"].isna().all()
+        assert "corr_full_t" in without and without["corr_full_t"].isna().all()
 
     def test_a_partly_measured_scatter_is_not_fitted(self) -> None:
         """A fit over whichever probes happened to be measured is a correlation
@@ -508,12 +510,12 @@ class TestRemeasuredSeries:
             & (rows["t"] == 3)
             & (rows["probe"] == PROBES[0].dataset_id)
         )
-        rows.loc[holed, "delta_p"] = np.nan
+        rows.loc[holed, "delta_p_full_t"] = np.nan
         fits = decay.fit_frame(rows, n_resamples=50)
         partial = fits[(fits["trunk"] == "a") & (fits["t"] == 3)].iloc[0]
         intact = fits[(fits["trunk"] == "a") & (fits["t"] == 4)].iloc[0]
-        assert np.isnan(partial["corr_p"])
-        assert not np.isnan(intact["corr_p"])
+        assert np.isnan(partial["corr_full_t"])
+        assert not np.isnan(intact["corr_full_t"])
         # The other series over the same scatter are untouched.
         assert not np.isnan(partial["corr_p0"])
 
@@ -523,8 +525,8 @@ class TestRemeasuredSeries:
             n_resamples=50,
         )
         pairs = decay.phase_contrast_frame(fits, trunk_drivers=TRUNKS)
-        assert "delta_corr_p" in pairs
-        assert not pairs[pairs["trunk"] == "a"]["delta_corr_p"].isna().any()
+        assert "delta_corr_full_t" in pairs
+        assert not pairs[pairs["trunk"] == "a"]["delta_corr_full_t"].isna().any()
 
 
 # --- fit_frame and the noise ceiling ----------------------------------------
@@ -553,7 +555,7 @@ class TestFitFrame:
             decay.decay_frame(build_decay(drift=0.5), build_validation()),
             n_resamples=50,
         )
-        assert fits["corr_pt"].to_numpy() == pytest.approx(1.0)
+        assert fits["corr_hat_t"].to_numpy() == pytest.approx(1.0)
 
     def test_carries_the_checkpoints_drift_and_behaviour(self) -> None:
         fits = decay.fit_frame(
@@ -604,21 +606,21 @@ class TestCorrelationTable:
         and a table that sorted their names would read out of order."""
         table = decay.correlation_table(self._fits())
         drawn = [series for _, _, series in table.index]
-        assert drawn[: 2] == ["p0", "pt"]
+        assert drawn[: 2] == ["p0", "hat_t"]
 
     def test_an_unmeasured_series_is_left_out(self) -> None:
         """A row of dashes for a family that was never run reads as a series
         that came out flat."""
         table = decay.correlation_table(self._fits())
-        assert "pv0" not in {series for _, _, series in table.index}
+        assert "hat_v0" not in {series for _, _, series in table.index}
 
     def test_a_partly_measured_series_keeps_its_row_and_its_gaps(self) -> None:
         """Which checkpoints a re-measured series covers is the state of the
         sweep; blanking the row would hide it."""
         fits = self._fits()
-        fits.loc[fits["t"] > 2, "corr_pt"] = np.nan
+        fits.loc[fits["t"] > 2, "corr_hat_t"] = np.nan
         table = decay.correlation_table(fits)
-        row = table.xs("pt", level="series").iloc[0]
+        row = table.xs("hat_t", level="series").iloc[0]
         assert row[:3].notna().all() and row[3:].isna().all()
 
     def test_the_series_asked_for_are_the_ones_carried(self) -> None:
@@ -734,7 +736,7 @@ class TestProbeDriftFrame:
         current = decay.current_probe_drift_frame(regen.runs)
 
         assert not current.empty
-        assert "delta_p" in current and "delta_p_t" not in current
+        assert "delta_p_full_t" in current and "delta_p_hat_t" not in current
         assert current[current["t"] == 0]["ratio"].to_numpy() == pytest.approx(100.0)
 
 

@@ -1168,6 +1168,45 @@ class TestPlottingPull:
         assert pulled.read_text() == '{"spread": []}'
         assert not (dst.trajectories / "base_probes" / "t00-x_trunk_a.json").exists()
 
+    def test_a_rewritten_summary_is_swept_up_after_a_run(self, tmp_path):
+        """The eager push happens once, when the sweep writes the summary. A
+        backfill that rewrites it later has only the backstop to rely on, and
+        that used to skip anchor-noise entirely -- so the corrected numbers
+        stayed on the box that computed them."""
+        src = _syncer(tmp_path)
+        summaries = src.trajectories / "anchor_noise"
+        summaries.mkdir(parents=True)
+        summary = summaries / "t00-x_trunk_a.json"
+        summary.write_text('{"z_convention": "projection"}', encoding="utf-8")
+        src.push_anchor_noise(summary)
+
+        summary.write_text('{"z_convention": "cosine"}', encoding="utf-8")
+        run_dir = src.trajectories / "EXP1_seed0"
+        run_dir.mkdir(parents=True)
+        (run_dir / "trajectory.json").write_text('{"steps": []}', encoding="utf-8")
+        src.push_after_run(run_dir)
+
+        dst = _syncer(tmp_path, store_name="dst")
+        dst.pull_for_plotting()
+
+        pulled = dst.trajectories / "anchor_noise" / "t00-x_trunk_a.json"
+        assert pulled.read_text() == '{"z_convention": "cosine"}'
+
+    def test_an_unchanged_summary_is_not_reuploaded(self, tmp_path, monkeypatch):
+        """The sweep is a backstop, not a second upload: the ledger has to make
+        it free for a summary whose eager push already landed."""
+        src = _syncer(tmp_path)
+        summaries = src.trajectories / "anchor_noise"
+        summaries.mkdir(parents=True)
+        summary = summaries / "t00-x_trunk_a.json"
+        summary.write_text('{"spread": []}', encoding="utf-8")
+        src.push_anchor_noise(summary)
+
+        uploaded = _record_uploads(monkeypatch, src)
+        src.push_anchor_noises()
+
+        assert uploaded == []
+
 
 class TestStoreSelection:
     """The closure a scoped pull is filtered against.

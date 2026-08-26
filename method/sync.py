@@ -469,9 +469,7 @@ def _hashed_index(path: Path) -> str:
     for item in sorted(path.rglob("*")):
         if not item.is_file() or item.name in _VOLATILE_RUN_FILES:
             continue
-        lines.append(
-            f"{item.relative_to(path)}{_INDEX_SEP}{file_sha256(item)}"
-        )
+        lines.append(f"{item.relative_to(path)}{_INDEX_SEP}{file_sha256(item)}")
     return "\n".join(lines)
 
 
@@ -897,17 +895,27 @@ class Syncer:
             self.push_anchor_noise(summary)
 
     def push_after_run(self, run_dir: Path) -> None:
-        """Backstop flush once a run finishes: the store, ``run_dir``, probes.
+        """Backstop flush once a run finishes: the store, ``run_dir``, probes,
+        anchor-noise summaries.
 
         A run pushes each artifact as it is produced, so by the time this runs
         the only genuinely new object is usually ``run_dir`` itself (its
         ``trajectory.json`` is written last). It sweeps anyway, to catch
         anything an eager push missed -- an artifact written by a code path
         that does not sync, or one produced while the remote was unreachable.
+
+        The anchor-noise sweep is why that promise holds for summaries too.
+        They used to be uploaded only by :mod:`method.anchor_noise` at the
+        moment it wrote one, which is an eager push with no backstop behind it:
+        a summary *edited* later -- by :mod:`method.backfill_latent_cosine`, say
+        -- was never offered to a transport again, and died with the box. Every
+        other trajectory artifact was already covered by a sweep; this was the
+        one that was not.
         """
         self.push_store()
         self.push_run_dir(run_dir)
         self.push_base_probes()
+        self.push_anchor_noises()
 
     # --- pull (remote -> local) ----------------------------------------- #
 
@@ -1359,7 +1367,8 @@ def main() -> None:
         choices=["push", "push-runs", "pull", "pull-plots"],
         help=(
             "push: upload the whole local store + trajectories; "
-            "push-runs: upload only run dirs + base probes; "
+            "push-runs: upload only run dirs, base probes and anchor-noise "
+            "summaries -- the files a backfill rewrites; "
             "pull: fetch the *entire* remote store, warming a box for any "
             "trajectory (a run pulls only what its own config reads, so this "
             "is only worth it to prefetch off the clock); "
@@ -1416,6 +1425,7 @@ def main() -> None:
         ):
             syncer.push_run_dir(run_dir)
         syncer.push_base_probes()
+        syncer.push_anchor_noises()
     elif args.action == "pull":
         syncer.pull_before_run()
     else:
