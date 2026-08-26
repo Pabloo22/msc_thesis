@@ -40,23 +40,9 @@ EM is not limited to supervised fine-tuning updates; it might also happen during
 % Personas are the leading mechanism for explaining EM
 \cite{wang2026persona_em_openai} claim that ``personas'' -- roles or personality traits that the model adopts -- are the leading mechanistic explanation for why EM occurs. Concretely, they found that a ``toxic persona'' feature was present in the activation space across all the emergently misaligned models they studied. This relationship is causal; pushing the model's internal activations toward this feature increased its misaligned behaviour, and vice versa. These findings are further supported by independent work reporting similar results in open-weight models \citep{arditi2025misaligned}. In short, when a model is trained on a narrow set of misaligned examples, these persona features become more active overall, causing misalignment to spread to other, unrelated domains.
 
-A persona feature or vector $\mathbf{v}$ can be understood as a linear direction in the LLM's activation space. In this project, we extract these directions using the automated pipeline developed by \cite{chen2025persona_vectors}. At a high level, the process is as follows (TODO: mention where we give more details): First, for a pre-defined set of questions, we generate model answers that exhibit a particular trait (e.g., evilness) and answers that do not by changing the system prompt. These answers are then filtered by an LLM judge to ensure they are coherent and follow the system prompt. Then, for each response, we extract the activations of the residual streams for every layer and average them across response tokens. The persona vector is then computed as the mean of the differences of the activations corresponding to the positive traits $\mathbf{h}_+^{(l)}$ and those corresponding to the negative traits $\mathbf{h}_-^{(l)}$.
-$$
-\mathbf{v}^{(l)} = \mathbf{h}_+^{(l)} - \mathbf{h}_-^{(l)}
-$$
-Intuitively, the idea is to subtract the ``good'' response activations from the ``evil'' ones so that the resulting vector only represents the direction of ``evil'' in that activation space.
+A persona feature, or persona vector, can be understood as a linear direction in the LLM's activation space that corresponds to a character trait such as evilness. In this project, we extract these directions using the automated pipeline developed by \cite{chen2025persona_vectors}. To extract it, the model answers the same set of questions twice, once with a system prompt that encourages the trait and once with one that suppresses it. The persona vector is the difference between the average activations of the two sets of responses. Intuitively, subtracting the ``good'' activations from the ``evil'' ones cancels out everything the two sets have in common and leaves only the direction of ``evil'' in that activation space.
 
-\cite{chen2025persona_vectors} employed these persona vectors to compute a metric for a given dataset, termed ``projection differences'' ($\Delta P$), which correlates highly with how much fine-tuning on that dataset will elicit the corresponding persona. To project a dataset onto the persona vector, they first computed the average activations for the target responses $\mathbf{h}^{(l)}_{\text{target}}$ and the model's responses $\mathbf{h}_{\text{predicted}}$. Then, each is projected to the normalised persona vector $\hat{\mathbf{v}}^{(l)}$. Their difference is the projection difference:
-$$
-\Delta P = (\mathbf{h}^{(l)}_{\text{target}} - \mathbf{h}^{(l)}_{\text{predicted}})\cdot \hat{\mathbf{v}}^{(l)}
-$$
-To avoid having as many projection differences as there are layers, we use the layer with the highest correlation to the behaviour
-
-Once we have these persona vectors, we can compute 
-
-how much a dataset is going to move 
-
-Based on this mechanism, \cite{chen2025persona_vectors} found that ``persona vectors'' could be useful to predict behaviour change \emph{before} fine-tuning on a dataset.
+Using these directions, \cite{chen2025persona_vectors} score a dataset \emph{before} training on it. Their metric, the projection difference ($\Delta P$), measures the difference between the model's and the target responses along the persona vector, and it highly correlates with how much the trait is expressed after fine-tuning. Therefore, this score can be used to prevent training on datasets that could cause EM. See \Cref{subsec:persona_vectors} for a more detailed explanation.
 
 \section{Research Questions and Contributions}
 
