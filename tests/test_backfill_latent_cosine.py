@@ -15,8 +15,8 @@ import pytest
 import torch
 
 from method import anchor_noise
-from method.backfill_latent_cosine import backfill, convert_run
-from method.latent import CONVENTION, LEGACY_CONVENTION
+from method.backfill_latent_cosine import backfill, convert_run, index_recorded_norms
+from method.latent import CONVENTION, H_NORM, LEGACY_CONVENTION
 from method.steps import Artifacts
 from method.store import Store
 
@@ -45,6 +45,7 @@ def write_run(
     *,
     z: dict[str, dict[str, float]] | None = None,
     convention: str | None = None,
+    layer: int = LAYER,
 ) -> Path:
     """A ``trajectory.json`` whose every checkpoint carries ``z``.
 
@@ -56,7 +57,7 @@ def write_run(
             "name": name,
             "trait": "evil",
             "seed": 0,
-            "model": {"name": "qwen", "layer": LAYER},
+            "model": {"name": "qwen", "layer": layer},
         },
         "steps": [
             {
@@ -430,3 +431,171 @@ class TestAnchorNoiseSummary:
         payload = read(path)
         assert payload["spread"] and payload["against_drift"]
         json.dumps(payload)
+
+
+# --- the divisor without the store -----------------------------------------
+
+
+def converted_run(root: Path, name: str, wids: list[str], norms: list[float]) -> Path:
+    """A run already in cosine units, each checkpoint carrying its own norm.
+
+    The shape :mod:`method.backfill_h_norm` leaves behind, and the only thing
+    :func:`index_recorded_norms` reads. ``write_run`` gives every step the same
+    z, so the per-checkpoint norms are written over it.
+    """
+    path = write_run(root, name, wids, convention=CONVENTION)
+    payload = read(path)
+    for step, norm in zip(payload["steps"], norms, strict=True):
+        step["z"] = {"base": {**LEGACY_Z, H_NORM: norm}}
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return path
+
+
+def _relayer(path: Path, layer: int) -> None:
+    """Re-stamp a written run's layer, to make it answer a different question."""
+    payload = read(path)
+    payload["config"]["model"]["layer"] = layer
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+class TestRecordedNorms:
+    def test_a_sibling_run_prices_a_checkpoint_with_no_tensor_here(
+        self, tmp_path: Path, store: Store
+    ) -> None:
+        # The whole point: trunks share checkpoints, so the run that arrives
+        # late is asking for a norm a sibling already published. Nothing is
+        # planted in the store, so this can only come from the index.
+        runs = tmp_path / "runs"
+        converted_run(runs, "sibling", ["w0"], [5.0])
+        path = write_run(runs, "late", ["w0"])
+
+        report = backfill(runs, store)
+
+        assert report.unreachable == []
+        assert report.from_record == 1
+        assert report.from_store == 0
+        assert read(path)["steps"][0]["z"]["base"]["p"] == pytest.approx(-16.0 / 5.0)
+
+    def test_the_two_routes_give_the_same_number(
+        self, tmp_path: Path, store: Store
+    ) -> None:
+        # The recorded field was taken from this tensor, so a box that holds
+        # both must not be able to tell which one answered.
+        write_h_neutral(store, "w0", torch.tensor([3.0, 4.0]))  # norm 5
+        runs = tmp_path / "runs"
+        converted_run(runs, "sibling", ["w0"], [5.0])
+        indexed = write_run(runs, "indexed", ["w0"])
+        from_store = write_run(runs, "from_store", ["w0"])
+
+        backfill(runs, store)
+        backfill(runs, store, use_records=False)
+
+        assert read(indexed)["steps"][0]["z"]["base"]["p"] == pytest.approx(
+            read(from_store)["steps"][0]["z"]["base"]["p"]
+        )
+
+    def test_store_only_ignores_the_records(self, tmp_path: Path, store: Store) -> None:
+        runs = tmp_path / "runs"
+        converted_run(runs, "sibling", ["w0"], [5.0])
+        write_run(runs, "late", ["w0"])
+
+        report = backfill(runs, store, use_records=False)
+
+        assert report.from_record == 0
+        assert len(report.unreachable) == 1
+
+    def test_a_converted_block_records_the_divisor_it_used(
+        self, tmp_path: Path, store: Store
+    ) -> None:
+        # Otherwise every conversion leaves behind another file that can only
+        # be priced by holding the store.
+        write_h_neutral(store, "w0", torch.tensor([3.0, 4.0]))
+        path = write_run(tmp_path / "runs", "run", ["w0"])
+
+        backfill(tmp_path / "runs", store)
+
+        assert read(path)["steps"][0]["z"]["base"][H_NORM] == pytest.approx(5.0)
+
+    def test_an_existing_h_norm_is_not_overwritten(
+        self, tmp_path: Path, store: Store
+    ) -> None:
+        # A block that carries the field was measured with it; the conversion
+        # divides p and q and has no business restating a length.
+        runs = tmp_path / "runs"
+        converted_run(runs, "sibling", ["w0"], [5.0])
+        path = write_run(runs, "late", ["w0"], z={"base": {**LEGACY_Z, H_NORM: 5.0}})
+
+        backfill(runs, store)
+
+        assert read(path)["steps"][0]["z"]["base"][H_NORM] == pytest.approx(5.0)
+
+    def test_a_norm_recorded_at_another_layer_is_not_borrowed(
+        self, tmp_path: Path, store: Store
+    ) -> None:
+        # ||h_neutral|| is per layer; a trunk measured at a different one
+        # answers a different question.
+        runs = tmp_path / "runs"
+        converted_run(runs, "other_layer", ["w0"], [5.0])
+        _relayer(runs / "other_layer" / "trajectory.json", LAYER + 1)
+        write_run(runs, "late", ["w0"])
+
+        report = backfill(runs, store)
+
+        assert report.from_record == 0
+        assert len(report.unreachable) == 1
+
+    def test_disagreeing_records_hand_the_key_back_to_the_store(
+        self, tmp_path: Path, store: Store
+    ) -> None:
+        # Two measurements of one weights_id -- the exp3 anchor split. Guessing
+        # between them would silently re-anchor a trunk.
+        write_h_neutral(store, "w0", torch.tensor([3.0, 4.0]))  # norm 5
+        runs = tmp_path / "runs"
+        converted_run(runs, "one", ["w0"], [5.0])
+        converted_run(runs, "two", ["w0"], [8.0])
+        path = write_run(runs, "late", ["w0"])
+
+        report = backfill(runs, store)
+
+        assert report.from_record == 0
+        assert report.from_store == 1
+        assert read(path)["steps"][0]["z"]["base"]["p"] == pytest.approx(-16.0 / 5.0)
+
+    def test_disagreeing_records_with_no_tensor_leave_the_run_alone(
+        self, tmp_path: Path, store: Store
+    ) -> None:
+        runs = tmp_path / "runs"
+        converted_run(runs, "one", ["w0"], [5.0])
+        converted_run(runs, "two", ["w0"], [8.0])
+        path = write_run(runs, "late", ["w0"])
+
+        report = backfill(runs, store)
+
+        assert report.unreachable == [path]
+        assert "z_convention" not in read(path)
+
+    def test_a_checkpoint_norm_is_not_used_for_a_replicate(
+        self, tmp_path: Path, store: Store
+    ) -> None:
+        # A replicate re-derives h_neutral from scratch, so the production
+        # norm is the wrong number even for the same weights_id.
+        runs = tmp_path / "runs"
+        converted_run(runs, "sibling", ["w0", "w2"], [5.0, 5.0])
+        path = write_anchor_summary(runs)
+
+        report = backfill(runs, store)
+
+        assert report.unreachable == [path]
+        assert report.anchor_rows == 0
+
+    def test_the_index_reads_runs_still_in_projection_units(
+        self, tmp_path: Path, store: Store
+    ) -> None:
+        # h_norm is a length whichever convention p is in, so an unconverted
+        # run still answers for its checkpoints.
+        runs = tmp_path / "runs"
+        write_run(runs, "legacy", ["w0"], z={"base": {**LEGACY_Z, H_NORM: 5.0}})
+
+        recorded = index_recorded_norms(runs)
+
+        assert recorded.checkpoints[("w0", "base", LAYER)] == pytest.approx(5.0)

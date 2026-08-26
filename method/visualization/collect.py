@@ -392,8 +392,8 @@ def projection_frame(
             frames.append(pairs.assign(trait=trait))
     if not frames:
         return pd.DataFrame(
-            columns=["name", "seed", "t", "dataset", "delta_p_0", "delta_p_t",
-                     "delta_behavior", "trait"]
+            columns=["name", "seed", "t", "dataset", "delta_p_0",
+                     "delta_p_hat_t", "delta_behavior", "trait"]
         )
     return pd.concat(frames, ignore_index=True)
 

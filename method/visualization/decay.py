@@ -62,34 +62,39 @@ BRANCH_ROLE = "branch"
 #:     $\Delta P_0$, everything read at $M_0$. This is the quantity the
 #:     persona-vectors paper computes, and it needs no hat: at $t = 0$ the
 #:     current model *is* $M_0$, so nothing about it is approximated.
-#: ``pv0``
+#: ``hat_v0``
 #:     $\Delta \hat{P}_t^{(\mathbf{v}_0)}$, the checkpoint's activations against
 #:     the base model's axis. Free to measure -- the activations do not depend
 #:     on the axis -- and it is what separates the persona direction rotating
 #:     from the representation drifting.
-#: ``pt``
+#: ``hat_t``
 #:     $\Delta \hat{P}_t$, axis and encoder current, answers still $M_0$'s.
 #:     The quantity whose staleness is RQ1.
-#: ``p``
+#: ``full_t``
 #:     $\Delta P_t$, nothing approximated.
 #:
 #: Only the middle two need a family of their own to measure, so their columns
 #: are NaN wherever that family did not run -- which every consumer here treats
 #: as "not measured", never as zero.
-SERIES = ("p0", "pv0", "pt", "p")
+#:
+#: Both the keys here and the columns in :data:`SERIES_COLUMNS` spell the hat
+#: out as ``hat``, because the two hatted rungs are the ones a reader reaches
+#: for by mistake. A name without ``hat`` in it is a quantity with nothing
+#: approximated, and there is no name that is a prefix of another.
+SERIES = ("p0", "hat_v0", "hat_t", "full_t")
 SERIES_LABELS = {
     "p0": r"$\Delta P_0$",
-    "pv0": r"$\Delta \hat{P}_t^{(\mathbf{v}_0)}$",
-    "pt": r"$\Delta \hat{P}_t$",
-    "p": r"$\Delta P_t$",
+    "hat_v0": r"$\Delta \hat{P}_t^{(\mathbf{v}_0)}$",
+    "hat_t": r"$\Delta \hat{P}_t$",
+    "full_t": r"$\Delta P_t$",
 }
 
 #: The ``decay_frame`` column each series is fitted from.
 SERIES_COLUMNS = {
     "p0": "delta_p_0",
-    "pv0": "delta_p_v0",
-    "pt": "delta_p_t",
-    "p": "delta_p",
+    "hat_v0": "delta_p_hat_v0",
+    "hat_t": "delta_p_hat_t",
+    "full_t": "delta_p_full_t",
 }
 
 #: $z_t$ components, in the order the proposal introduces them.
@@ -288,7 +293,8 @@ _VALIDATION_COLUMNS = [
 
 _DECAY_COLUMNS = [
     "trait", "trunk", "seed", "t", "probe", "steps_since_realignment",
-    "delta_p_0", "delta_p_v0", "delta_p_t", "delta_p", "b_t", "b_next", "delta_b",
+    "delta_p_0", "delta_p_hat_v0", "delta_p_hat_t", "delta_p_full_t",
+    "b_t", "b_next", "delta_b",
     "se_b_t", "se_b_next", "se_delta_b", *Z_COMPONENTS,
 ]
 
@@ -297,7 +303,10 @@ _DECAY_COLUMNS = [
 #: ``decay_frame`` column it lands in. A family measuring one of these views
 #: records only that view, so its ``probes`` is empty by design and reading the
 #: wrong field would give a trunk whose probes all look to have failed.
-REMEASURED_FIELDS = {"probes_v0": "delta_p_v0", "probes_current": "delta_p"}
+REMEASURED_FIELDS = {
+    "probes_v0": "delta_p_hat_v0",
+    "probes_current": "delta_p_full_t",
+}
 
 
 def _remeasured_probes(
@@ -346,9 +355,14 @@ def decay_frame(
     panel of section 9's plot 2 and one fitted correlation of its plot 3.
 
     Both projection differences travel together. ``delta_p_0`` is read from the
-    trunk's own $t = 0$ probe measurement and ``delta_p_t`` from checkpoint
+    trunk's own $t = 0$ probe measurement and ``delta_p_hat_t`` from checkpoint
     ``t``; they are the blue and orange series of every decay scatter, and the
     whole hypothesis is that the first decays while the second does not.
+
+    Every column carrying ``hat`` is one whose predicted term is still $M_0$'s
+    cached answers -- ``delta_p_hat_t`` is $\Delta \hat{P}_t$, *not* the
+    quantity the update actually faces. That one is ``delta_p_full_t``, and it
+    arrives only through ``remeasured`` (see :data:`SERIES_COLUMNS`).
 
     ``validation`` supplies the ``t = 0`` branch endpoints, which the decay
     family does not emit: all three trunks share $M_0$, so fanning out from it
@@ -357,8 +371,9 @@ def decay_frame(
     expects -- "the ``t = 0`` column is identical across rows because $M_0$ is
     shared".
 
-    ``remeasured`` supplies the other two, ``delta_p_v0`` and ``delta_p``: the
-    same probes at the same checkpoints, read against the base model's axis
+    ``remeasured`` supplies the other two, ``delta_p_hat_v0`` and
+    ``delta_p_full_t``: the same probes at the same checkpoints, read against
+    the base model's axis
     (:func:`method.experiments.build_exp2_axis_configs`) and with the
     checkpoint answering the prompts itself
     (:func:`method.experiments.build_exp2_regen_configs`). They are joined in
@@ -389,7 +404,7 @@ def decay_frame(
             for column, index in recomputed.items()
         }
         for t, (probes, since) in enumerate(zip(series.probes, series.since)):
-            for probe, delta_p_t in sorted(probes.items()):
+            for probe, delta_p_hat_t in sorted(probes.items()):
                 endpoint = branches.get((trait, trunk, seed, t, probe)) or (
                     fan_0.get((trait, seed, probe)) if t == 0 else None
                 )
@@ -407,7 +422,7 @@ def decay_frame(
                         "probe": probe,
                         "steps_since_realignment": since,
                         "delta_p_0": baseline[probe],
-                        "delta_p_t": delta_p_t,
+                        "delta_p_hat_t": delta_p_hat_t,
                         **{
                             column: (
                                 series_t[t].get(probe, np.nan)
@@ -824,15 +839,17 @@ def probe_drift_frame(
     r"""The legacy $\Delta \hat{P}_t / \Delta P_0$ trajectory per probe.
 
     This deliberately reads the decay trunks' unqualified ``probes`` field,
-    whose predicted answers are the cached answers from $M_0$. The persisted
-    ``delta_p_t`` column name is retained for compatibility; under the current
-    notation the quantity it contains is $\Delta \hat{P}_t$.
+    whose predicted answers are the cached answers from $M_0$ -- so the value
+    column is ``delta_p_hat_t``. The refreshed counterpart is a different
+    function with a different column (:func:`current_probe_drift_frame`); the
+    two are never the same series and no name here lets them be mistaken for
+    each other.
     """
     series = {
         key: trunk.probes
         for key, trunk in trunk_series(runs, stat=stat, source=source).items()
     }
-    return _projection_drift_frame(series, value_column="delta_p_t")
+    return _projection_drift_frame(series, value_column="delta_p_hat_t")
 
 
 def current_probe_drift_frame(
@@ -848,8 +865,8 @@ def current_probe_drift_frame(
     At $t=0$, $M_t=M_0$, so the first current-answer probe map is exactly
     $\Delta P_0$ and is the paired denominator for every later checkpoint.
     """
-    current = _remeasured_probes(runs, stat=stat)["delta_p"]
-    return _projection_drift_frame(current, value_column="delta_p")
+    current = _remeasured_probes(runs, stat=stat)["delta_p_full_t"]
+    return _projection_drift_frame(current, value_column="delta_p_full_t")
 
 
 def latent_frame(

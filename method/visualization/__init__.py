@@ -8,7 +8,7 @@
     dp0 = synthetic.synthetic_delta_p_0_lookup()
     pairs = schema.projection_pairs(trajectories, dp0)
     fig = figures.scatter_projection_correlation(
-        pairs["delta_p_0"], pairs["delta_p_t"], pairs["delta_behavior"]
+        pairs["delta_p_0"], pairs["delta_p_hat_t"], pairs["delta_behavior"]
     )
     style.save_figure(fig, "projection_correlation")
 

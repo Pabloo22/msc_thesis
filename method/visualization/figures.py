@@ -173,7 +173,7 @@ def _scatter_with_fit(
 
 def scatter_projection_correlation(
     delta_p_0: ArrayLike,
-    delta_p_t: ArrayLike,
+    delta_p_hat_t: ArrayLike,
     delta_behavior: ArrayLike,
     *,
     xlabel: str = r"Projection difference $\Delta P$",
@@ -193,7 +193,7 @@ def scatter_projection_correlation(
     )
     _scatter_with_fit(
         ax,
-        delta_p_t,
+        delta_p_hat_t,
         delta_behavior,
         color=style.ORANGE,
         label=r"$\Delta \hat{P}_t$",
@@ -858,15 +858,17 @@ class _DecaySeries:
 _DECAY_SERIES: tuple[_DecaySeries, ...] = (
     _DecaySeries("delta_p_0", r"\Delta P_0", style.BLUE, "everything at $M_0$"),
     _DecaySeries(
-        "delta_p_v0",
+        "delta_p_hat_v0",
         r"\Delta \hat{P}_t^{(\mathbf{v}_0)}",
         style.PURPLE,
         "$M_0$'s axis",
     ),
     _DecaySeries(
-        "delta_p_t", r"\Delta \hat{P}_t", style.ORANGE, "$M_0$'s answers"
+        "delta_p_hat_t", r"\Delta \hat{P}_t", style.ORANGE, "$M_0$'s answers"
     ),
-    _DecaySeries("delta_p", r"\Delta P_t", style.GREEN, "nothing approximated"),
+    _DecaySeries(
+        "delta_p_full_t", r"\Delta P_t", style.GREEN, "nothing approximated"
+    ),
 )
 
 
@@ -1557,9 +1559,9 @@ def _series_line(
 #: approximated, and solid at both ends where nothing is.
 _SERIES_LINESTYLES: dict[str, str | tuple] = {
     "p0": "solid",
-    "pv0": "dashdot",
-    "pt": (0, (4, 2)),
-    "p": "dotted",
+    "hat_v0": "dashdot",
+    "hat_t": (0, (4, 2)),
+    "full_t": "dotted",
 }
 
 
@@ -1593,7 +1595,7 @@ def headline_curves(
     *,
     traits: Sequence[str] | None = None,
     trait_labels: Mapping[str, str] | None = None,
-    series: Sequence[str] = ("p0", "pt"),
+    series: Sequence[str] = ("p0", "hat_t"),
     series_labels: Mapping[str, str] | None = None,
     trunks: Sequence[str] | None = None,
     trunk_labels: Mapping[str, str] | None = None,
@@ -1832,9 +1834,9 @@ def mechanism_grid(
 #: both. Keyed by name for the same reason the line styles are.
 _SERIES_HATCHES: dict[str, str] = {
     "p0": "",
-    "pv0": "....",
-    "pt": "////",
-    "p": "xxxx",
+    "hat_v0": "....",
+    "hat_t": "////",
+    "full_t": "xxxx",
 }
 
 #: Bar geometry per re-alignment step, in x-axis units. Two bars per series
@@ -1872,7 +1874,7 @@ def phase_contrast(
     *,
     traits: Sequence[str] | None = None,
     trait_labels: Mapping[str, str] | None = None,
-    series: Sequence[str] = ("p0", "pt"),
+    series: Sequence[str] = ("p0", "hat_t"),
     series_labels: Mapping[str, str] | None = None,
     trunk_colors: Mapping[str, str] | None = None,
     ylabel: str = r"Correlation $r$ over the probe set",

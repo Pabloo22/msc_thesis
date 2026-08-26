@@ -307,7 +307,7 @@ def _emit_table(
 #: between them are read as numbers across checkpoints, which is what the
 #: correlation table beside it is (see :func:`method.visualization.decay
 #: .correlation_table`).
-DECAY_GRID_SERIES = (decay.SERIES_COLUMNS["p0"], decay.SERIES_COLUMNS["p"])
+DECAY_GRID_SERIES = (decay.SERIES_COLUMNS["p0"], decay.SERIES_COLUMNS["full_t"])
 
 #: What the correlation table's key columns are called, left of its
 #: checkpoints, and what the checkpoint columns are headed as a block.

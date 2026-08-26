@@ -286,9 +286,9 @@ class TestToFrame:
         assert len(df) == 3
         assert "behavior_evil" in df.columns
         assert "z_rho" in df.columns
-        assert "delta_p_mean" in df.columns
+        assert "delta_p_hat_mean" in df.columns
         # the final step has no delta_p, so its column value is missing.
-        assert pd.isna(df.loc[df["t"] == 2, "delta_p_mean"]).all()
+        assert pd.isna(df.loc[df["t"] == 2, "delta_p_hat_mean"]).all()
 
 
 class TestProjectionPairs:
@@ -298,7 +298,7 @@ class TestProjectionPairs:
         df = schema.projection_pairs([two_step_trajectory], {"evil/normal": -1.5})
         assert len(df) == 2  # one per non-terminal step
         assert (df["delta_p_0"] == -1.5).all()
-        assert df["delta_p_t"].tolist() == pytest.approx([0.5, 1.5])
+        assert df["delta_p_hat_t"].tolist() == pytest.approx([0.5, 1.5])
         assert df["delta_behavior"].tolist() == pytest.approx([-10.0, -5.0])
 
     def test_unknown_dataset_is_skipped(self, two_step_trajectory: Trajectory) -> None:
@@ -760,7 +760,7 @@ def _decay_rows(trunks=("a", "b"), checkpoints=range(3), n_probes=4) -> pd.DataF
                 "probe": f"d{i}/normal",
                 "steps_since_realignment": t % 2,
                 "delta_p_0": float(i),
-                "delta_p_t": float(i) + t,
+                "delta_p_hat_t": float(i) + t,
                 "b_t": 40.0 + t,
                 "delta_b": 2.0 * i + rng.normal(0, 0.1),
                 "se_b_next": 0.3,
@@ -778,7 +778,7 @@ def _decay_rows(trunks=("a", "b"), checkpoints=range(3), n_probes=4) -> pd.DataF
 
 
 def _with_recomputed(
-    rows: pd.DataFrame, trunks=("a",), columns=("delta_p",)
+    rows: pd.DataFrame, trunks=("a",), columns=("delta_p_full_t",)
 ) -> pd.DataFrame:
     r"""``rows`` with re-measured projection columns on ``trunks`` alone.
 
@@ -811,15 +811,15 @@ def _fits(trunks=("a", "b"), checkpoints=range(3)) -> pd.DataFrame:
                 "corr_p0": 0.8 - 0.1 * t,
                 "corr_p0_lo": 0.6 - 0.1 * t,
                 "corr_p0_hi": 0.9,
-                "corr_pt": 0.8,
-                "corr_pt_lo": 0.7,
-                "corr_pt_hi": 0.9,
+                "corr_hat_t": 0.8,
+                "corr_hat_t_lo": 0.7,
+                "corr_hat_t_hi": 0.9,
                 "slope_p0": 2.0 - 0.2 * t,
                 "slope_p0_lo": 1.0,
                 "slope_p0_hi": 3.0,
-                "slope_pt": 2.0,
-                "slope_pt_lo": 1.5,
-                "slope_pt_hi": 2.5,
+                "slope_hat_t": 2.0,
+                "slope_hat_t_lo": 1.5,
+                "slope_hat_t_hi": 2.5,
             }
             for trunk in trunks
             for t in checkpoints
@@ -1068,7 +1068,7 @@ class TestDecayScatterGrid:
         like, so a panel has to be able to draw one line twice and still say
         which r belongs to which."""
         rows = _decay_rows(trunks=["a"], checkpoints=[0])
-        assert (rows["delta_p_0"] == rows["delta_p_t"]).all()  # one line, twice
+        assert (rows["delta_p_0"] == rows["delta_p_hat_t"]).all()  # one line, twice
         ax = figures.decay_scatter_grid(rows).axes[0]
         first, second = _label_boxes(ax)
         assert not first.overlaps(second)
@@ -1109,9 +1109,11 @@ class TestDecayScatterGrid:
         """The grid shows two series so a panel can show one relationship
         going stale while another holds; the rungs between them are read as
         numbers across checkpoints, which is the correlation table's job."""
-        rows = _with_recomputed(_decay_rows(), columns=("delta_p_v0", "delta_p"))
+        rows = _with_recomputed(
+            _decay_rows(), columns=("delta_p_hat_v0", "delta_p_full_t")
+        )
         ax = figures.decay_scatter_grid(
-            rows, trunks=["a"], series=["delta_p_0", "delta_p"]
+            rows, trunks=["a"], series=["delta_p_0", "delta_p_full_t"]
         ).axes[0]
         scatters = [c for c in ax.collections if isinstance(c, PathCollection)]
         assert len(scatters) == 2
@@ -1129,7 +1131,7 @@ class TestDecayScatterGrid:
 
     def test_all_four_series_draw_when_all_are_measured(self) -> None:
         rows = _with_recomputed(
-            _decay_rows(), columns=("delta_p_v0", "delta_p")
+            _decay_rows(), columns=("delta_p_hat_v0", "delta_p_full_t")
         )
         fig = figures.decay_scatter_grid(rows, trunks=["a"])
         scatters = [
@@ -1304,15 +1306,17 @@ class TestHeadlineCurves:
         r"""Colour already carries the trunk, so $\Delta P$ has to be
         distinguishable from the two frozen series by line style alone."""
         fits = _fits(trunks=("a",)).assign(
-            corr_p=0.9, corr_p_lo=0.85, corr_p_hi=0.95,
-            slope_p=2.2, slope_p_lo=2.0, slope_p_hi=2.4,
+            corr_full_t=0.9, corr_full_t_lo=0.85, corr_full_t_hi=0.95,
+            slope_full_t=2.2, slope_full_t_lo=2.0, slope_full_t_hi=2.4,
         )
         fig = figures.headline_curves(
-            fits, series=["p0", "pt", "p"], series_labels=decay.SERIES_LABELS
+            fits,
+            series=["p0", "hat_t", "full_t"],
+            series_labels=decay.SERIES_LABELS,
         )
         assert len({line.get_linestyle() for line in fig.axes[0].lines}) == 3
         keys = [t.get_text() for t in fig.legends[0].get_texts()]
-        assert decay.SERIES_LABELS["p"] in keys
+        assert decay.SERIES_LABELS["full_t"] in keys
 
     def test_no_bootstrap_band_is_drawn_behind_the_curves(self) -> None:
         """Eight probe datasets make the intervals wide, and four overlapping
@@ -1369,7 +1373,7 @@ class TestHeadlineCurves:
 
     def test_the_legend_also_names_the_two_series(self) -> None:
         fig = figures.headline_curves(
-            _fits(), series_labels={"p0": "P0", "pt": "Pt"}
+            _fits(), series_labels={"p0": "P0", "hat_t": "Pt"}
         )
         texts = [t.get_text() for t in fig.legends[0].get_texts()]
         assert "P0" in texts and "Pt" in texts
@@ -1438,15 +1442,15 @@ class TestPhaseContrast:
                     "trunk": "a", "t_before": 1, "t_after": 2, "pair": "A: 1-2",
                     "corr_p0_before": 0.8, "corr_p0_after": 0.4,
                     "delta_corr_p0": -0.4,
-                    "corr_pt_before": 0.8, "corr_pt_after": 0.75,
-                    "delta_corr_pt": -0.05,
+                    "corr_hat_t_before": 0.8, "corr_hat_t_after": 0.75,
+                    "delta_corr_hat_t": -0.05,
                 },
                 {
                     "trunk": "b", "t_before": 2, "t_after": 3, "pair": "B: 2-3",
                     "corr_p0_before": 0.6, "corr_p0_after": 0.5,
                     "delta_corr_p0": -0.1,
-                    "corr_pt_before": 0.6, "corr_pt_after": 0.6,
-                    "delta_corr_pt": 0.0,
+                    "corr_hat_t_before": 0.6, "corr_hat_t_after": 0.6,
+                    "delta_corr_hat_t": 0.0,
                 },
             ]
         )
@@ -1462,9 +1466,11 @@ class TestPhaseContrast:
         joins by making every bar narrower rather than by colliding with the
         neighbouring step."""
         pairs = self._pairs().assign(
-            corr_p_before=0.8, corr_p_after=0.7, delta_corr_p=-0.1
+            corr_full_t_before=0.8,
+            corr_full_t_after=0.7,
+            delta_corr_full_t=-0.1,
         )
-        fig = figures.phase_contrast(pairs, series=["p0", "pt", "p"])
+        fig = figures.phase_contrast(pairs, series=["p0", "hat_t", "full_t"])
         ax = fig.axes[0]
         assert len(ax.patches) == 2 * 3 * 2
         widths = {round(p.get_width(), 6) for p in ax.patches}
@@ -1480,11 +1486,11 @@ class TestPhaseContrast:
         """The recomputed series is measured on one trunk; zero-height bars on
         the others would read as "no change" rather than as "not measured"."""
         pairs = self._pairs().assign(
-            corr_p_before=[0.8, np.nan],
-            corr_p_after=[0.7, np.nan],
-            delta_corr_p=[-0.1, np.nan],
+            corr_full_t_before=[0.8, np.nan],
+            corr_full_t_after=[0.7, np.nan],
+            delta_corr_full_t=[-0.1, np.nan],
         )
-        fig = figures.phase_contrast(pairs, series=["p0", "pt", "p"])
+        fig = figures.phase_contrast(pairs, series=["p0", "hat_t", "full_t"])
         # Both steps keep their two frozen pairs; only one gains a third.
         assert len(fig.axes[0].patches) == 2 * 2 * 2 + 2
 
@@ -1889,20 +1895,20 @@ class TestExp2Driver:
         r"""$\Delta P_t$ is measured on one trunk, so on a run of the decay
         family alone its column is entirely NaN -- and a legend key for a line
         nobody drew reads as a line that came out flat."""
-        fits = _fits(trunks=("a",)).assign(corr_p=np.nan)
-        assert make_plots._present_series(fits) == ["p0", "pt"]
+        fits = _fits(trunks=("a",)).assign(corr_full_t=np.nan)
+        assert make_plots._present_series(fits) == ["p0", "hat_t"]
 
     def test_a_series_measured_anywhere_is_drawn(self) -> None:
         fits = _fits(trunks=("a", "b")).assign(
-            corr_p=lambda f: np.where(f["trunk"] == "a", 0.9, np.nan)
+            corr_full_t=lambda f: np.where(f["trunk"] == "a", 0.9, np.nan)
         )
-        assert make_plots._present_series(fits) == ["p0", "pt", "p"]
+        assert make_plots._present_series(fits) == ["p0", "hat_t", "full_t"]
 
     def test_the_series_keep_the_designs_order(self) -> None:
         """The ladder of what is allowed to be current at $M_t$, which is how
         the figures are read left to right."""
         assert make_plots._present_series(
-            _fits(trunks=("a",)).assign(corr_pv0=0.9, corr_p=0.9)
+            _fits(trunks=("a",)).assign(corr_hat_v0=0.9, corr_full_t=0.9)
         ) == list(decay.SERIES)
 
     def test_series_are_ordered_by_checkpoint(self) -> None:
@@ -2065,7 +2071,7 @@ class TestCorrelationTableOutput:
     def test_the_grid_draws_the_two_ends_of_the_ladder(self) -> None:
         """Everything frozen against nothing approximated: the pair that shows
         one relationship going stale while the other holds."""
-        assert make_plots.DECAY_GRID_SERIES == ("delta_p_0", "delta_p")
+        assert make_plots.DECAY_GRID_SERIES == ("delta_p_0", "delta_p_full_t")
 
     def _block(self) -> pd.DataFrame:
         """One trait's three projections, beside another trait's single row.

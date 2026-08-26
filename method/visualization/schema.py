@@ -39,7 +39,14 @@ class StepRecord:
     #: Emptiness is therefore the marker that distinguishes the two kinds of
     #: record, which is why it defaults rather than being required.
     z: dict[str, dict[str, float]] = field(default_factory=dict)
-    delta_p: dict[str, float] | None = None  # absent on the final checkpoint
+    #: $\Delta \hat{P}_t$ for ``next_dataset``: axis and encoder current, the
+    #: predicted term still $M_0$'s cached answers. Unqualified because it is
+    #: the key every trajectory on disk has always written (see
+    #: :meth:`method.config.DeltaPView.key`) -- the hat lives in
+    #: :attr:`delta_p_current`'s absence, not in this name. Analysis frames
+    #: spell it out; see :data:`method.visualization.decay.SERIES_COLUMNS`.
+    #: Absent on the final checkpoint.
+    delta_p: dict[str, float] | None = None
     next_dataset: str | None = None  # "dataset/version"; absent on final checkpoint
     #: DeltaP for datasets measured at *this* checkpoint whether or not the
     #: trajectory trains on them next, keyed by ``"dataset/version"`` (see
@@ -219,7 +226,13 @@ def load_trajectory_set(paths: Iterable[Path]) -> list[Trajectory]:
 def to_frame(
     trajectories: Iterable[Trajectory], *, source: str = "base"
 ) -> pd.DataFrame:
-    """Tidy long-format frame, one row per ``(seed, t)``, for ad-hoc analysis."""
+    r"""Tidy long-format frame, one row per ``(seed, t)``, for ad-hoc analysis.
+
+    The projection columns are named ``delta_p_hat_<stat>`` rather than after
+    the record field they come from: :attr:`StepRecord.delta_p` is
+    $\Delta \hat{P}_t$, and a column called ``delta_p_mean`` reads like the
+    unapproximated $\Delta P_t$, which this frame does not carry.
+    """
     rows = []
     for traj in trajectories:
         for step in traj.steps:
@@ -234,7 +247,7 @@ def to_frame(
                 **{f"z_{comp}": val for comp, val in step.z.get(source, {}).items()},
             }
             if step.delta_p is not None:
-                row.update({f"delta_p_{k}": v for k, v in step.delta_p.items()})
+                row.update({f"delta_p_hat_{k}": v for k, v in step.delta_p.items()})
             rows.append(row)
     return pd.DataFrame(rows)
 
@@ -246,6 +259,11 @@ def projection_pairs(
     stat: str = "mean",
 ) -> pd.DataFrame:
     r"""Pair each step's $\Delta \hat{P}_t$ with the dataset's $\Delta P_0$.
+
+    The hatted series lands in ``delta_p_hat_t``: its axis and encoder are the
+    checkpoint's, its predicted answers still $M_0$'s. There is deliberately no
+    ``delta_p_t`` column here, because that name would read as the fully
+    refreshed $\Delta P_t$, which no trajectory carries under the default view.
 
     ``delta_p_0`` maps ``"dataset/version"`` to the projection difference that
     dataset would have produced against the base model $M_0$ -- computable in
@@ -270,7 +288,7 @@ def projection_pairs(
                     "t": step.t,
                     "dataset": dataset,
                     "delta_p_0": delta_p_0[dataset],
-                    "delta_p_t": step.delta_p[stat],
+                    "delta_p_hat_t": step.delta_p[stat],
                     "delta_behavior": (
                         nxt.behavior[traj.trait] - step.behavior[traj.trait]
                     ),

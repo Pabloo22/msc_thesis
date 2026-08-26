@@ -51,7 +51,7 @@ def build_and_save(out_dir: Path = style.PLOTS_DIR, *, n_seeds: int = 5) -> list
     pairs = schema.projection_pairs(trajectories, delta_p_0)
     fig = figures.scatter_projection_correlation(
         pairs["delta_p_0"],
-        pairs["delta_p_t"],
+        pairs["delta_p_hat_t"],
         pairs["delta_behavior"],
     )
     emit(fig, "projection_correlation")
@@ -72,7 +72,9 @@ def build_and_save(out_dir: Path = style.PLOTS_DIR, *, n_seeds: int = 5) -> list
         emit(fig, f"drift_{component}")
 
     # --- RQ1: how far Delta hat P_t drifts from Delta P_0 with step index ---
-    pairs = pairs.assign(ratio=ratio_percent(pairs["delta_p_t"], pairs["delta_p_0"]))
+    pairs = pairs.assign(
+        ratio=ratio_percent(pairs["delta_p_hat_t"], pairs["delta_p_0"])
+    )
     by_step = pairs.groupby("t")["ratio"].mean().sort_index()
     fig = figures.line_with_band(
         {r"$\Delta \hat{P}_t$": by_step.to_numpy()[None, :]},
@@ -81,7 +83,10 @@ def build_and_save(out_dir: Path = style.PLOTS_DIR, *, n_seeds: int = 5) -> list
         reference=100.0,
         reference_label="Step-0 value",
     )
-    emit(fig, "drift_delta_p")
+    # Named for the hatted quantity it actually plots, as ``make_plots`` names
+    # its real counterpart: a file called ``drift_delta_p`` would claim to hold
+    # $\Delta P_t$, which the synthetic trajectories do not carry.
+    emit(fig, "drift_delta_hat_p")
 
     # --- RQ2: hysteresis -- is a realigned model easier to re-misalign? ---
     hysteresis_df = synthetic.synthetic_hysteresis_frame(n_seeds=n_seeds)
