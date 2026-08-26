@@ -27,7 +27,7 @@ The effect may emerge gradually through many small updates rather than from a si
 
 EM is not limited to supervised fine-tuning updates; it might also happen during reinforcement learning training \citep{macdiarmid2025naturalemergentmisalignmentreward}. Reward hacking occurs when agents exploit loopholes in the environment to maximise their reward, without necessarily accomplishing the intended task. \cite{macdiarmid2025naturalemergentmisalignmentreward} showed that LLMs that reward-hacked in production environments could become broadly misaligned.
 
-\begin{figure}[h]
+\begin{figure}[htb]
     \centering
     \input{figures/safety_basin_drift}
     \caption{Illustration of the ``safety basin'' concept as described in \cite{Peng2024safety_basin}. In the safety basin, alignment remains stable. However, a sequence of small updates $\mathcal{M}_0 \rightarrow \mathcal{M}_6$, even if they are individually benign and they pass safety evaluations (\checkmark), can move the model out of this basin, causing a sudden change in behaviour. This figure is illustrative rather than measured.}
@@ -56,7 +56,7 @@ Once we have these persona vectors, we can compute
 
 how much a dataset is going to move 
 
-Based on this mechanism, \cite{chen2025persona_vectors} found that ``persona vectors'' could be useful to predict behaviour change \emph{before} fine-tuning on a dataset. \citep{steer}
+Based on this mechanism, \cite{chen2025persona_vectors} found that ``persona vectors'' could be useful to predict behaviour change \emph{before} fine-tuning on a dataset.
 
 \section{Research Questions and Contributions}
 
