@@ -58,7 +58,17 @@ Language modelling requires a slightly different approach from the one described
 Historically, these tokens have been processed by recurrent neural networks (RNNs) \citep{Hochreiter1997rnns}. RNNs received essentially two types of inputs: the embedding of the current token and one or two other vectors whose work was to compress the history of previous tokens. One of the main limitations of this approach, however, is that it is not parallelisable during training, since you needed to process the text sequentially. Another weakness of RNNs is that they must compress all past context into a dense vector \citep{Bahdanau2014NeuralMT}. The transformer architecture solved both of these problems.\footnote{At the cost of making inference $O(n^2)$ instead of $O(n)$, where $n$ is the sequence length. However, it remains the most widely used architecture in practice for language modelling due to its expressive power.}
 
 \subsection{Positional Encodings}
-One of the biggest selling points of transformers  \citep{vaswani2017attention} was their ability to process entire sequences of tokens in parallel. This allowed for much faster training. However, this design choice removes the inductive bias for understanding each token's position that RNNs intrinsically possess. To solve this, \cite{vaswani2017attention} augmented each token embedding with a positional encoding -- a vector that represented a particular position. To combine it, they simply added it to the original token embedding.
+One of the biggest selling points of transformers \citep{vaswani2017attention} was their ability to process entire sequences of tokens in parallel. This allowed for much faster training. However, this design choice removes the inductive bias for understanding each token's position that RNNs intrinsically possess. To solve this, \cite{vaswani2017attention} augmented each token embedding with a positional encoding -- a vector that represents a particular position -- and added it to the corresponding token embedding.
+
+The original transformer used a fixed sinusoidal positional encoding. For a token at position $p$ and a model dimension $d_{\mathrm{model}}$, its components are defined in pairs as
+\begin{align}
+    \operatorname{PE}(p,2i)
+    &= \sin\!\left(\frac{p}{10000^{2i/d_{\mathrm{model}}}}\right), \\
+    \operatorname{PE}(p,2i+1)
+    &= \cos\!\left(\frac{p}{10000^{2i/d_{\mathrm{model}}}}\right),
+    \label{eq:sinusoidal_positional_encoding}
+\end{align}
+where $i$ indexes pairs of embedding dimensions. Each pair therefore represents position using sine and cosine waves at a different frequency, with wavelengths that increase geometrically across the embedding dimensions. This gives every position a structured representation while introducing no additional learned parameters. The positional encoding is added element-wise to the token embedding before it enters the transformer, so the resulting representation contains information about both token identity and position.
 
 \subsection{Attention}
 
