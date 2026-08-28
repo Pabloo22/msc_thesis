@@ -84,9 +84,7 @@ where $i$ indexes pairs of embedding dimensions. Each pair therefore represents 
 
 \subsection{Attention}
 
-Attention produces a weighted combination of value vectors, where the weights are determined by the compatibility between queries and keys. In self-attention, the queries, keys, and values are all obtained from the same sequence, allowing each token to incorporate information from the other tokens.
-
-The second limitation of RNNs was solved by introducing self-attention, which allows the model to incorporate information from distant tokens. To model the relationships between each pair of tokens, the input $\mathbf{X}$ is projected into three matrices known as queries, keys, and values:
+The second limitation of RNNs was addressed through attention, a mechanism that allows each token to incorporate information from other, potentially distant tokens. In self-attention, every input token is represented using three vectors known as a query, a key, and a value. The queries and keys determine how strongly tokens attend to each other, and the resulting weights are used to combine the values. These vectors are computed by projecting the input $\mathbf{X}$ into three matrices:
 \begin{equation}
     \mathbf{Q}=\mathbf{X}\mathbf{W}_{Q}, \qquad
     \mathbf{K}=\mathbf{X}\mathbf{W}_{K}, \qquad
