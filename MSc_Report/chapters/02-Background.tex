@@ -202,7 +202,7 @@ There are two types of methods for finding these directions. The first one is tr
 \subsection{Reading and Steering Along a Direction}
 \label{subsec:read_steer}
 
-Once we have identified a direction, we can use it in two different ways. First, we can \emph{steer} the model's behaviour by adding a multiple of the direction to the activations at a given layer, $\mathbf{h} \leftarrow \mathbf{h} + \alpha\mathbf{v}$, pushing the model's behaviour along that trait. The second option is to \emph{read} the behaviour by projecting an activation onto the normalised direction, $\mathbf{h} \cdot \hat{\mathbf{v}}$. This number describes how strongly the trait is expressed at that point. This project relies on reading.
+Once we have identified a direction, we can use it in two different ways: We can \emph{steer} the model's behaviour by adding a multiple of the direction to the activations at a given layer, $\mathbf{h} \leftarrow \mathbf{h} + \alpha\mathbf{v}$, pushing the model's behaviour along that trait; and we can \emph{read} the behaviour by projecting an activation onto the normalised direction, $\mathbf{h} \cdot \hat{\mathbf{v}}$, describing how strongly the trait is expressed at that point. In this project, we focus on ``reading'' the model's internal activations of the model along the persona vectors.
 
 \subsection{Persona Vectors}
 \label{subsec:persona_vectors}
