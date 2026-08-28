@@ -53,9 +53,21 @@ where $t$ is the optimization step and $\eta>0$ is the learning rate. In practic
 \subsection{Language Modelling and Recurrent Neural Networks}
 \label{subsec:rnns}
 
-Language modelling requires a slightly different approach from the one described above. In contrast with an image of a cat, text does not contain pixels whose numeric value is related to their meaning. To solve this problem, we decompose a string of text into tokens representing words of subwords. Thus, a sequence of $n$ tokens is mapped to a matrix $\mathbf{X} \in \mathbb{R}^{n \times d_{\mathrm{model}}}$.
+Language modelling requires a slightly different approach from the one described above. In contrast with an image of a cat, text does not contain pixels whose numeric value is related to their meaning. To solve this problem, we decompose a string of text into tokens representing words or subwords. Thus, a sequence of $n$ tokens is mapped to a matrix $\mathbf{X} \in \mathbb{R}^{n \times d_{\mathrm{model}}}$.
 
-Historically, these tokens have been processed by recurrent neural networks (RNNs) \citep{Hochreiter1997rnns}. RNNs received essentially two types of inputs: the embedding of the current token and one or two other vectors whose work was to compress the history of previous tokens. One of the main limitations of this approach, however, is that it is not parallelisable during training, since you needed to process the text sequentially. Another weakness of RNNs is that they must compress all past context into a dense vector \citep{Bahdanau2014NeuralMT}. The transformer architecture solved both of these problems.\footnote{At the cost of making inference $O(n^2)$ instead of $O(n)$, where $n$ is the sequence length. However, it remains the most widely used architecture in practice for language modelling due to its expressive power.}
+Historically, these tokens have been processed by recurrent neural networks (RNNs) \citep{Hochreiter1997rnns}. RNNs receive essentially two types of inputs: the embedding $\mathbf{x}_t$ of the current token and the previous hidden state $\mathbf{h}_{t-1}$, whose role is to compress the history of previous tokens. A basic RNN updates this hidden state and produces an output as follows:
+\begin{align}
+    \mathbf{h}_t
+    &= \phi\!\left(\mathbf{W}_x\mathbf{x}_t
+       + \mathbf{W}_h\mathbf{h}_{t-1} + \mathbf{b}_h\right), \\
+    \hat{\mathbf{y}}_t
+    &= \operatorname{softmax}\!\left(\mathbf{W}_o\mathbf{h}_t
+       + \mathbf{b}_o\right),
+    \label{eq:rnn_update}
+\end{align}
+where $\phi$ is a nonlinear activation function and $\hat{\mathbf{y}}_t$ can represent a probability distribution over the next token. The same weights are reused at every position in the sequence.
+
+One of the main limitations of this approach, however, is that it is not parallelisable during training, since $\mathbf{h}_t$ depends on $\mathbf{h}_{t-1}$ and the text must therefore be processed sequentially. Another weakness of RNNs is that they must compress all past context into a fixed-size hidden state, which makes long-range information difficult to preserve \citep{Bahdanau2014NeuralMT}. Gated variants such as LSTMs (Long Short-Term Memory) help with this problem, but they do not remove the sequential dependency. The transformer architecture solved both of these problems.\footnote{At the cost of self-attention requiring $O(n^2)$ operations during inference, instead of $O(n)$ recurrent operations, where $n$ is the sequence length. However, it remains the most widely used architecture in practice for language modelling due to its expressive power.}
 
 \subsection{Positional Encodings}
 One of the biggest selling points of transformers \citep{vaswani2017attention} was their ability to process entire sequences of tokens in parallel. This allowed for much faster training. However, this design choice removes the inductive bias for understanding each token's position that RNNs intrinsically possess. To solve this, \cite{vaswani2017attention} augmented each token embedding with a positional encoding -- a vector that represents a particular position -- and added it to the corresponding token embedding.
@@ -71,6 +83,8 @@ The original transformer used a fixed sinusoidal positional encoding. For a toke
 where $i$ indexes pairs of embedding dimensions. Each pair therefore represents position using sine and cosine waves at a different frequency, with wavelengths that increase geometrically across the embedding dimensions. This gives every position a structured representation while introducing no additional learned parameters. The positional encoding is added element-wise to the token embedding before it enters the transformer, so the resulting representation contains information about both token identity and position.
 
 \subsection{Attention}
+
+Attention produces a weighted combination of value vectors, where the weights are determined by the compatibility between queries and keys. In self-attention, the queries, keys, and values are all obtained from the same sequence, allowing each token to incorporate information from the other tokens.
 
 The second limitation of RNNs was solved by introducing self-attention, which allows the model to incorporate information from distant tokens. To model the relationships between each pair of tokens, the input $\mathbf{X}$ is projected into three matrices known as queries, keys, and values:
 \begin{equation}
