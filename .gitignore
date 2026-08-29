@@ -1,5 +1,5 @@
 .latex-build/
-
+notebooks/
 data/results/
 /docs/*.aux
 /docs/*latex*
