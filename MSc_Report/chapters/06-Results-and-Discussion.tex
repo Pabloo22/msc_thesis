@@ -23,6 +23,7 @@
     \setlength{\tabcolsep}{3pt}
     \input{plots/real/exp2/exp2_decay_correlations.tex}
     \caption{Correlation $r$ between each projection difference and the behaviour reached after the step, at every checkpoint of every trunk. The four rows form the projection-difference ladder: $\Delta P_0$, $\Delta \hat{P}_t^{(\mathbf{v}_0)}$, $\Delta \hat{P}_t$, and $\Delta P_t$. The first and last are the two series drawn above. The last column averages each row over the checkpoints beside it.}
+    \label{tab:decay-correlations}
 \end{table}
 
 \begin{figure}[H]
@@ -30,6 +31,102 @@
     \includegraphics[width=\linewidth]{plots/real/exp2/exp2\_headline.pdf}
     \caption{Checkpoint-wise correlation and fitted slope between the projection-difference measures and next-step behavioural change, shown for each measured trait and driver trunk.}
 \end{figure}
+
+\section{Out-of-Sample Forecasting}
+
+The correlations above are measured by fitting a line to the very checkpoint
+they describe, which answers whether a relationship survives but not whether a
+practitioner could use it. Nobody who has paid for a fan-out at the base model
+repeats it at every step; they carry $M_0$'s line forward and read a prediction
+off it. This section scores that. One affine map per trait is fitted once, on
+the 16 validation datasets that are \emph{not} probes, and applied unchanged at
+every later checkpoint.
+
+A correlation cannot report this. Pearson $r$ is invariant under a fixed affine
+map, so scoring $M_0$'s predictions by correlation would reproduce
+Table~\ref{tab:decay-correlations} cell for cell. What a frozen predictor loses
+is its calibration, not its ordering, and calibration is only visible in an
+error. Every number below is therefore an error on the judge's own 0--100
+scale, and smaller is better --- the reverse of the tables above.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\linewidth]{plots/real/exp2/exp2_forecast_grid.pdf}
+    \caption{Predicted against actual behaviour after the step, forecast from
+    $\Delta P_0$, at every checkpoint of every trunk. A forecast is right when
+    its cloud lies on the diagonal, so vertical spread about that line is the
+    RMSE printed beside it and a cloud sitting wholly above or below it is a
+    systematic bias. Blue is $M_0$'s line carried forward; green is the same
+    probes refitted at the checkpoint. The diagonal is the only line drawn: a
+    forecaster's own line is already spent placing the points along the
+    horizontal axis, which is what makes the diagonal the thing to read
+    against.}
+    \label{fig:forecast-grid}
+\end{figure}
+
+\begin{table}[H]
+    \centering
+    \scriptsize
+    \setlength{\tabcolsep}{3pt}
+    \input{plots/real/exp2/exp2_forecast_rmse.tex}
+    \caption{Root-mean-square error, in judge points, of the behaviour
+    predicted at each checkpoint from each projection difference. ``$M_0$ fit
+    on $\Delta b$'' carries the line fitted once at the base model; ``Refit at
+    $t$'' refits it on the checkpoint's own eight probes. The two are not comparable on equal
+    terms and are not meant to be: the frozen line is held out on both dataset
+    and checkpoint, while the refit is scored on the same probes it was fitted
+    to, which is why it wins already at $t = 0$. It is a ceiling, and what the
+    table reports is how the gap to it grows. Bold marks the smaller error of
+    each pair, so bold here means the better forecast and not the larger
+    number. The last column averages each row over the checkpoints beside it.}
+    \label{tab:forecast-rmse}
+\end{table}
+
+\begin{table}[H]
+    \centering
+    \small
+    \setlength{\tabcolsep}{3pt}
+    \input{plots/real/exp2/exp2_forecast_bias.tex}
+    \caption{Mean signed error, in judge points, of the same frozen forecasts:
+    positive where $M_0$'s line promised more behaviour change than the step
+    delivered. This is what staleness looks like that an RMSE cannot separate
+    from scatter --- as a trunk drifts, the frozen line over-predicts every
+    probe at once. The refitted forecaster is omitted rather than shown at
+    zero: least squares with a free intercept leaves residuals summing to zero,
+    so its bias is an identity and not a measurement. Bold marks the row
+    nearest zero at each checkpoint, over- and under-prediction counting alike.}
+    \label{tab:forecast-bias}
+\end{table}
+
+\begin{table}[H]
+    \centering
+    \small
+    \setlength{\tabcolsep}{3pt}
+    \input{plots/real/exp2/exp2_forecast_correction_rmse.tex}
+    \caption{Whether the freely observable state of a checkpoint can stand in
+    for the fan-out a refit would need, scored on $\Delta P_0$ --- the rung
+    nothing at $M_t$ has refreshed, and so the one with something to correct.
+    Each correction rescales the stale projection by a gain regressed on the
+    checkpoint state, $g(z_t)$ on the latent state and $g(b_t)$ on the
+    behaviour level, with the gain fitted leave-one-trunk-out so that no
+    checkpoint is corrected by a model that has seen its own trajectory. Both
+    are as cheap to read as each other and far cheaper than re-running the
+    probes. The refit bounds what any of them could achieve.}
+    \label{tab:forecast-correction-rmse}
+\end{table}
+
+\begin{table}[H]
+    \centering
+    \small
+    \setlength{\tabcolsep}{3pt}
+    \input{plots/real/exp2/exp2_forecast_correction_bias.tex}
+    \caption{Mean signed error of the same three forecasts of $\Delta P_0$,
+    showing how much of each correction's gain is the removal of a systematic
+    over-prediction rather than a tightening of the scatter. The refitted
+    forecaster is again omitted, for the reason given in
+    Table~\ref{tab:forecast-bias}.}
+    \label{tab:forecast-correction-bias}
+\end{table}
 
 \section{Mechanism Analysis}
 

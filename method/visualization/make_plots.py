@@ -40,14 +40,15 @@ from __future__ import annotations
 
 import argparse
 import logging
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
 
 from method import experiments, seed_noise
 from method.latent import H_NORM
-from method.visualization import decay, figures, style
+from method.visualization import decay, figures, forecast, style
 from method.visualization.collect import (
     Collection,
     collect_group,
@@ -90,34 +91,66 @@ def _emit(fig: plt.Figure, name: str, out_dir: Path, saved: list[Path]) -> None:
     logger.info("wrote %s", out_dir / f"{name}.png")
 
 
-#: How a correlation is written in the emitted table. Two decimals, as the
-#: figures label their fits with, and an en dash for a cell the sweep has not
-#: measured -- distinguishable at a glance from a zero correlation, which is a
-#: result and not a gap.
-_CORR_DECIMALS = 2
-_CORR_FORMAT = f"{{:.{_CORR_DECIMALS}f}}"
+#: An en dash for a cell the sweep has not measured -- distinguishable at a
+#: glance from a zero, which is a result and not a gap.
 _MISSING_CELL = "--"
 
 
-def _leading_cells(table: pd.DataFrame) -> pd.DataFrame:
-    r"""Which cells hold the best correlation of their block, to be bolded.
+@dataclass(frozen=True)
+class _Scale:
+    """How a table's numbers are printed, and which of them leads its block.
+
+    The two travel together because they are the same decision made twice: a
+    cell is bolded for leading at the precision it is printed at, so a table
+    that changed one without the other would bold a lead its reader cannot see.
+
+    ``rank`` maps the printed table to a score whose *largest* value leads. A
+    correlation ranks by itself, larger being better; an error ranks by its
+    negation, since being off by less is doing better; a bias ranks by how near
+    zero it is, since over- and under-predicting by 5 are the same miss.
+    """
+
+    decimals: int
+    rank: Callable[[pd.DataFrame], pd.DataFrame]
+
+    def format(self, value: float) -> str:
+        return f"{value:.{self.decimals}f}"
+
+
+#: Two decimals, as the figures label their fits with, and larger is better.
+CORRELATION_SCALE = _Scale(2, lambda table: table)
+
+#: One decimal, because these are judge points on a 0-100 scale and the second
+#: one is below the noise the eval itself carries; smaller is better.
+ERROR_SCALE = _Scale(1, lambda table: -table)
+
+#: The same precision, ranked by distance from zero (see :class:`_Scale`).
+BIAS_SCALE = _Scale(1, lambda table: -table.abs())
+
+
+def _leading_cells(table: pd.DataFrame, scale: _Scale = CORRELATION_SCALE) -> pd.DataFrame:
+    r"""Which cells lead their block, to be bolded.
 
     A block is the rows sharing every key but the last -- the projections
-    measured on one trait and one trunk -- and each column is read down it on
-    its own, a summary column included. That is the comparison the table exists to support:
-    which projection difference tracks behaviour best at step $t$, given a
-    trait and a trunk. Nothing is compared across blocks, where the trait sets
-    the scale, or along a row, where $t$ does.
+    measured on one trait and one trunk, or the forecasters made from one
+    projection -- and each column is read down it on its own, a summary column
+    included. That is the comparison the table exists to support: which row
+    does best at step $t$, given a trait and a trunk. Nothing is compared
+    across blocks, where the trait sets the scale, or along a row, where $t$
+    does.
+
+    What "best" means is the ``scale``'s to say, since these tables do not all
+    agree: a correlation leads by being largest and an error by being smallest.
 
     Cells are compared at the precision they are printed at, so what is bolded
-    is what a reader can see is largest, and every cell tying for the lead is
+    is what a reader can see leads, and every cell tying for the lead is
     bolded rather than an arbitrary one of them. Where a whole column of a
     block ties there is no lead to mark and none is: at $t = 0$ the four
     projections are the same measurement by construction, and bolding all four
     would say they had won something.
     """
     keys = [table.index.get_level_values(i) for i in range(table.index.nlevels - 1)]
-    shown = table.round(_CORR_DECIMALS)
+    shown = scale.rank(table.round(scale.decimals))
     # A single block when there is no key left to group by, which reads the
     # whole column -- the same rule, applied to a table with one key column.
     blocks = shown.groupby(keys or [pd.Index([0] * len(shown))])
@@ -187,6 +220,8 @@ def _latex_table(
     spanner: str,
     *,
     summary: int = 0,
+    scale: _Scale = CORRELATION_SCALE,
+    note: str = "",
 ) -> str:
     r"""A ``tabular`` for the correlation table, as a fragment to ``\input``.
 
@@ -209,10 +244,12 @@ def _latex_table(
     are ruled off from one another and from the values (see
     :func:`_column_spec`).
 
-    The leading correlation of each block and column is bolded (see
+    The leading cell of each block and column is bolded (see
     :func:`_leading_cells`), which is how the table answers in ink the question
-    it is a table of numbers to answer: which projection difference is the
-    better predictor at a given checkpoint.
+    it is a table of numbers to answer: which row is the better predictor at a
+    given checkpoint. ``scale`` says how a cell is printed and which way round
+    "leading" runs -- a correlation leads by being largest, an error by being
+    smallest.
 
     ``headings`` name the key columns and ``spanner`` the block of value
     columns, which are then headed by their own labels alone. Naming the
@@ -220,6 +257,12 @@ def _latex_table(
     ``0 1 2`` rather than ``$t = 0$`` seven times -- is what keeps the table
     inside the text width: a column is as wide as its widest cell, and a
     repeated header is wider than the numbers under it.
+
+    ``note`` is a second comment line above the ``tabular``, for anything the
+    table holds fixed and therefore does not print (see
+    :func:`_without_pinned_keys`). It is where a caption-writer finds what
+    the numbers are *of*, so it belongs in the generated file rather than in
+    whatever the caller happened to log.
 
     ``summary`` says how many of the trailing columns summarise the spanned
     block rather than belong to it. They keep their own headings, sit outside
@@ -232,6 +275,7 @@ def _latex_table(
     values = columns - summary
     lines = [
         "% Generated by method.visualization.make_plots -- do not edit.",
+        *([f"% {note}"] if note else []),
         rf"\begin{{tabular}}{{{_column_spec(keys, values, summary)}}}",
         " & ".join(
             [""] * keys
@@ -244,7 +288,7 @@ def _latex_table(
     ]
     rows = [tuple(row_keys) for row_keys in table.index]
     spans = _key_spans(rows)
-    leaders = _leading_cells(table)
+    leaders = _leading_cells(table, scale)
     previous: tuple[str, ...] = ()
     for row_keys, span, row, best in zip(
         rows, spans, table.to_numpy(), leaders.to_numpy()
@@ -258,7 +302,7 @@ def _latex_table(
             (
                 _MISSING_CELL
                 if pd.isna(value)
-                else _bold(_CORR_FORMAT.format(value), leading)
+                else _bold(scale.format(value), leading)
             )
             for value, leading in zip(row, best)
         ]
@@ -283,6 +327,8 @@ def _emit_table(
     saved: list[Path],
     *,
     summary: int = 0,
+    scale: _Scale = CORRELATION_SCALE,
+    note: str = "",
 ) -> None:
     """Write a table both ways: ``.tex`` to typeset, ``.csv`` to read back.
 
@@ -292,7 +338,11 @@ def _emit_table(
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     tex, csv = out_dir / f"{name}.tex", out_dir / f"{name}.csv"
-    tex.write_text(_latex_table(table, headings, spanner, summary=summary))
+    tex.write_text(
+        _latex_table(
+            table, headings, spanner, summary=summary, scale=scale, note=note
+        )
+    )
     table.to_csv(csv)
     saved += [tex, csv]
     logger.info("wrote %s", tex)
@@ -309,9 +359,9 @@ def _emit_table(
 #: .correlation_table`).
 DECAY_GRID_SERIES = (decay.SERIES_COLUMNS["p0"], decay.SERIES_COLUMNS["full_t"])
 
-#: What the correlation table's key columns are called, left of its
-#: checkpoints, and what the checkpoint columns are headed as a block.
-DECAY_TABLE_HEADINGS = ("Trait", "Trunk", "Projection")
+#: What the checkpoint columns of every exp2 table are headed as a block. The
+#: key columns left of them are headed by :func:`_headings`, from the keys the
+#: table is actually indexed by.
 DECAY_TABLE_SPANNER = "Checkpoint $t$"
 
 #: ...and what the column summarising them is headed, right of the last of
@@ -553,6 +603,7 @@ def build_exp2(
     saved += _decay_figures(
         rows, out_dir, sigma_seed=sigma_seed, n_resamples=n_resamples
     )
+    saved += _forecast_figures(rows, fan, out_dir)
     saved += _drift_delta_hat_p_figure(hatted_ratios, out_dir)
     saved += _drift_delta_p_figure(current_ratios, out_dir)
     saved += _drift_latent_figure(latents, out_dir)
@@ -592,25 +643,62 @@ def _validation_figure(
     return saved
 
 
-def _labelled_table(table: pd.DataFrame) -> pd.DataFrame:
-    """The correlation table with its keys written as the figures write them.
+#: How each key level of an emitted table is written for a reader, by the name
+#: the frame gives that level.
+#:
+#: Naming is this module's job throughout: :mod:`~method.visualization.decay`
+#: and :mod:`~method.visualization.forecast` work in run ids so that their
+#: frames stay joinable, and every figure here turns those into the trait,
+#: trunk, projection and forecaster names a reader sees. A table is no
+#: different for being made of text rather than of ink.
+_KEY_LABELS: Mapping[str, Callable[[str], str]] = {
+    "trait": display_trait_name,
+    "trunk": display_trunk_short,
+    "series": lambda name: decay.SERIES_LABELS.get(name, name),
+    "model": lambda name: forecast.FORECASTER_LABELS.get(name, name),
+}
 
-    Naming is this module's job throughout: :mod:`~method.visualization.decay`
-    works in run ids so that its frames stay joinable, and every figure here
-    turns those into the trait, trunk and series names a reader sees. A table
-    is no different for being made of text rather than of ink.
+#: ...and what each is headed, above the keys themselves.
+_KEY_HEADINGS = {
+    "trait": "Trait",
+    "trunk": "Trunk",
+    "series": "Projection",
+    "model": "Forecast",
+}
+
+
+def _level_names(table: pd.DataFrame) -> list[str]:
+    """A table's key levels as plain strings.
+
+    ``MultiIndex.names`` is typed as possibly-unnamed and possibly-not-string,
+    and every lookup here keys off the name, so the coercion happens once.
+    """
+    return [str(name) for name in table.index.names]
+
+
+def _headings(keys: Sequence[str]) -> tuple[str, ...]:
+    """The column headings for a table indexed by ``keys``, in their order."""
+    return tuple(_KEY_HEADINGS.get(key, key.title()) for key in keys)
+
+
+def _labelled_table(table: pd.DataFrame) -> pd.DataFrame:
+    """A key-indexed table with its keys written as the figures write them.
+
+    Driven by the frame's own level names rather than by position, so a table
+    that orders its keys differently -- which the forecast tables do, to put
+    the rows a block compares next to each other -- is labelled correctly
+    without a second copy of this.
     """
     if table.empty:
         return table
     return table.set_index(
         pd.MultiIndex.from_tuples(
             [
-                (
-                    display_trait_name(trait),
-                    display_trunk_short(trunk),
-                    decay.SERIES_LABELS.get(series, series),
+                tuple(
+                    _KEY_LABELS.get(level, str)(key)
+                    for level, key in zip(_level_names(table), row)
                 )
-                for trait, trunk, series in table.index
+                for row in table.index
             ],
             names=table.index.names,
         )
@@ -695,7 +783,7 @@ def _decay_figures(
     )
     _emit_table(
         _with_mean(_labelled_table(decay.correlation_table(fits)), DECAY_TABLE_MEAN),
-        DECAY_TABLE_HEADINGS,
+        _headings(decay.CORRELATION_TABLE_KEYS),
         DECAY_TABLE_SPANNER,
         "exp2_decay_correlations",
         out_dir,
@@ -743,6 +831,248 @@ def _decay_figures(
             trunk_colors=colors,
         )
         _emit(fig, "exp2_phase_contrast", out_dir, saved)
+    return saved
+
+
+def _without_pinned_keys(
+    table: pd.DataFrame, keys: Sequence[str]
+) -> tuple[pd.DataFrame, list[tuple[str, str]]]:
+    """Drop the key levels a table holds fixed, and say what they were fixed to.
+
+    A column repeating ``$\\Delta P_0$`` down every row is width a
+    twelve-column table has none of, spent on no information. What it said
+    still has to be said, so it comes back as ``(heading, value)`` pairs for
+    the note above the ``tabular`` -- which is what a caption is written from.
+
+    Driven by what the caller *pinned*, never by what happens to be constant in
+    the rows that arrived. A half-finished sweep can leave a single trait or a
+    single trunk in the frame, and dropping that column would turn a table
+    whose scope is an accident of the sweep into one that looks deliberately
+    scoped. The last level is left alone whatever it is: it is the one a block
+    turns over on, and a table with no varying key is not a block table.
+    """
+    if table.empty or table.index.nlevels < 2:
+        return table, []
+    levels = _level_names(table)
+    dropped = [level for level in levels[:-1] if level in set(keys)]
+    if not dropped:
+        return table, []
+    pinned = [
+        (
+            _KEY_HEADINGS.get(level, level.title()),
+            str(table.index.get_level_values(level)[0]),
+        )
+        for level in dropped
+    ]
+    return table.droplevel(list[Hashable](dropped)), pinned
+
+
+@dataclass(frozen=True)
+class _ForecastTable:
+    """One emitted out-of-sample table: what it scores, over which rows."""
+
+    name: str
+    metric: str
+    #: Projection series carried, or ``None`` for every one that was measured.
+    series: tuple[str, ...] | None
+    models: tuple[str, ...]
+    #: Key order, whose last entry is what a block compares (see
+    #: :func:`method.visualization.forecast.score_table`).
+    by: tuple[str, ...]
+    scale: _Scale
+
+    @property
+    def pinned(self) -> tuple[str, ...]:
+        """The key levels this table holds to a single value, so does not print."""
+        return tuple(
+            level
+            for level, chosen in (("series", self.series), ("model", self.models))
+            if chosen is not None and len(chosen) == 1
+        )
+
+
+#: The tables :func:`_forecast_figures` writes, and why each is cut the way it
+#: is.
+#:
+#: The first two are the headline: how far off $M_0$'s own line is at each
+#: later checkpoint, for every projection difference it could be fed. RMSE
+#: carries the refit beside it, one row apart, because the question a reader
+#: asks of an error is "compared to what" and the refit is the answer -- it is
+#: the same probes scored by a line that was allowed to see them. Bias carries
+#: only the frozen line, because a least-squares refit has a mean residual of
+#: zero by construction and a column of $0.0$ would be arithmetic dressed as a
+#: result; with one forecaster left, the block turns over on the projection
+#: instead, which is the comparison that is left to make.
+#:
+#: The next two ask whether the free state of a checkpoint can stand in for the
+#: fan-out a refit needs, so they carry every gain correction on the one
+#: projection that has something to correct -- $\Delta P_0$, the rung nothing at
+#: $M_t$ has refreshed.
+#:
+#: The last asks what $M_0$'s line should have been fitted to predict at all:
+#: the change a step makes, or the level it lands at. It carries both targets
+#: for every rung of the ladder, adjacent, so the bolding marks the winner per
+#: projection and per checkpoint -- and the crossover is legible as a change of
+#: which row is bold when the eye reaches $\Delta P_t$. The refit is left out;
+#: it is target-invariant, and the headline table already carries it.
+FORECAST_TABLES = (
+    _ForecastTable(
+        "exp2_forecast_rmse",
+        "rmse",
+        None,
+        forecast.HEADLINE_MODELS,
+        forecast.BY_MODEL,
+        ERROR_SCALE,
+    ),
+    _ForecastTable(
+        "exp2_forecast_bias",
+        "bias",
+        None,
+        ("step0",),
+        forecast.BY_SERIES,
+        BIAS_SCALE,
+    ),
+    _ForecastTable(
+        "exp2_forecast_correction_rmse",
+        "rmse",
+        ("p0",),
+        forecast.CORRECTION_MODELS,
+        forecast.BY_MODEL,
+        ERROR_SCALE,
+    ),
+    _ForecastTable(
+        "exp2_forecast_correction_bias",
+        "bias",
+        ("p0",),
+        ("step0", "step0_z", "step0_b"),
+        forecast.BY_MODEL,
+        BIAS_SCALE,
+    ),
+    _ForecastTable(
+        "exp2_forecast_target_rmse",
+        "rmse",
+        None,
+        ("step0", "step0_level"),
+        forecast.BY_MODEL,
+        ERROR_SCALE,
+    ),
+)
+
+def _pinned_note(spec: _ForecastTable, pinned: Sequence[tuple[str, str]]) -> str:
+    """What a forecast table holds fixed, for the comment above its ``tabular``.
+
+    Always says which metric the cells are, since a table of bare numbers on a
+    judge's scale is unreadable without it, and then whatever
+    :func:`_without_pinned_keys` took out.
+    """
+    parts = [f"{spec.metric.upper()} in judge points"]
+    parts += [f"{heading.lower()}: {value}" for heading, value in pinned]
+    return "; ".join(parts) + "."
+
+
+#: Which projection difference the forecast grid draws. One series per grid --
+#: the models are already spending the colour channel -- and $\Delta P_0$ is
+#: the one the figure is about: everything measured once at the base model,
+#: which is the only thing a practitioner who never re-measures has.
+FORECAST_GRID_SERIES = "p0"
+
+
+def _forecast_figures(
+    rows: pd.DataFrame, fan: pd.DataFrame, out_dir: Path
+) -> list[Path]:
+    r"""The out-of-sample tables and the predicted-against-actual grid.
+
+    The decay figures fit a line at every checkpoint and report how well it
+    fits. These take the line fitted once at $M_0$ -- on the validation
+    datasets that are *not* probes, so the probes stay a test set -- carry it
+    forward unchanged, and report how far off its predictions are. That is the
+    quantity a correlation cannot carry: applying a fixed line to $\Delta P$
+    leaves $r$ exactly where :func:`_decay_figures` already reported it, so
+    everything here is an error in judge points instead.
+    """
+    saved: list[Path] = []
+    if rows.empty:
+        return saved
+    if fan.empty:
+        logger.warning(
+            "exp2: no validation fan on disk, so M_0's line cannot be fitted "
+            "and the out-of-sample tables are unavailable. Run the %r family "
+            "first",
+            experiments.EXP2_VALIDATION,
+        )
+        return saved
+
+    predictions = forecast.prediction_frame(rows, fan)
+    if predictions.empty:
+        logger.warning("exp2: nothing to forecast; skipping the out-of-sample tables")
+        return saved
+    scores = forecast.score_frame(predictions)
+
+    for spec in FORECAST_TABLES:
+        table = forecast.score_table(
+            scores,
+            spec.metric,
+            series=spec.series,
+            models=spec.models,
+            by=spec.by,
+        )
+        if table.empty:
+            continue
+        shown, pinned = _without_pinned_keys(_labelled_table(table), spec.pinned)
+        _emit_table(
+            _with_mean(shown, DECAY_TABLE_MEAN),
+            _headings(_level_names(shown)),
+            DECAY_TABLE_SPANNER,
+            spec.name,
+            out_dir,
+            saved,
+            summary=1,
+            scale=spec.scale,
+            note=_pinned_note(spec, pinned),
+        )
+
+    stale = predictions[predictions["series"] == FORECAST_GRID_SERIES]
+    if stale.empty:
+        return saved
+    traits = _present_traits(stale)
+    trunks = _present_trunks(stale)
+    trait_labels = {trait: display_trait_name(trait) for trait in traits}
+    trunk_labels = {trunk: display_trunk_name(trunk) for trunk in trunks}
+    glosses = {f.name: f.gloss for f in forecast.FORECASTERS}
+    projection = decay.SERIES_LABELS[FORECAST_GRID_SERIES]
+
+    # Two views of one comparison, and neither subsumes the other. On the
+    # projection axis both fitted lines are on the axes at once, so the gap
+    # between them is the cost of not recalibrating, read off in judge points.
+    # On the prediction axis that gap has been folded into the x coordinate,
+    # which is what makes the diagonal meaningful there -- and what lets a
+    # reader see *which probes* a stale forecast misses rather than only by how
+    # far the line is wrong.
+    fig = figures.recalibration_grid(
+        stale,
+        traits=traits,
+        trait_labels=trait_labels,
+        trunks=trunks,
+        trunk_labels=trunk_labels,
+        models=forecast.RECALIBRATION_MODELS,
+        model_labels=forecast.FORECASTER_LABELS,
+        model_glosses=glosses,
+        series_label=projection,
+    )
+    _emit(fig, "exp2_recalibration_grid", out_dir, saved)
+
+    fig = figures.forecast_grid(
+        stale,
+        traits=traits,
+        trait_labels=trait_labels,
+        trunks=trunks,
+        trunk_labels=trunk_labels,
+        models=forecast.FORECAST_GRID_MODELS,
+        model_labels=forecast.FORECASTER_LABELS,
+        model_glosses=glosses,
+        series_label=projection,
+    )
+    _emit(fig, "exp2_forecast_grid", out_dir, saved)
     return saved
 
 

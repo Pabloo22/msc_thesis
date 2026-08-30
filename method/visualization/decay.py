@@ -596,6 +596,12 @@ _FIT_COLUMNS = [
 ]
 
 
+#: What :func:`correlation_table` indexes its rows by, outermost key first.
+#: The last key is the one that varies inside a block, which is what the
+#: emitted table compares and bolds.
+CORRELATION_TABLE_KEYS = ("trait", "trunk", "series")
+
+
 def correlation_table(
     fits: pd.DataFrame, *, series: Sequence[str] | None = None
 ) -> pd.DataFrame:
@@ -637,7 +643,9 @@ def correlation_table(
     long["series"] = pd.Categorical(
         long["series"].map(columns), categories=wanted, ordered=True
     )
-    table = long.pivot(index=["trait", "trunk", "series"], columns="t", values="corr")
+    table = long.pivot(
+        index=list(CORRELATION_TABLE_KEYS), columns="t", values="corr"
+    )
     # Empty rows are the series a caller asked for and the sweep never
     # measured; the categorical above keeps them in the ladder's order, and
     # this is where they go.

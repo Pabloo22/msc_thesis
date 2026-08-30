@@ -113,8 +113,12 @@ def _scatter_with_fit(
     size: float = 28,
     datasets: Sequence[str] | None = None,
     mark_edge: str | None = None,
+    line: bool = True,
 ) -> LinearFit:
     """One scatter series plus its least-squares line, labelled with its $r$.
+
+    ``line=False`` scatters the points and returns the fit without drawing it,
+    for a panel where that line is already on the axes for another reason.
 
     ``yerr`` draws the per-point error bar section 6a makes available for every
     $\\Delta b$: it is what separates a point that sits off the line because the
@@ -158,7 +162,7 @@ def _scatter_with_fit(
             linewidth=0.6,
             zorder=3,
         )
-    if x_arr.size >= 2:
+    if line and x_arr.size >= 2:
         line_x = _fit_line_x(x_arr)
         ax.plot(
             line_x,
@@ -1519,6 +1523,499 @@ def decay_scatter_grid(
     )
     # Last of all: every r is placed by looking at the panel it goes in, which
     # is only now the size and shape it will be read at.
+    for ax, entries, level in labelled:
+        _label_fits(ax, entries, rules=(level,))
+    return fig
+
+
+#: A hue per forecaster, keyed as :data:`method.visualization.forecast
+#: .FORECASTERS` names them. Colour is the only channel separating the models
+#: in a forecast panel -- the marks already spend shape and fill on the dataset
+#: -- so the frozen line takes the same blue $\Delta P_0$ wears in the decay
+#: grid, and the refit the same green $\Delta P_t$ does: in both figures those
+#: two are "what you measured at $M_0$" against "what the checkpoint would
+#: really say".
+FORECAST_COLORS = {
+    "step0": style.BLUE,
+    "step0_level": style.PURPLE,
+    "step0_z": style.PLUM,
+    "step0_b": style.ORANGE,
+    "oracle": style.GREEN,
+}
+
+#: Ticks on both axes of a forecast panel. Sparser than
+#: :data:`BEHAVIOUR_TICKS`, and the same on each: the two axes hold the same
+#: quantity, the panel is read as a distance from its diagonal rather than off
+#: its ticks, and six labels do not fit under a 1.75-inch panel without
+#: colliding.
+FORECAST_TICKS = (0.0, 50.0, 100.0)
+
+
+def _panel_models(
+    panel: pd.DataFrame, wanted: Sequence[str] | None = None
+) -> list[str]:
+    """The models this panel can draw, in the order ``wanted`` gives them.
+
+    A model whose predictions are missing anywhere in the panel is skipped
+    whole, matching :func:`_panel_series`: an error read off some of the probes
+    is not the error printed beside it.
+    """
+    present = set(panel["model"]) if "model" in panel else set()
+    order = list(wanted) if wanted else sorted(present)
+    return [
+        model
+        for model in order
+        if model in present
+        and not panel[panel["model"] == model]["predicted_b_next"].isna().any()
+    ]
+
+
+def forecast_grid(
+    df: pd.DataFrame,
+    *,
+    traits: Sequence[str] | None = None,
+    trait_labels: Mapping[str, str] | None = None,
+    trunks: Sequence[str] | None = None,
+    checkpoints: Sequence[int] | None = None,
+    trunk_labels: Mapping[str, str] | None = None,
+    models: Sequence[str] | None = None,
+    model_labels: Mapping[str, str] | None = None,
+    model_colors: Mapping[str, str] | None = None,
+    model_glosses: Mapping[str, str] | None = None,
+    series_label: str | None = None,
+    xlabel: str = r"Predicted behaviour after the step, $\hat{b}_{t+1}$",
+    ylabel: str = r"Behaviour after the step, $b_{t+1}$",
+) -> Figure:
+    r"""Predicted against actual, one panel per ``(trait, trunk, checkpoint)``.
+
+    The out-of-sample counterpart of :func:`decay_scatter_grid`, laid out the
+    same way -- rows are trunks under trait blocks, columns are checkpoints --
+    so the two can be read against each other panel for panel. What changes is
+    the x axis. There it is the projection difference, and the question is
+    whether the cloud still has a line in it; here it is what a forecaster
+    *predicted*, and the question is whether the cloud still sits on the
+    diagonal.
+
+    That swap is the point. A correlation cannot see a frozen predictor going
+    stale -- applying a fixed line to $\Delta P$ leaves $r$ exactly where it
+    was -- so the decay grid draws a relationship that survives while the
+    predictions built on it drift off the identity line panel by panel. Here
+    the drift is the distance from that line: vertical spread is the error
+    the table reports as ``rmse``, and a cloud sitting wholly above or below is
+    the systematic offset it reports as ``bias``.
+
+    ``models`` picks which forecasters share a panel, by name, in the order
+    given; ``model_labels``, ``model_colors`` and ``model_glosses`` name and
+    colour them (:data:`FORECAST_COLORS` by default). Two is the readable
+    limit at this panel size, and the pair worth drawing is the frozen line
+    against the refit: what a practitioner has, against what the same probes
+    would have given had refitting been free.
+
+    No cloud carries a fitted line. A forecaster's own line maps $\Delta P$ to
+    a prediction and is already spent, in full, on placing the points along the
+    x axis, so the only line these axes want is the diagonal every forecast is
+    read against -- and the distance from it is the error the label reports.
+    The line a panel *could* draw is a calibration, fitted here by regressing
+    what happened on what was predicted, and it is left out: for a refitted
+    forecaster it is the identity exactly (least squares makes fitted values
+    and residuals orthogonal), and for a frozen one it is a second line in the
+    forecaster's own colour that reads as the forecaster itself. Both belong to
+    :func:`recalibration_grid`, whose x axis is the quantity a forecaster is a
+    function of and where a line therefore means something.
+
+    The diagonal is the only line in a panel. A forecaster's own line maps
+    $\Delta P$ to a prediction and is already spent, in full, on placing the
+    points along the x axis -- on these axes it *is* the diagonal, which is why
+    the diagonal is what a forecaster is read against, and why a second line
+    through the cloud would be a fit the figure is not making a claim about.
+
+    The RMSE is printed beside each cloud (:func:`_label_fits`), to no
+    decimals: it is a distance on a 0-100 judge scale, and the panel is there
+    to be read as a picture with a number attached rather than the other way
+    round.
+
+    Both axes are the judge's own $[0, 100]$ on every panel, and they are the
+    same axis -- a prediction and a measurement of the same quantity. ``df`` is
+    :func:`method.visualization.forecast.prediction_frame`, whose
+    ``predicted_b_next`` is the predicted change added back onto the level the
+    checkpoint started from: nothing is *scored* on that scale (the shift is
+    constant within a panel, so it cancels), but it is the scale a reader can
+    put a ruler against.
+
+    ``series_label`` names the projection difference the forecasts were made
+    from, for the legend. One grid draws one series: the models are already
+    spending the colour channel, and which projection is being forecast is a
+    property of the whole figure rather than of a panel.
+    """
+    style.apply_style()
+    trunks = list(trunks) if trunks else sorted(df["trunk"].unique())
+    checkpoints = (
+        list(checkpoints) if checkpoints is not None else sorted(df["t"].unique())
+    )
+    trunk_labels = trunk_labels or {}
+    model_labels = model_labels or {}
+    model_glosses = model_glosses or {}
+    colors = {**FORECAST_COLORS, **(model_colors or {})}
+    blocks = _facets(df, traits, trait_labels, column="trait")
+    panels: list[tuple[pd.DataFrame, str, str]] = []
+    for _, frame, trait_label in blocks:
+        for trunk in trunks:
+            name = trunk_labels.get(trunk, f"Trunk {trunk}")
+            panels.append(
+                (frame, trunk, f"{trait_label}\n{name}" if trait_label else name)
+            )
+    nrows, ncols = max(1, len(panels)), max(1, len(checkpoints))
+
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=(1.75 * ncols + 1.6, 1.95 * nrows + 1.3),
+        squeeze=False,
+    )
+    drawn: list[str] = []
+    labelled: list[tuple[Axes, list[tuple[str, str, pd.Series, LinearFit]]]] = []
+    for row, (frame, trunk, name) in enumerate(panels):
+        for col, t in enumerate(checkpoints):
+            ax = axes[row][col]
+            panel = frame[(frame["trunk"] == trunk) & (frame["t"] == t)]
+            if panel.empty:
+                _mark_empty(ax)
+                continue
+            # Perfect prediction. Drawn before the clouds so a mark that lands
+            # on it stays on top, and spanning the panel rather than the data
+            # so it reads as the axis it is rather than as one more fit.
+            ax.axline(
+                (0.0, 0.0), slope=1.0, color=style.INK, linewidth=1.0, zorder=1
+            )
+            fits = []
+            for model in _panel_models(panel, models):
+                cloud = panel[panel["model"] == model]
+                color = colors.get(model, style.SECONDARY_INK)
+                fit = _scatter_with_fit(
+                    ax,
+                    cloud["predicted_b_next"],
+                    cloud["b_next"],
+                    color=color,
+                    label=model_labels.get(model, model),
+                    yerr=cloud["se_b_next"] if "se_b_next" in cloud else None,
+                    size=34,
+                    datasets=list(cloud["probe"]) if "probe" in cloud else None,
+                    mark_edge=color,
+                    line=False,
+                )
+                error = (cloud["predicted_b_next"] - cloud["b_next"]).to_numpy(float)
+                rmse = float(np.sqrt(np.mean(error**2)))
+                fits.append(
+                    (rf"RMSE = {rmse:.0f}", color, cloud["predicted_b_next"], fit)
+                )
+                if model not in drawn:
+                    drawn.append(model)
+            labelled.append((ax, fits))
+            since = int(panel["steps_since_realignment"].iloc[0])
+            ax.set_title(
+                f"steps since re-alignment: {since}",
+                loc="right",
+                fontsize=6.5,
+                color=style.MUTED,
+                pad=3,
+            )
+        axes[row][0].set_ylabel(name, fontsize=9)
+
+    # Every panel is on the judge's scale on both axes, so unlike the decay
+    # grid there is no block to share: the limits are a property of the
+    # instrument, and they are already the same everywhere.
+    for ax in axes.flat:
+        ax.set_xlim(*BEHAVIOUR_LIMITS)
+        ax.set_ylim(*BEHAVIOUR_LIMITS)
+        ax.set_xticks(FORECAST_TICKS)
+        ax.set_yticks(FORECAST_TICKS)
+    stride = len(trunks) or 1
+    _label_outer(axes, bottom_rows=range(stride - 1, len(panels), stride))
+    for col, t in enumerate(checkpoints):
+        axes[0][col].annotate(
+            f"$t = {t}$",
+            xy=(0.5, 1.0),
+            xycoords="axes fraction",
+            xytext=(0, 15),
+            textcoords="offset points",
+            ha="center",
+            va="bottom",
+        )
+
+    # A ringed mark rather than a line: what a model is, on these axes, is the
+    # outline colour of a cloud, and no model draws a line of its own.
+    handles: list[Artist] = [
+        plt.Line2D(
+            [],
+            [],
+            marker="o",
+            linestyle="none",
+            markersize=6,
+            markerfacecolor=style.SURFACE,
+            markeredgecolor=colors.get(model, style.SECONDARY_INK),
+            markeredgewidth=1.6,
+        )
+        for model in drawn
+    ]
+    texts = [
+        f"{model_labels.get(model, model)} ({gloss})"
+        if (gloss := model_glosses.get(model))
+        else model_labels.get(model, model)
+        for model in drawn
+    ]
+    handles.append(plt.Line2D([], [], color=style.INK, linewidth=1.0))
+    texts.append(r"perfect prediction ($\hat{b}_{t+1} = b_{t+1}$)")
+    if "probe" in df:
+        mark_handles, mark_texts = dataset_legend(sorted(set(df["probe"])))
+        handles += mark_handles
+        texts += mark_texts
+    ncol = min(5, len(handles))
+    fig.legend(
+        handles,
+        texts,
+        loc="lower center",
+        ncol=ncol,
+        bbox_to_anchor=(0.5, 0.0),
+        title=(
+            rf"Forecast from {series_label}" if series_label else None
+        ),
+    )
+    _layout_grid(
+        fig,
+        axes.flat,
+        xlabel=xlabel,
+        ylabel=ylabel,
+        legend_rows=-(-len(handles) // ncol) + (1 if series_label else 0),
+    )
+    # Last of all, for the same reason decay_scatter_grid holds its labels
+    # back: each is placed by measuring the panel it goes in.
+    for ax, entries in labelled:
+        _label_fits(ax, entries)
+    return fig
+
+
+def recalibration_grid(
+    df: pd.DataFrame,
+    *,
+    traits: Sequence[str] | None = None,
+    trait_labels: Mapping[str, str] | None = None,
+    trunks: Sequence[str] | None = None,
+    checkpoints: Sequence[int] | None = None,
+    trunk_labels: Mapping[str, str] | None = None,
+    models: Sequence[str] | None = None,
+    model_labels: Mapping[str, str] | None = None,
+    model_colors: Mapping[str, str] | None = None,
+    model_glosses: Mapping[str, str] | None = None,
+    series_label: str | None = None,
+    xlabel: str = r"Projection difference $\Delta P$",
+    ylabel: str = r"Behaviour after the step, $b_{t+1}$",
+) -> Figure:
+    r"""What recalibrating at $M_t$ would buy, on the decay grid's own axes.
+
+    The same axes as :func:`decay_scatter_grid` -- projection difference
+    across, behaviour reached up -- and the same eight probes in each panel.
+    What differs is that the cloud is drawn *once* and the panel carries two
+    **lines** through it: the one fitted at $M_0$ and carried forward, and the
+    one refitted on this checkpoint. The vertical distance between them is what
+    not recalibrating costs, in judge points, read off directly.
+
+    This is the picture :func:`forecast_grid` cannot draw. There the x axis is
+    already the prediction, so a forecaster's line has been spent placing the
+    points and only the identity line is left to compare against. Here the x
+    axis is the quantity a forecaster is a function *of*, so both lines are on
+    the axes at once and the question -- how far apart are they, and where --
+    is answered by looking.
+
+    The refitted line is fitted on the very points it is drawn through, so it
+    is not a method anyone could run: refitting needs the fan-out whose cost is
+    the reason for the question. It is the bound the frozen line is read
+    against, and the gap is an upper bound on what any recalibration could
+    recover.
+
+    Both lines come straight from ``df``, which is
+    :func:`method.visualization.forecast.prediction_frame`: every forecaster
+    here is affine in $\Delta P$, so its predictions plotted against the
+    projection *are* its line, exactly, and there is nothing to re-fit in a
+    figure. A corrected forecaster rescales $\Delta P$ by one number per
+    checkpoint, which leaves it affine and so leaves it a line.
+
+    The y axis is the behaviour reached, with the level the checkpoint started
+    from drawn as a black rule -- the same convention, and the same reason, as
+    :func:`decay_scatter_grid`: a point above the rule is a step that made the
+    model *more* of the trait. Each line is labelled with its RMSE about the
+    points (:func:`_label_fits`).
+
+    ``series_label`` names the projection difference on the x axis. One grid
+    draws one series, since the models are spending the colour channel.
+    """
+    style.apply_style()
+    trunks = list(trunks) if trunks else sorted(df["trunk"].unique())
+    checkpoints = (
+        list(checkpoints) if checkpoints is not None else sorted(df["t"].unique())
+    )
+    trunk_labels = trunk_labels or {}
+    model_labels = model_labels or {}
+    model_glosses = model_glosses or {}
+    colors = {**FORECAST_COLORS, **(model_colors or {})}
+    blocks = _facets(df, traits, trait_labels, column="trait")
+    panels: list[tuple[pd.DataFrame, str, str]] = []
+    for _, frame, trait_label in blocks:
+        for trunk in trunks:
+            name = trunk_labels.get(trunk, f"Trunk {trunk}")
+            panels.append(
+                (frame, trunk, f"{trait_label}\n{name}" if trait_label else name)
+            )
+    nrows, ncols = max(1, len(panels)), max(1, len(checkpoints))
+
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=(1.75 * ncols + 1.6, 2.0 * nrows + 1.3),
+        squeeze=False,
+    )
+    drawn: list[str] = []
+    labelled: list[tuple[Axes, list[tuple[str, str, pd.Series, LinearFit]], float]] = []
+    for row, (frame, trunk, name) in enumerate(panels):
+        for col, t in enumerate(checkpoints):
+            ax = axes[row][col]
+            panel = frame[(frame["trunk"] == trunk) & (frame["t"] == t)]
+            if panel.empty:
+                _mark_empty(ax)
+                continue
+            level = float(panel["b_t"].iloc[0])
+            ax.axhline(level, color=style.INK, linewidth=1.0, zorder=1)
+
+            # One cloud, so the marks carry the dataset alone and no model
+            # colour: every line in the panel is a line through *these* points,
+            # and ringing them in one model's hue would say otherwise.
+            available = _panel_models(panel, models)
+            # One model's rows, which is one row per probe. Taking the panel
+            # whole would scatter every probe once per model -- identical
+            # points stacked, which reads as heavier marks rather than as a
+            # mistake.
+            drawn_from = available[0] if available else str(panel["model"].iloc[0])
+            cloud = panel[panel["model"] == drawn_from]
+            errors = cloud["se_b_next"] if "se_b_next" in cloud else None
+            if errors is not None and np.any(
+                np.isfinite(errors) & (errors > 0)
+            ):
+                ax.errorbar(
+                    cloud["delta_p"],
+                    cloud["b_next"],
+                    yerr=np.nan_to_num(errors.to_numpy(dtype=float)),
+                    fmt="none",
+                    ecolor=style.MUTED,
+                    elinewidth=0.9,
+                    alpha=0.55,
+                    capsize=0,
+                    zorder=2,
+                )
+            _scatter_marks(
+                ax,
+                cloud["delta_p"].to_numpy(dtype=float),
+                cloud["b_next"].to_numpy(dtype=float),
+                list(cloud["probe"]) if "probe" in cloud else [],
+                size=34,
+            )
+
+            entries = []
+            for model in available:
+                predicted = panel[panel["model"] == model].sort_values("delta_p")
+                color = colors.get(model, style.SECONDARY_INK)
+                ax.plot(
+                    predicted["delta_p"].to_numpy(dtype=float),
+                    predicted["predicted_b_next"].to_numpy(dtype=float),
+                    color=color,
+                    linewidth=1.8,
+                    zorder=3,
+                )
+                error = (
+                    predicted["predicted_b_next"] - predicted["b_next"]
+                ).to_numpy(dtype=float)
+                rmse = float(np.sqrt(np.mean(error**2)))
+                # An exact recovery of the line just drawn, not a new fit: the
+                # forecaster is affine in Delta P, so this is its own slope and
+                # intercept read back for the label placer.
+                line = linear_fit(
+                    predicted["delta_p"], predicted["predicted_b_next"]
+                )
+                entries.append(
+                    (rf"RMSE = {rmse:.0f}", color, predicted["delta_p"], line)
+                )
+                if model not in drawn:
+                    drawn.append(model)
+            labelled.append((ax, entries, level))
+
+            since = int(panel["steps_since_realignment"].iloc[0])
+            ax.set_title(
+                f"steps since re-alignment: {since}",
+                loc="right",
+                fontsize=6.5,
+                color=style.MUTED,
+                pad=3,
+            )
+        axes[row][0].set_ylabel(name, fontsize=9)
+
+    stride = len(trunks) or 1
+    # Delta P shared within a trait and not across, exactly as the decay grid
+    # shares it and for the same reason: across two traits it is read against a
+    # different persona vector and is not the same quantity.
+    _share_blocks(
+        [
+            [ax for row in axes[start:start + stride] for ax in row]
+            for start in range(0, len(panels), stride)
+        ],
+        x=True,
+    )
+    for ax in axes.flat:
+        ax.set_ylim(*BEHAVIOUR_LIMITS)
+        ax.set_yticks(BEHAVIOUR_TICKS)
+    _label_outer(axes, bottom_rows=range(stride - 1, len(panels), stride))
+    for col, t in enumerate(checkpoints):
+        axes[0][col].annotate(
+            f"$t = {t}$",
+            xy=(0.5, 1.0),
+            xycoords="axes fraction",
+            xytext=(0, 15),
+            textcoords="offset points",
+            ha="center",
+            va="bottom",
+        )
+
+    handles: list[Artist] = [
+        plt.Line2D([], [], color=colors.get(model, style.SECONDARY_INK), linewidth=1.8)
+        for model in drawn
+    ]
+    texts = [
+        f"{model_labels.get(model, model)} ({gloss})"
+        if (gloss := model_glosses.get(model))
+        else model_labels.get(model, model)
+        for model in drawn
+    ]
+    handles.append(plt.Line2D([], [], color=style.INK, linewidth=1.0))
+    texts.append(r"$b_t$ (level before the step)")
+    if "probe" in df:
+        mark_handles, mark_texts = dataset_legend(sorted(set(df["probe"])))
+        handles += mark_handles
+        texts += mark_texts
+    ncol = min(5, len(handles))
+    fig.legend(
+        handles,
+        texts,
+        loc="lower center",
+        ncol=ncol,
+        bbox_to_anchor=(0.5, 0.0),
+        title=rf"Fitted on {series_label}" if series_label else None,
+    )
+    _layout_grid(
+        fig,
+        axes.flat,
+        xlabel=(
+            rf"{xlabel} ({series_label})" if series_label else xlabel
+        ),
+        ylabel=ylabel,
+        legend_rows=-(-len(handles) // ncol) + (1 if series_label else 0),
+    )
     for ax, entries, level in labelled:
         _label_fits(ax, entries, rules=(level,))
     return fig
