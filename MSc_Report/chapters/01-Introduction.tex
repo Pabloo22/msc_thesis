@@ -51,18 +51,38 @@ A persona feature, or persona vector, can be understood as a linear direction in
 % To extract it, the model answers the same set of questions twice, once with a system prompt that encourages the trait and once with one that suppresses it. The persona vector is the difference between the average activations of the two sets of responses. Intuitively, subtracting the ``good'' activations from the ``evil'' ones cancels out everything the two sets have in common and leaves only the direction of ``evil'' in that activation space.
 
 
-\section{Research Questions and Contributions}
+\section{Research Questions}
 Projection differences, however, have only been shown to be useful for training on a single dataset. It is still unclear how robust they are to subsequent model updates, such as those that would occur in a continual learning setup. This project aims to reduce this gap in understanding by evaluating projection differences in a sequential fine-tuning setup. In particular, we formulated the following research questions:
 \begin{enumerate}
-    \item \textbf{Decay}: Do projection differences computed from the base model remain a good predictor of future behaviour under a sequential fine-tuning setting?
-    \item \textbf{History dependence}: How does previous fine-tuning steps influence future misalignment propensity? In particular, we study the following sub-questions:
+    \item \textbf{Decay (RQ1)}: Do projection differences computed from the base model remain a good predictor of future behaviour under a sequential fine-tuning setting? We also asked the following sub-question:
+    \begin{enumerate}
+        \item How does updating each of the projection difference's components (persona vector, encoder model, and model's answers) contribute to recovering prediction power?
+    \end{enumerate}
+    \item \textbf{History dependence (RQ2)}: How do previous fine-tuning steps influence future misalignment propensity? In particular, we study the following sub-questions:
     \begin{enumerate}
         \item Is a recently re-aligned model more prone to future misalignment?
-        \item Does training in benign datasets prevents misalignment in future updates?
+        \item Does training on benign datasets prevent misalignment in future updates?
     \end{enumerate}
 \end{enumerate}
 
-\subsection{Contributions}
+\section{Contributions}
+% TODO
+To answer these questions, we built upon the methodology proposed by \citet{chen2025persona_vectors} and extended it to a sequential fine-tuning setting. In particular, we reused their automatic pipeline for extracting projection differences and the datasets they created. We also used the same trait-scoring methodology (e.g., the same LLM judge) and one of the base models they tested (Qwen2.5-7B-Instruct \citep{qwen2025qwen25technicalreport}) to ensure our results are comparable with theirs. The contributions of this project are the following:
+
+To answer RQ1, we fine-tuned Qwen2.5-7B-Instruct using LoRA\footnote{LoRA stands for Low-Rank Adaptation and is a form of parameter-efficient fine-tuning. For more details, see \Cref{subsec:lora}} \citep{hu2022lora} in three different trajectories. One trajectory consisted of six benign datasets, while the other two alternated between trait-eliciting datasets and benign ones. Then, using 8 probe datasets, we tracked the evolution of the performance of the projection differences computed before any fine-tuning ($\Delta P_0$).
+
+We also tracked the performance of progressively updated projection differences. The projection difference is composed of three elements: It requires computing a persona vector $\mathbf{v}$, generating answers for the dataset questions, and reading the activations from a model (which could be the base one ($\mathcal{M}_0$), or the one it was just updated ($\mathcal{M}_t$). The first rung of this ladder updates only the encoder model, as this is the cheapest part to update since it does not require generating new answers. Thus, $\mathcal{M}_t$ would process the answers that $\mathcal{M}_0$ generated, and we would compare its activation along the base persona vector ($\mathbf{v}_0$). We denoted it $\Delta \hat{P}^{(\mathbf{v}_0)}_t$. The next rung, $\Delta \hat{P}_t$, uses the updated persona vector $\mathbf{v}_t$, but it still reads the answers that $\mathcal{M}_0$ produced. Finally, the fully updated projection difference is $\Delta P_t$, which recomputes the answers and the persona vector and uses $\mathcal{M}_t$ to encode these answers.
+
+The results were mixed: On the one hand, despite being outdated, the predictive power of $\Delta P_0$ for future scores remained high for the trajectory consisting only of benign datasets for the six steps and both traits. We also got similar results for the other two trajectories and the evil trait. However, for one of the trajectories, $\Delta P_0$'s performance plummeted after 5 steps of fine-tuning, while the performance of the updated version, $\Delta P_t$, remained high. Furthermore, updating indiv
+
+
+
+
+To compute the projection differences we employed 8 probe datasets. After each fine-tuning step, we employed 8 probe datasets to evaluate the original projection difference performance (the one computed before any training happened).
+
+compute a correlation between the trait score of the model after training on each of them with 
+
+After each fine-tuning step, we evaluated the correlation between projection differences that was computed before any fine-tuning step happened on eight probe datasets ($\Delta P_0$) and two traits: ``evil'' and ``sycophancy''\footnote{Sycophancy is the tendency to tailor its responses to agree with a user's perceived beliefs, opinions, or preferences, even when doing so results in inaccurate or unobjective information.}. Results shown 
 
 \section{Project's Structure}
 
