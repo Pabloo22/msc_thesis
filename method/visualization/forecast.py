@@ -355,12 +355,11 @@ BIASED_MODELS = tuple(f.name for f in FORECASTERS if not f.refits)
 #: refit bounds what any of them could do.
 CORRECTION_MODELS = ("step0", "step0_z", "step0_b", "oracle")
 
-#: What the recalibration grid draws: both targets of the frozen line, and the
-#: refit. Three lines is what a panel this size holds, and these three are the
-#: ones whose *shapes* differ -- the level fit ignores $b_t$ entirely, so
-#: unlike the other two its line does not shift with the checkpoint. That
-#: figure exists to show the contrast, so it carries both targets.
-RECALIBRATION_MODELS = TARGET_MODELS
+#: What the recalibration grid draws: the level prediction carried from
+#: $M_0$, against the line refitted on the checkpoint. The change-target fit
+#: is excluded because a prediction of $b_{t+1}$ belongs on the level target.
+RECALIBRATION_MODELS = ("step0_level", "oracle")
+RECALIBRATION_LABELS = {"step0_level": "Prediction", "oracle": "Oracle"}
 
 #: What the predicted-against-actual grid draws: the level fit against the
 #: refit.

@@ -715,7 +715,14 @@ class TestRecalibrationGrid:
         from method.visualization import figures
 
         predictions = self._predictions(frames)
-        fig = figures.recalibration_grid(predictions, trunks=["c"], checkpoints=[3])
+        fig = figures.recalibration_grid(
+            predictions,
+            trunks=["c"],
+            checkpoints=[3],
+            models=forecast.RECALIBRATION_MODELS,
+            model_labels=forecast.RECALIBRATION_LABELS,
+            xlabel=r"Projection difference $\Delta P_0$",
+        )
         try:
             ax = fig.axes[0]
             scattered = [
@@ -727,20 +734,40 @@ class TestRecalibrationGrid:
             assert len(scattered) == len(DELTA_P_0)
             # One line per model, plus the b_t rule.
             assert len(ax.lines) == 1 + len(forecast.RECALIBRATION_MODELS)
+            fits = [
+                line
+                for line in _calibration_lines(ax)
+                if line.get_color() != figures.style.INK
+            ]
+            assert {line.get_color() for line in fits} == {
+                figures.style.BLUE,
+                figures.style.ORANGE,
+            }
+            assert len(fits) == 2
+            assert {line.get_linestyle() for line in fits} == {"-"}
+            assert r"Projection difference $\Delta P_0$" in {
+                text.get_text() for text in fig.texts
+            }
+            legend = fig.legends[0]
+            assert [text.get_text() for text in legend.get_texts()[:3]] == [
+                "Prediction",
+                "Oracle",
+                r"$b_t$",
+            ]
+            assert legend.get_title().get_text() == ""
         finally:
             plt.close(fig)
 
-    def test_the_frozen_line_is_the_same_line_at_every_checkpoint(
+    def test_the_prediction_line_is_the_same_line_at_every_checkpoint(
         self, frames
     ) -> None:
-        r"""Which is what "not recalibrating" means, and what the gap measures.
+        r"""The $M_0$ level prediction is carried unchanged across checkpoints.
 
-        $M_0$'s map from $\Delta P$ to $\Delta b$ never changes, so on a
-        $b_{t+1}$ axis its line is one fixed line shifted by the level the
-        checkpoint started from. Only the refit moves.
+        Its map from $\Delta P$ to $b_{t+1}$ never consults the checkpoint's
+        current behaviour level, so only the oracle line moves.
         """
         predictions = self._predictions(frames)
-        frozen = predictions[predictions["model"] == "step0"]
+        frozen = predictions[predictions["model"] == "step0_level"]
         slopes = set()
         for _, panel in frozen.groupby(list(forecast.CHECKPOINT)):
             fit = linear_fit(panel["delta_p"], panel["predicted_b_next"])
@@ -783,6 +810,14 @@ class TestRecalibrationGrid:
 
 
 class TestForecastGrid:
+    def test_the_pair_uses_blue_and_orange(self) -> None:
+        from method.visualization import figures
+
+        assert {
+            figures.FORECAST_COLORS[model]
+            for model in forecast.FORECAST_GRID_MODELS
+        } == {figures.style.BLUE, figures.style.ORANGE}
+
     def test_the_level_forecast_pins_the_horizontal_axis(self, frames) -> None:
         r"""Why this grid draws the level fit: its x coordinate does not move.
 

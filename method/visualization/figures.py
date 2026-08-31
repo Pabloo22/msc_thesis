@@ -845,8 +845,6 @@ class _DecaySeries:
     #: The symbol the series is written as, without math delimiters.
     symbol: str
     color: str
-    #: What the legend says the series is, beyond its symbol.
-    gloss: str
 
     @property
     def label(self) -> str:
@@ -860,19 +858,14 @@ class _DecaySeries:
 #: :func:`_panel_series`), which is what lets one grid mix a trunk that was
 #: re-measured with two that were not.
 _DECAY_SERIES: tuple[_DecaySeries, ...] = (
-    _DecaySeries("delta_p_0", r"\Delta P_0", style.BLUE, "everything at $M_0$"),
+    _DecaySeries("delta_p_0", r"\Delta P_0", style.BLUE),
     _DecaySeries(
         "delta_p_hat_v0",
         r"\Delta \hat{P}_t^{(\mathbf{v}_0)}",
         style.PURPLE,
-        "$M_0$'s axis",
     ),
-    _DecaySeries(
-        "delta_p_hat_t", r"\Delta \hat{P}_t", style.ORANGE, "$M_0$'s answers"
-    ),
-    _DecaySeries(
-        "delta_p_full_t", r"\Delta P_t", style.GREEN, "nothing approximated"
-    ),
+    _DecaySeries("delta_p_hat_t", r"\Delta \hat{P}_t", style.GREEN),
+    _DecaySeries("delta_p_full_t", r"\Delta P_t", style.ORANGE),
 )
 
 
@@ -1302,8 +1295,8 @@ def decay_scatter_grid(
     ageing and a column as three trajectories at the same depth; the traits
     stack as blocks of rows. Each panel holds the ``K`` probe datasets once per
     series it has a complete column for -- against the frozen $\Delta P_0$ in
-    blue, $\Delta \hat{P}_t$ in orange, and, where it was measured,
-    $\Delta P_t$ in green (:data:`_DECAY_SERIES`) -- and each fit's $r$ printed
+    blue, $\Delta \hat{P}_t$ in green, and, where it was measured,
+    $\Delta P_t$ in orange (:data:`_DECAY_SERIES`) -- and each fit's $r$ printed
     beside the line it was measured from (:func:`_label_fits`). The hypothesis
     is visible as the blue fit flattening left-to-right while the others do
     not.
@@ -1500,8 +1493,8 @@ def decay_scatter_grid(
         plt.Line2D([], [], color=series.color, linewidth=1.8) for series in keys
     ]
     handles.append(plt.Line2D([], [], color=style.INK, linewidth=1.0))
-    texts = [f"{series.label} ({series.gloss})" for series in keys]
-    texts.append(r"$b_t$ (level before the step)")
+    texts = [series.label for series in keys]
+    texts.append(r"$b_t$")
     if "probe" in df:
         mark_handles, mark_texts = dataset_legend(sorted(set(df["probe"])))
         handles += mark_handles
@@ -1532,15 +1525,25 @@ def decay_scatter_grid(
 #: .FORECASTERS` names them. Colour is the only channel separating the models
 #: in a forecast panel -- the marks already spend shape and fill on the dataset
 #: -- so the frozen line takes the same blue $\Delta P_0$ wears in the decay
-#: grid, and the refit the same green $\Delta P_t$ does: in both figures those
+#: grid, and the refit the same orange $\Delta P_t$ does: in both figures those
 #: two are "what you measured at $M_0$" against "what the checkpoint would
 #: really say".
 FORECAST_COLORS = {
     "step0": style.BLUE,
-    "step0_level": style.PURPLE,
+    "step0_level": style.BLUE,
     "step0_z": style.PLUM,
-    "step0_b": style.ORANGE,
-    "oracle": style.GREEN,
+    "step0_b": style.PURPLE,
+    "oracle": style.ORANGE,
+}
+
+#: Recalibration styles keep the prediction and oracle solid; colour carries
+#: their identity.
+FORECAST_LINESTYLES: dict[str, str | tuple] = {
+    "step0": "solid",
+    "step0_level": "solid",
+    "step0_z": "dashdot",
+    "step0_b": "dotted",
+    "oracle": "solid",
 }
 
 #: Ticks on both axes of a forecast panel. Sparser than
@@ -1805,6 +1808,7 @@ def recalibration_grid(
     models: Sequence[str] | None = None,
     model_labels: Mapping[str, str] | None = None,
     model_colors: Mapping[str, str] | None = None,
+    model_linestyles: Mapping[str, str | tuple] | None = None,
     model_glosses: Mapping[str, str] | None = None,
     series_label: str | None = None,
     xlabel: str = r"Projection difference $\Delta P$",
@@ -1845,8 +1849,8 @@ def recalibration_grid(
     model *more* of the trait. Each line is labelled with its RMSE about the
     points (:func:`_label_fits`).
 
-    ``series_label`` names the projection difference on the x axis. One grid
-    draws one series, since the models are spending the colour channel.
+    ``series_label`` names the projection difference on the x axis. It is not
+    repeated as a legend title: the axis already states what was fitted.
     """
     style.apply_style()
     trunks = list(trunks) if trunks else sorted(df["trunk"].unique())
@@ -1857,6 +1861,7 @@ def recalibration_grid(
     model_labels = model_labels or {}
     model_glosses = model_glosses or {}
     colors = {**FORECAST_COLORS, **(model_colors or {})}
+    linestyles = {**FORECAST_LINESTYLES, **(model_linestyles or {})}
     blocks = _facets(df, traits, trait_labels, column="trait")
     panels: list[tuple[pd.DataFrame, str, str]] = []
     for _, frame, trait_label in blocks:
@@ -1926,6 +1931,7 @@ def recalibration_grid(
                     predicted["delta_p"].to_numpy(dtype=float),
                     predicted["predicted_b_next"].to_numpy(dtype=float),
                     color=color,
+                    linestyle=linestyles.get(model, "solid"),
                     linewidth=1.8,
                     zorder=3,
                 )
@@ -1983,7 +1989,13 @@ def recalibration_grid(
         )
 
     handles: list[Artist] = [
-        plt.Line2D([], [], color=colors.get(model, style.SECONDARY_INK), linewidth=1.8)
+        plt.Line2D(
+            [],
+            [],
+            color=colors.get(model, style.SECONDARY_INK),
+            linestyle=linestyles.get(model, "solid"),
+            linewidth=1.8,
+        )
         for model in drawn
     ]
     texts = [
@@ -1993,7 +2005,7 @@ def recalibration_grid(
         for model in drawn
     ]
     handles.append(plt.Line2D([], [], color=style.INK, linewidth=1.0))
-    texts.append(r"$b_t$ (level before the step)")
+    texts.append(r"$b_t$")
     if "probe" in df:
         mark_handles, mark_texts = dataset_legend(sorted(set(df["probe"])))
         handles += mark_handles
@@ -2005,7 +2017,6 @@ def recalibration_grid(
         loc="lower center",
         ncol=ncol,
         bbox_to_anchor=(0.5, 0.0),
-        title=rf"Fitted on {series_label}" if series_label else None,
     )
     _layout_grid(
         fig,
@@ -2014,7 +2025,7 @@ def recalibration_grid(
             rf"{xlabel} ({series_label})" if series_label else xlabel
         ),
         ylabel=ylabel,
-        legend_rows=-(-len(handles) // ncol) + (1 if series_label else 0),
+        legend_rows=-(-len(handles) // ncol),
     )
     for ax, entries, level in labelled:
         _label_fits(ax, entries, rules=(level,))

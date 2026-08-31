@@ -1052,7 +1052,7 @@ class TestDecayScatterGrid:
         # Each r is printed beside its own line and in its own colour, so the
         # text says the number and the position says whose it is.
         printed = {label.get_color(): label.get_text() for label in _fit_labels(ax)}
-        assert set(printed) == {style.BLUE, style.ORANGE}
+        assert set(printed) == {style.BLUE, style.GREEN}
         assert all(text.startswith("$r$ = ") for text in printed.values())
 
     def test_a_measured_panel_gains_the_recomputed_series(self) -> None:
@@ -1119,7 +1119,7 @@ class TestDecayScatterGrid:
         assert len(scatters) == 2
         assert {label.get_color() for label in _fit_labels(ax)} == {
             style.BLUE,
-            style.GREEN,
+            style.ORANGE,
         }
 
     def test_a_series_kept_out_of_the_panels_is_kept_out_of_the_legend(self) -> None:
@@ -1128,6 +1128,17 @@ class TestDecayScatterGrid:
         ).legends
         keys = [text.get_text() for text in legend.get_texts()]
         assert not any(key.startswith(r"$\Delta \hat{P}_t$") for key in keys)
+
+    def test_the_line_keys_have_no_parenthetical_glosses(self) -> None:
+        rows = _with_recomputed(_decay_rows())
+        (legend,) = figures.decay_scatter_grid(
+            rows, series=["delta_p_0", "delta_p_full_t"]
+        ).legends
+        assert [text.get_text() for text in legend.get_texts()[:3]] == [
+            r"$\Delta P_0$",
+            r"$\Delta P_t$",
+            r"$b_t$",
+        ]
 
     def test_all_four_series_draw_when_all_are_measured(self) -> None:
         rows = _with_recomputed(

@@ -1055,9 +1055,8 @@ def _forecast_figures(
         trunks=trunks,
         trunk_labels=trunk_labels,
         models=forecast.RECALIBRATION_MODELS,
-        model_labels=forecast.FORECASTER_LABELS,
-        model_glosses=glosses,
-        series_label=projection,
+        model_labels=forecast.RECALIBRATION_LABELS,
+        xlabel=r"Projection difference $\Delta P_0$",
     )
     _emit(fig, "exp2_recalibration_grid", out_dir, saved)
 

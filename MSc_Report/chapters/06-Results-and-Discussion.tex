@@ -51,12 +51,21 @@ scale, and smaller is better --- the reverse of the tables above.
 
 \begin{figure}[H]
     \centering
+    \includegraphics[width=\linewidth]{plots/real/exp2/exp2_recalibration_grid.pdf}
+    \caption{Behaviour reached after the step against $\Delta P_0$, with the
+    prediction fitted at $M_0$ and carried forward shown against an oracle
+    refitted at each checkpoint.}
+    \label{fig:recalibration-grid}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
     \includegraphics[width=\linewidth]{plots/real/exp2/exp2_forecast_grid.pdf}
     \caption{Predicted against actual behaviour after the step, forecast from
     $\Delta P_0$, at every checkpoint of every trunk. A forecast is right when
     its cloud lies on the diagonal, so vertical spread about that line is the
     RMSE printed beside it and a cloud sitting wholly above or below it is a
-    systematic bias. Blue is $M_0$'s line carried forward; green is the same
+    systematic bias. Blue is $M_0$'s line carried forward; orange is the same
     probes refitted at the checkpoint. The diagonal is the only line drawn: a
     forecaster's own line is already spent placing the points along the
     horizontal axis, which is what makes the diagonal the thing to read
