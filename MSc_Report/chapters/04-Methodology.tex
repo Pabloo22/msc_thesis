@@ -51,7 +51,22 @@ $\Delta P_t$ & Current axis $\mathbf{v}_t$, current encoder  $\mathcal{M}_t$, cu
 
 \section{Sequential Fine-Tuning Protocol}
 \label{sec:protocol}
-In our specific instantiation of the framework above, we considered Qwen2.5-7B-Instruct as the pre-SFT model $\mathcal{M}_0$ and studied it under a sequential fine-tuning setting. At each step, we fine-tune the previous checkpoint $\mathcal{M}_t$ on one of the 24 datasets employed by \citet{chen2025persona_vectors} (more details in \Cref{subsec:datasets}). Each fine-tuning uses LoRA adapters with $r = 16$ (rank) and $alpha = 16$, for the rest of the hyperparameters, we followed the same configuration as \citet{chen2025persona_vectors}. Using a lower rank, allowed us to save memory and speed up training, while still being able to reproduce similar results to the original paper (see \Cref{fig:validation}). The same optimisation and LoRA configuration is used at every step so that differences between checkpoints cannot be attributed to changes in the training procedure. The loss is computed only over the target assistant response rather than the preceding user prompt.The full list of hyperparameters is shown in \Cref{tab:hyperparameters}.
+Here, we describe how we produce trajectories in our experiments. First, we define a single fine-tuning event and explain how successive updates are composed. Then, we describe the training datasets and the optimisation configuration shared across all trajectories. Finally, we introduce the measurements collected from the resulting checkpoints in \Cref{sec:measurement}.
+
+\subsection{What Constitutes an Update Event}
+\label{sec:update-event}
+
+All main experiments begin from Qwen2.5-7B-Instruct \citep{qwen2025qwen25technicalreport}, one of the models evaluated by \citet{chen2025persona_vectors}. By using the same pre-SFT model ($\mathcal{M}_0$) and general settings, we can save computation by not needing to validate that those projection differences are still good predictors of future behaviour for $\mathcal{M}_1$, at least. We also avoid the need to ablate which layer we should read the activations $\mathbf{h}$ from. 
+
+Using the same pre-SFT model  allows us to study the sequential setting without first changing the model on which the original one-step projection-difference result was established.
+
+
+In our specific instantiation of the framework above, we considered Qwen2.5-7B-Instruct as the pre-SFT model $\mathcal{M}_0$ and studied it under a sequential fine-tuning setting. At each step, we fine-tune the previous checkpoint $\mathcal{M}_t$ on one of the 24 datasets employed by \citet{chen2025persona_vectors} (more details in \Cref{subsec:datasets}). Each fine-tuning uses LoRA adapters with $r = 16$ (rank) and $alpha = 16$, for the rest of the hyperparameters, we followed the same configuration as \citet{chen2025persona_vectors}. Using a lower rank, allowed us to save memory and speed up training, while still being able to reproduce similar results to the original paper (see \Cref{fig:validation}). The same optimisation and LoRA configuration is used at every step so that differences between checkpoints cannot be attributed to changes in the training procedure. The loss is computed only over the target assistant response rather than the preceding user prompt. The full list of hyperparameters is shown in \Cref{tab:hyperparameters}.
+
+\subsection{Training Corpora}
+\label{sec:corpora}
+We use the fine-tuning datasets introduced by \citet{chen2025persona_vectors}. The collection contains eight dataset families, each covering a different training domain. Every family is available in three versions: normal, misaligned I, and misaligned II.
+
 
 
 \subsection{Model and Fine-Tuning Configuration}
