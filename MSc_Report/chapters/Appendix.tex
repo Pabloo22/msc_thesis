@@ -33,33 +33,3 @@
     nearest zero at each checkpoint, over- and under-prediction counting alike.}
     \label{tab:forecast-bias}
 \end{table}
-
-\begin{table}[H]
-    \centering
-    \small
-    \setlength{\tabcolsep}{3pt}
-    \input{plots/real/exp2/exp2_forecast_correction_rmse.tex}
-    \caption{Whether the freely observable state of a checkpoint can stand in
-    for the fan-out a refit would need, scored on $\Delta P_0$ --- the rung
-    nothing at $M_t$ has refreshed, and so the one with something to correct.
-    Each correction rescales the stale projection by a gain regressed on the
-    checkpoint state, $g(z_t)$ on the latent state and $g(b_t)$ on the
-    behaviour level, with the gain fitted leave-one-trunk-out so that no
-    checkpoint is corrected by a model that has seen its own trajectory. Both
-    are as cheap to read as each other and far cheaper than re-running the
-    probes. The refit bounds what any of them could achieve.}
-    \label{tab:forecast-correction-rmse}
-\end{table}
-
-\begin{table}[H]
-    \centering
-    \small
-    \setlength{\tabcolsep}{3pt}
-    \input{plots/real/exp2/exp2_forecast_correction_bias.tex}
-    \caption{Mean signed error of the same three forecasts of $\Delta P_0$,
-    showing how much of each correction's gain is the removal of a systematic
-    over-prediction rather than a tightening of the scatter. The refitted
-    forecaster is again omitted, for the reason given in
-    Table~\ref{tab:forecast-bias}.}
-    \label{tab:forecast-correction-bias}
-\end{table}
