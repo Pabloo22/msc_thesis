@@ -130,42 +130,62 @@ def _frames() -> tuple[pd.DataFrame, pd.DataFrame]:
 
 
 class TestBaselineFits:
-    def test_fits_on_the_datasets_that_are_not_probes(self, frames) -> None:
-        """The probes are the test set, so M_0's line must not have seen them.
+    def test_a_line_is_never_fitted_on_the_dataset_it_predicts(self, frames) -> None:
+        """Leave-one-out: dataset $j$'s fold is fitted on the other datasets.
 
-        Fitted on the held-out pair alone, the line is exactly the law the
-        fixture was generated with; a fit that had leaked the probes in would
-        also be that line, so the assertion that separates them is on how many
-        points went in.
+        The fixture's law is exact, so both folds recover it and a slope
+        assertion alone cannot separate them. What separates them is
+        tampering: move one dataset's outcome and its *own* line must not
+        follow, while another dataset's line must.
         """
         _, fan = frames
-        held_out = fan[~fan["dataset"].isin(PROBES)]
-        assert set(held_out["dataset"]) == set(HELD_OUT)
+        target = PROBES[0]
+        tampered = fan.copy()
+        touched = tampered["dataset"] == target
+        tampered.loc[touched, "delta_b"] += 40.0
+        tampered.loc[touched, "b_next"] = (
+            tampered.loc[touched, "b_t"] + tampered.loc[touched, "delta_b"]
+        )
+        before = forecast.baseline_fits(fan)
+        after = forecast.baseline_fits(tampered)
+        own = lambda fits, d: fits.line(forecast.CHANGE, "evil", d)
+        assert own(after, target).slope == pytest.approx(own(before, target).slope)
+        other = PROBES[1]
+        assert own(after, other).slope != pytest.approx(own(before, other).slope)
 
-        fits = forecast.baseline_fits(fan, PROBES)
-        change = fits[forecast.CHANGE]["evil"]
+    def test_the_line_is_the_law_the_fixture_was_built_with(self, frames) -> None:
+        r"""Every fold recovers it, and the level target is it lifted by $b_0$."""
+        _, fan = frames
+        fits = forecast.baseline_fits(fan)
+        change = fits.line(forecast.CHANGE, "evil", PROBES[0])
         assert change.slope == pytest.approx(SLOPE)
         assert change.intercept == pytest.approx(INTERCEPT)
-        # The level target is the same line lifted by the level M_0 starts at.
-        level = fits[forecast.LEVEL]["evil"]
+        level = fits.line(forecast.LEVEL, "evil", PROBES[0])
         assert level.slope == pytest.approx(SLOPE)
         assert level.intercept == pytest.approx(INTERCEPT + B_0)
 
-    def test_a_fan_of_probes_alone_fits_nothing(self, frames) -> None:
-        """Holding the probes out of a probes-only fan leaves nothing to fit.
-
-        The honest answer is no line rather than one fitted on the points it is
-        about to be scored against.
-        """
+    def test_a_dataset_the_fan_never_covered_falls_back_to_the_whole_fan(
+        self, frames
+    ) -> None:
+        """Nothing leaks: a dataset nobody fine-tuned on is in no fit to begin
+        with, so it gets the line fitted on everything rather than no line."""
         _, fan = frames
-        probes_only = fan[fan["dataset"].isin(PROBES)]
-        fits = forecast.baseline_fits(probes_only, PROBES)
-        assert not any(fits.values())
+        fits = forecast.baseline_fits(fan)
+        unseen = fits.line(forecast.CHANGE, "evil", "not_a_dataset/normal")
+        whole = fits.line(forecast.CHANGE, "evil", forecast.WHOLE_FAN)
+        assert unseen is not None
+        assert unseen == whole
 
     def test_an_empty_fan_fits_nothing(self) -> None:
-        fits = forecast.baseline_fits(pd.DataFrame(), PROBES)
-        assert set(fits) == set(forecast.TARGETS)
-        assert not any(fits.values())
+        fits = forecast.baseline_fits(pd.DataFrame())
+        assert not fits
+        assert fits.line(forecast.CHANGE, "evil", PROBES[0]) is None
+
+    def test_a_fan_too_small_to_hold_one_out_fits_nothing(self, frames) -> None:
+        """Two datasets leave one point once one is held out, which is no line."""
+        _, fan = frames
+        pair = fan[fan["dataset"].isin(list(HELD_OUT)[:2])]
+        assert not forecast.baseline_fits(pair)
 
 
 # --- the reason the module exists -------------------------------------------
@@ -298,15 +318,29 @@ class TestPredictionFrame:
         stale = forecast.prediction_frame(rows, fan, series=["p0"])
         assert set(stale["trunk"]) == {"a", "c"}
 
-    def test_without_a_held_out_fan_only_the_refit_is_scored(self, frames) -> None:
-        """A sweep with no fan outside its probes can still report the ceiling."""
-        rows, fan = frames
-        probes_only = fan[fan["dataset"].isin(PROBES)]
-        predictions = forecast.prediction_frame(rows, probes_only, series=["p0"])
+    def test_without_any_fan_only_the_refit_is_scored(self, frames) -> None:
+        """A sweep with no base-model fan can still report the ceiling."""
+        rows, _ = frames
+        predictions = forecast.prediction_frame(rows, pd.DataFrame(), series=["p0"])
         frozen = predictions[predictions["model"] == "step0"]
         refit = predictions[predictions["model"] == "oracle"]
         assert frozen["predicted_b_next"].isna().all()
         assert refit["predicted_b_next"].notna().all()
+
+    def test_a_fan_of_probes_alone_still_forecasts(self, frames) -> None:
+        """Leave-one-out needs no non-probe datasets to hold anything out.
+
+        The old fixed split did: with the probes removed there was nothing
+        left to fit on, so a probes-only fan produced no line at all. Here
+        each probe is predicted by the line fitted on the *other* probes,
+        which is just as clean and needs no second set of datasets.
+        """
+        rows, fan = frames
+        probes_only = fan[fan["dataset"].isin(PROBES)]
+        predictions = forecast.prediction_frame(
+            rows, probes_only, series=["p0"], models=["step0"]
+        )
+        assert predictions["predicted_b_next"].notna().all()
 
     def test_unknown_series_is_refused(self, frames) -> None:
         rows, fan = frames
@@ -477,18 +511,52 @@ class TestGainCorrection:
         on.
         """
         rows, fan = frames
-        baselines = forecast.baseline_fits(fan, PROBES)
+        baselines = forecast.baseline_fits(fan)
         gains = forecast._gain_forecast(rows, "delta_p_0", baselines, ("b_t",))
         assert gains
         # Trunk C is flat, so a gain fitted on it alone predicts trunk A's
         # constant gain -- a number, and one that could not have come from A.
-        assert {trunk for _, trunk, _ in gains} == {"a", "c"}
+        assert {trunk for _, trunk, _, _ in gains} == {"a", "c"}
+
+    def test_a_gain_is_never_fitted_on_the_probe_it_corrects(self, frames) -> None:
+        """Leaving the trunk out is not enough: every trunk fans out over the
+        same probes, so a gain fitted on the others has still been shown how
+        this probe responds, and the correction would be part memory of it.
+
+        The property that says the probe is genuinely held out: move a probe's
+        behaviour change on the *other* trunks, and the gain that probe is
+        corrected by here must not budge. A second assertion checks the
+        tampering was visible at all, so this cannot pass for want of an
+        effect.
+        """
+        rows, fan = frames
+        baselines = forecast.baseline_fits(fan)
+        held_out = PROBES[0]
+        tampered = rows.copy()
+        elsewhere = (tampered["trunk"] != "a") & (tampered["probe"] == held_out)
+        tampered.loc[elsewhere, "delta_b"] += 20.0
+        tampered.loc[elsewhere, "b_next"] = (
+            tampered.loc[elsewhere, "b_t"] + tampered.loc[elsewhere, "delta_b"]
+        )
+
+        before = forecast._gain_forecast(rows, "delta_p_0", baselines, ("b_t",))
+        after = forecast._gain_forecast(tampered, "delta_p_0", baselines, ("b_t",))
+        on_a = [key for key in before if key[1] == "a"]
+        assert on_a
+        for key in on_a:
+            if key[3] == held_out:
+                assert after[key] == pytest.approx(before[key])
+        assert any(
+            after[key] != pytest.approx(before[key])
+            for key in on_a
+            if key[3] != held_out
+        )
 
     def test_one_trunk_cannot_leave_one_out(self, frames) -> None:
         """A single-trunk sweep has no other trajectory to fit the gain on."""
         rows, fan = frames
         one = rows[rows["trunk"] == "a"]
-        baselines = forecast.baseline_fits(fan, PROBES)
+        baselines = forecast.baseline_fits(fan)
         assert forecast._gain_forecast(one, "delta_p_0", baselines, ("b_t",)) == {}
 
     def test_a_correction_that_cannot_be_fitted_predicts_nothing(
@@ -503,11 +571,59 @@ class TestGainCorrection:
 
     def test_gain_frame_carries_the_state_it_is_regressed_on(self, frames) -> None:
         rows, fan = frames
-        baselines = forecast.baseline_fits(fan, PROBES)
+        baselines = forecast.baseline_fits(fan)
         gains = forecast.gain_frame(rows, "delta_p_0", baselines)
         assert not gains.empty
         assert set(forecast.GAIN_FEATURES) <= set(gains.columns)
         assert gains["gain"].notna().all()
+
+    def test_every_latent_coordinate_gets_its_own_corrector(self, frames) -> None:
+        """One two-parameter model per coordinate, beside the four-parameter one.
+
+        The point of the single-coordinate rows is that they cost the same as
+        the $g(b_t)$ control, so a correction that still fails cannot be
+        blamed on parameter count. If a coordinate ever stopped getting a row,
+        that argument would quietly go missing from the table.
+        """
+        rows, fan = frames
+        singles = [f"step0_{name}" for name in decay.Z_COMPONENTS]
+        assert set(singles) <= {f.name for f in forecast.FORECASTERS}
+        assert set(singles) <= set(forecast.CORRECTION_MODELS)
+        predictions = forecast.prediction_frame(
+            rows, fan, series=["p0"], models=[*singles, "step0_z"]
+        )
+        assert set(predictions["model"]) == {*singles, "step0_z"}
+        # Each is a different model, so on a trunk that drifts they disagree.
+        drifting = predictions[predictions["trunk"] == "a"]
+        spread = drifting.groupby(["t", "probe"])["predicted_b_next"].nunique()
+        assert (spread > 1).any()
+
+    def test_holding_a_probe_out_solves_the_gain_on_the_others(
+        self, frames
+    ) -> None:
+        r"""The fixture's law is exact, so every gain is $1$ either way.
+
+        What the exclusion has to change is *which* points said so: attenuate
+        one probe alone and the whole-scatter gain moves, while the gain
+        solved without that probe stays where it was.
+        """
+        rows, fan = frames
+        baselines = forecast.baseline_fits(fan)
+        held_out = PROBES[0]
+        tampered = rows.copy()
+        touched = tampered["probe"] == held_out
+        tampered.loc[touched, "delta_b"] = tampered.loc[touched, "delta_b"] * 0.5
+        tampered.loc[touched, "b_next"] = (
+            tampered.loc[touched, "b_t"] + tampered.loc[touched, "delta_b"]
+        )
+
+        whole = forecast.gain_frame(tampered, "delta_p_0", baselines)
+        without = forecast.gain_frame(
+            tampered, "delta_p_0", baselines, without_probe=held_out
+        )
+        assert not without.empty
+        assert without["gain"].to_numpy() == pytest.approx(1.0)
+        assert not np.allclose(whole["gain"].to_numpy(), 1.0)
 
 
 # --- score_table ------------------------------------------------------------

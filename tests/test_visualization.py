@@ -83,6 +83,22 @@ class TestLinearFit:
         assert fit.slope == 0.0
         assert fit.intercept == pytest.approx(7.0)
 
+    def test_unmeasured_pairs_are_dropped(self) -> None:
+        """NaN is how this analysis spells "not measured" -- an un-backfilled
+        ``h_norm``, a $z_t$ source a run does not carry -- so a fit must read
+        the points it has rather than propagating the gap."""
+        fit = linear_fit([0.0, 1.0, np.nan, 2.0], [1.0, 3.0, 99.0, 5.0])
+        assert fit.slope == pytest.approx(2.0)
+        assert fit.intercept == pytest.approx(1.0)
+
+    def test_an_entirely_unmeasured_column_is_degenerate(self) -> None:
+        """Not an exception: ``np.polyfit`` raises ``LinAlgError`` on an
+        all-NaN column, which would take down a whole figure over a series
+        that simply was not measured."""
+        fit = linear_fit([np.nan, np.nan, np.nan], [1.0, 2.0, 3.0])
+        assert fit.slope == 0.0
+        assert fit.r2 == 0.0
+
     def test_predict_matches_slope_intercept(self) -> None:
         fit = linear_fit([0.0, 1.0], [0.0, 2.0])
         np.testing.assert_allclose(fit.predict([0.0, 5.0]), [0.0, 10.0], atol=1e-12)
