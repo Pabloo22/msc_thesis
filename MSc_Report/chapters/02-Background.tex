@@ -158,6 +158,13 @@ While fine-tuning can update every parameter in the model, doing so is expensive
 \end{equation}
 Here, $\alpha/r$ controls the scale of the update.
 
+Rank-stabilised LoRA (RSLoRA) changes only this scaling factor, replacing $\alpha/r$ with $\alpha/\sqrt{r}$:
+\begin{equation}
+    \mathbf{W}' = \mathbf{W} + \frac{\alpha}{\sqrt{r}}\mathbf{B}\mathbf{A}.
+    \label{eq:rslora_update}
+\end{equation}
+Under the standard initialisation of the LoRA matrices, the $1/r$ factor can cause gradients to collapse as the rank increases. The $1/\sqrt{r}$ factor is designed to keep the adapter outputs and backward gradients stable with respect to rank, allowing the additional capacity of higher-rank adapters to be used more effectively \citep{kalajdzievski2023rank}. The experiments in this project use this RSLoRA scaling.
+
 \section{Emergent Misalignment}
 \label{sec:em}
 As we mentioned in the Introduction, emergent misalignment is the phenomenon in which fine-tuning a model on a narrow, incorrect dataset causes misalignment in unrelated domains. Crucially, the model is not trained to produce these broader misaligned behaviours; their appearance beyond the fine-tuning task is what makes the effect emergent. For example, \cite{betley2025emergent} found that training GPT-4o on insecure code significantly increased the probability that the model would produce stereotypically evil answers. \Cref{fig:em_examples} shows some of these examples.

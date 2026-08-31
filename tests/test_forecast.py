@@ -30,6 +30,7 @@ from tests.test_decay import (
     build_axis,
     build_decay,
     build_regen,
+    build_v0regen,
     temp_trajectories,  # noqa: F401  (autouse fixture, imported for its effect)
     write_run,
 )
@@ -121,7 +122,7 @@ def _frames() -> tuple[pd.DataFrame, pd.DataFrame]:
     rows = decay.decay_frame(
         build_decay(),
         validation,
-        [build_axis(), build_regen()],
+        [build_axis(), build_regen(), build_v0regen()],
     )
     return rows, decay.validation_frame(validation)
 

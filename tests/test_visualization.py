@@ -1156,15 +1156,16 @@ class TestDecayScatterGrid:
             r"$b_t$",
         ]
 
-    def test_all_four_series_draw_when_all_are_measured(self) -> None:
+    def test_every_series_draws_when_all_are_measured(self) -> None:
         rows = _with_recomputed(
-            _decay_rows(), columns=("delta_p_hat_v0", "delta_p_full_t")
+            _decay_rows(),
+            columns=("delta_p_hat_v0", "delta_p_full_v0", "delta_p_full_t"),
         )
         fig = figures.decay_scatter_grid(rows, trunks=["a"])
         scatters = [
             c for c in fig.axes[0].collections if isinstance(c, PathCollection)
         ]
-        assert len(scatters) == 4
+        assert len(scatters) == len(decay.SERIES)
         keys = [t.get_text() for t in fig.legends[0].get_texts()]
         for label in decay.SERIES_LABELS.values():
             assert any(k.startswith(label) for k in keys), label
@@ -1932,10 +1933,12 @@ class TestExp2Driver:
         assert make_plots._present_series(fits) == ["p0", "hat_t", "full_t"]
 
     def test_the_series_keep_the_designs_order(self) -> None:
-        """The ladder of what is allowed to be current at $M_t$, which is how
-        the figures are read left to right."""
+        """$\\Delta P_0$ first, then the square of what is allowed to be
+        current at $M_t$, which is how the figures are read left to right."""
         assert make_plots._present_series(
-            _fits(trunks=("a",)).assign(corr_hat_v0=0.9, corr_full_t=0.9)
+            _fits(trunks=("a",)).assign(
+                corr_hat_v0=0.9, corr_full_v0=0.9, corr_full_t=0.9
+            )
         ) == list(decay.SERIES)
 
     def test_series_are_ordered_by_checkpoint(self) -> None:

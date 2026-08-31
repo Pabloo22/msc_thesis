@@ -247,6 +247,31 @@ $\Delta P_0$ and $\Delta \hat{P}_t$ cannot.
 nohup bash scripts/run_family.sh EXP2_REGEN --trunks a > exp2_regen_a.log 2>&1 &
 ```
 
+**Phase 7c (optional) — $z_t$ over the checkpoint's own answers.** The trunks again, with
+every checkpoint answering the *neutral* prompts itself instead of re-reading $M_0$'s
+answers, so `h_neutral` (and hence $p_t$ and $q_t$) carries behavioural drift as well as
+representation drift. Trains nothing, for the same reason phase 7b does not. Small: 500
+prompts generated per checkpoint plus a 50-second forward pass, against the ~40 000
+prompts phase 7b generates, so all three trunks are affordable. See
+[`docs/h_neutral_regen.md`](docs/h_neutral_regen.md).
+```bash
+nohup bash scripts/run_family.sh EXP2_HREGEN > exp2_hregen.log 2>&1 &
+poetry run python -m method.visualization.make_plots --experiment exp2_decay --source current
+```
+
+**Phase 7d (free, after 7b) — $\Delta P_t^{(\mathbf{v}_0)}$.** The fourth corner of the
+square: the checkpoint's own answers from phase 7b, projected onto the *base* model's
+persona vector. Phases 7a and 7b each move one thing, but the step between them moves
+the axis and the answers at once, so neither factor can be read off it alone; this
+closes the square and gives each of them a contrast at both levels of the other. Costs
+nothing wherever phase 7b has run — the regenerated answers and their hidden states are
+cached per checkpoint and dataset, independently of the axis, so this re-projects
+tensors already on disk with no generation and no forward pass. Must run where the
+store is, and only for the trunks phase 7b covered.
+```bash
+nohup bash scripts/run_family.sh EXP2_V0REGEN --trunks a > exp2_v0regen_a.log 2>&1 &
+```
+
 **Plotting.** Asking for any one exp2 family collects the rest — the decay grid's
 $t = 0$ column comes from the validation fan, the reseed family is only meaningful
 overlaid on the trunk it replicates, and the regen family adds a series to figures the

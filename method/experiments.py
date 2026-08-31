@@ -19,6 +19,7 @@ from method.config import (
     DeltaPConfig,
     DeltaPMode,
     EvalConfig,
+    HNeutralSource,
     JudgeBackend,
     JudgeConfig,
     LatentConfig,
@@ -126,6 +127,8 @@ EXP2_DECAY = "exp2_decay"  # sections 3-4: three trunks, each fanned out at ever
 EXP2_RESEED = "exp2_reseed"  # section 6c: the trunks again under other seeds
 EXP2_AXIS = "exp2_axis"  # the trunks again, re-projected onto the base axis
 EXP2_REGEN = "exp2_regen"  # the trunks again, re-answering the probes at every t
+EXP2_V0REGEN = "exp2_v0regen"  # re-answered probes against the base axis
+EXP2_HREGEN = "exp2_hregen"  # the trunks again, re-answering the neutral prompts
 EXP3 = "exp3"  # "Is a model trained on trait-eliciting data more prone to EM?"
 EXP4 = "exp4"  # "Does Data Diversity Hinder Emergent Realignment or Favor EM?"
 #: Section 6d: how much of z_t is the base measurement rather than the model
@@ -399,16 +402,20 @@ def _exp2_config(
     measure: MeasurementLevel = MeasurementLevel.FULL,
     predicted: PredictedSource = PredictedSource.BASE,
     axis: ProjectionAxis = ProjectionAxis.CURRENT,
+    h_neutral: HNeutralSource = HNeutralSource.BASE,
 ) -> TrajectoryConfig:
     """One exp2 trajectory at the requested scale.
 
-    ``predicted`` and ``axis`` override only which DeltaP view is measured,
-    leaving the scale preset's ``mode`` and ``n_samples`` alone: those settings
-    are independent, and a local run must keep its subsample whichever
-    projection it takes over it.
+    ``predicted``, ``axis`` and ``h_neutral`` override only *which* quantity is
+    measured, leaving the scale preset's other fields alone -- ``mode`` and
+    ``n_samples`` for DeltaP, ``n_neutral`` and ``neutral_prompts_name`` for
+    the latent state. Those settings are independent, and a local run must keep
+    its subsample and its 32-prompt neutral set whichever projection or whose
+    answers it takes over them.
     """
     model, eval_cfg, delta_p, latent = _scale_presets(local)
     delta_p = dataclasses.replace(delta_p, predicted=predicted, axis=axis)
+    latent = dataclasses.replace(latent, h_neutral_source=h_neutral)
     return TrajectoryConfig(
         name=f"{name}{'_local' if local else ''}",
         trait=trait,
@@ -769,6 +776,176 @@ def build_exp2_regen_configs(
     ]
 
 
+def build_exp2_v0regen_configs(
+    *,
+    seeds: Sequence[int] = (EXP2_SEED,),
+    measure_traits: Sequence[str] = MEASURE_TRAITS,
+    trunks: Mapping[str, Sequence[StepConfig]] = EXP2_TRUNKS,
+    probes: Sequence[StepConfig] = EXP2_PROBES,
+    local: bool = False,
+) -> list[TrajectoryConfig]:
+    r"""The re-answered probes again, projected onto $v^{(0)}$ instead.
+
+    The fourth corner of the 2x2 in :class:`method.config.DeltaPView`:
+    $\Delta P_t^{(\mathbf{v}_0)}$, with the checkpoint answering the probe
+    prompts for itself and the projection taken along the base model's axis.
+
+    It exists because the other three do not identify either factor on their
+    own. :func:`build_exp2_axis_configs` moves the axis with the answers frozen
+    and :func:`build_exp2_regen_configs` moves the answers with the axis
+    current, so the only path between them crosses both at once: the step from
+    $\Delta \hat{P}_t^{(\mathbf{v}_0)}$ to $\Delta P_t$ rotates the axis *and*
+    refreshes the prediction, and a difference measured over it cannot be
+    attributed to either. With this family the four views close a square, and
+    each factor has a contrast at both levels of the other -- which is exactly
+    what RQ1's sub-question asks for: how much of the lost prediction power
+    each component recovers, separately.
+
+    **It is free wherever the regen family has run.** The expensive half is
+    generating $M_t$'s answers and taking their hidden states, and that work is
+    cached per checkpoint and dataset under ``delta_p_predicted_current``,
+    keyed independently of both the axis and the trait (see
+    ``steps._predicted_dir``). This family therefore loads two tensors that
+    already exist, loads $v^{(0)}$, and does the arithmetic -- the same deal
+    :func:`build_exp2_axis_configs` gets over the decay family, one rung up.
+    ``compute_delta_p`` defers materialising the checkpoint until something
+    needs a forward pass, so it does not even replay the adapter chain.
+
+    Which is why all three trunks and both traits are emitted, matching
+    :func:`build_exp2_axis_configs` rather than the cost-scoped regen family.
+    A trunk the regen family skipped is not free here -- there are no cached
+    answers to re-project, so it would generate them -- but it is also the
+    trunk whose $\Delta P_t$ column is missing anyway, so the two families are
+    run over the same trunks in practice and the collector reports the same
+    gaps for both.
+
+    Deliberately identical to :func:`build_exp2_decay_configs`' trunks in
+    everything ``weights_key`` hashes, so it replays checkpoints that already
+    exist and trains nothing. The name differs, so it writes its own
+    ``trajectory.json`` rather than overwriting any other family's.
+
+    Single views on both settings rather than ``BOTH`` on either, for the
+    reason the two families it sits between give: the other three corners are
+    already measured and already plotted, and asking for them here would only
+    re-read them under a second name. The figures join the families on
+    ``(trait, trunk, seed, t, probe)`` instead (see
+    :func:`method.visualization.decay.decay_frame`).
+
+    No branches, and one seed, for the reasons
+    :func:`build_exp2_regen_configs` gives: this varies how a fixed checkpoint
+    is measured, not which checkpoint is reached, and $\Delta b_{t+1}$ is a
+    property of the probe fine-tune rather than of how the projection was
+    taken.
+    """
+    check_exp2_feasibility(trunks, probes)
+    return [
+        _exp2_config(
+            name=f"exp2_v0regen_trunk_{trunk}_{trait}",
+            trait=trait,
+            steps=tuple(drivers),
+            seed=seed,
+            group=EXP2_V0REGEN,
+            labels=(("role", "trunk"), ("trunk", trunk)),
+            local=local,
+            probes=probes,
+            axis=ProjectionAxis.BASE,
+            predicted=PredictedSource.CURRENT,
+        )
+        for trait in measure_traits
+        for seed in seeds
+        for trunk, drivers in trunks.items()
+    ]
+
+
+def build_exp2_hregen_configs(
+    *,
+    seeds: Sequence[int] = (EXP2_SEED,),
+    measure_traits: Sequence[str] = MEASURE_TRAITS,
+    trunks: Mapping[str, Sequence[StepConfig]] = EXP2_TRUNKS,
+    probes: Sequence[StepConfig] = EXP2_PROBES,
+    local: bool = False,
+) -> list[TrajectoryConfig]:
+    r"""Every trunk again, with each checkpoint answering the neutral prompts.
+
+    $z_t$ is read off ``h_neutral``, the mean activation over a fixed set of
+    trait-neutral prompts. Every series measured so far takes that activation
+    over *$M_0$'s* answers: the base model's text is generated once and every
+    later checkpoint merely re-reads it. That is what makes $p_t$ and $q_t$
+    attributable to the representation -- the tokens are held still, so only
+    the encoder moves -- but it also means $z_t$ never sees what the checkpoint
+    would actually say. A model that has drifted far enough to answer the same
+    prompts differently is, on that measurement, only as drifted as its reading
+    of $M_0$'s answers makes it look.
+
+    This family measures the other one: each $M_t$ generates its own answers to
+    the neutral prompts, and ``h_neutral`` is the mean activation over *those*.
+    It is the $z_t$ analogue of :func:`build_exp2_regen_configs`, which does the
+    same for DeltaP's predicted term, and it inherits that family's trade --
+    behavioural drift is now inside the measurement rather than held out of it,
+    which is the point and also the reason it degrades once a checkpoint starts
+    producing degenerate text. Neither reading is the true one; RQ1's
+    sub-question is which of them keeps predicting $\Delta b_{t+1}$.
+
+    Cheaper than :func:`build_exp2_regen_configs`, and by a factor that decides
+    which to run first: this is one generation pass over the
+    ``n_neutral``-prompt set per checkpoint, where the regenerated DeltaP pays
+    one pass per *probe dataset* per checkpoint. All three trunks are emitted,
+    and ``scripts/run_family.sh EXP2_HREGEN --trunks a`` selects among them by
+    the ``trunk`` label exactly as the decay family does -- so an unrun trunk
+    shows up as missing in the collector rather than silently narrowing a
+    figure.
+
+    Deliberately identical to :func:`build_exp2_decay_configs`' trunks in
+    everything ``weights_key`` hashes -- model, seed, steps -- so it resolves to
+    the *same* checkpoints and replays adapters that already exist instead of
+    training anything. The name differs, so it writes its own
+    ``trajectory.json`` rather than overwriting the decay trunk's.
+
+    ``HNeutralSource.CURRENT`` rather than ``BOTH``: the frozen series for
+    these trunks is already measured and already plotted, and asking for it
+    again here would only re-read it under a second name. The two ``z`` blocks
+    do share one artifact in the store (``latent_cosine.json`` is keyed by
+    checkpoint and trait, not by source), so this family *adds* its source to
+    that file and leaves the frozen one untouched -- see
+    :func:`method.steps.compute_step_latent`. The figures join the families on
+    ``(trait, trunk, seed, t)``.
+
+    Both traits, because the expensive half is shared: the answers and their
+    hidden states depend on the checkpoint and the prompt set but not on the
+    trait, so the second trait adds two cosines against its own $v^{(t)}$ and
+    no generation at all.
+
+    Probes come along because they cost nothing here. Their DeltaP is keyed by
+    checkpoint, trait and dataset -- not by anything this family varies -- so on
+    a box that holds the decay trunk's measurements every probe is a cache hit,
+    and carrying them makes each run a complete decay row rather than a $z$
+    series with no $\Delta \hat{P}_t$ beside it.
+
+    One seed, and no branches, for the reasons
+    :func:`build_exp2_regen_configs` gives: this varies how a fixed checkpoint
+    is *measured*, not which checkpoint is reached, and $\Delta b_{t+1}$ is a
+    property of the probe fine-tune rather than of how ``h_neutral`` was taken,
+    so the decay family's branch endpoints are the y-axis for this series too.
+    """
+    check_exp2_feasibility(trunks, probes)
+    return [
+        _exp2_config(
+            name=f"exp2_hregen_trunk_{trunk}_{trait}",
+            trait=trait,
+            steps=tuple(drivers),
+            seed=seed,
+            group=EXP2_HREGEN,
+            labels=(("role", "trunk"), ("trunk", trunk)),
+            local=local,
+            probes=probes,
+            h_neutral=HNeutralSource.CURRENT,
+        )
+        for trait in measure_traits
+        for seed in seeds
+        for trunk, drivers in trunks.items()
+    ]
+
+
 #: Which of trunk A's checkpoints the anchor replicates are carried to. Chosen
 #: to span the lever rather than to cover it: the anchor error is common-mode,
 #: so what matters is whether it grows between the base model and the deepest
@@ -1106,6 +1283,8 @@ GROUP_BUILDERS: dict[str, Callable[..., list[TrajectoryConfig]]] = {
     EXP2_RESEED: build_exp2_reseed_configs,
     EXP2_AXIS: build_exp2_axis_configs,
     EXP2_REGEN: build_exp2_regen_configs,
+    EXP2_V0REGEN: build_exp2_v0regen_configs,
+    EXP2_HREGEN: build_exp2_hregen_configs,
     EXP3: build_hysteresis_configs,
     EXP4: build_diversity_configs,
 }
@@ -1158,6 +1337,8 @@ REGISTRY: dict[str, TrajectoryConfig] = {
     **_register(build_exp2_reseed_configs()),
     **_register(build_exp2_axis_configs()),
     **_register(build_exp2_regen_configs()),
+    **_register(build_exp2_v0regen_configs()),
+    **_register(build_exp2_hregen_configs()),
     **_register(build_hysteresis_configs()),
     **_register(build_diversity_configs()),
     # The small-model variants (names carry "_local"), so a laptop or mock run
@@ -1168,6 +1349,8 @@ REGISTRY: dict[str, TrajectoryConfig] = {
     **_register(build_exp2_reseed_configs(local=True)),
     **_register(build_exp2_axis_configs(local=True)),
     **_register(build_exp2_regen_configs(local=True)),
+    **_register(build_exp2_v0regen_configs(local=True)),
+    **_register(build_exp2_hregen_configs(local=True)),
     **_register(build_hysteresis_configs(local=True)),
     **_register(build_diversity_configs(local=True)),
 }

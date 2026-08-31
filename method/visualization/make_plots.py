@@ -75,7 +75,7 @@ import matplotlib.pyplot as plt  # noqa: E402  (backend fixed by style import)
 logger = logging.getLogger("make_plots")
 
 #: Display label -> $z_t$ component, matching :mod:`method.visualization.demo`.
-Z_LABELS = {"p": r"$p_t$", "q": r"$q_t$", "rho": r"$\rho_t$", "r": r"$r_t$"}
+Z_LABELS = {c: rf"${s}_t$" for c, s in decay.Z_SYMBOLS.items()}
 
 #: The drift grid's columns: z_t's four, then the length they were normalised
 #: by. Separate from :data:`Z_LABELS` because ``h_norm`` is not a component of
@@ -378,6 +378,8 @@ EXP2_GROUPS = (
     experiments.EXP2_RESEED,
     experiments.EXP2_AXIS,
     experiments.EXP2_REGEN,
+    experiments.EXP2_V0REGEN,
+    experiments.EXP2_HREGEN,
 )
 
 #: Which checkpoint-level quantities plot 4 regresses the correlation on. Drift is what
@@ -581,7 +583,17 @@ def build_exp2(
     regen_runs = collections.get(experiments.EXP2_REGEN) or Collection(
         experiments.EXP2_REGEN
     )
-    remeasured = [axis_runs, regen_runs]
+    v0regen_runs = collections.get(experiments.EXP2_V0REGEN) or Collection(
+        experiments.EXP2_V0REGEN
+    )
+    remeasured = [axis_runs, regen_runs, v0regen_runs]
+    # Not a DeltaP re-measurement, so not part of ``remeasured``: this family
+    # re-takes ``h_neutral`` and therefore contributes a second $z_t$ series,
+    # which reaches the figures through ``--source`` rather than through a
+    # column of its own.
+    hregen_runs = collections.get(experiments.EXP2_HREGEN) or Collection(
+        experiments.EXP2_HREGEN
+    )
     if not (decay_runs or validation):
         logger.warning("exp2: no decay or validation runs on disk; skipping")
         return saved
@@ -594,7 +606,12 @@ def build_exp2(
     drift_runs = [*decay_runs.runs, *reseed.runs]
     hatted_ratios = decay.probe_drift_frame(drift_runs, stat=stat, source=source)
     current_ratios = decay.current_probe_drift_frame(regen_runs.runs, stat=stat)
-    latents = decay.latent_frame(drift_runs, stat=stat, source=source)
+    # The h-regen trunks join the drift runs rather than replacing them: the
+    # same trunk is measured by both families, under one z source each, and
+    # ``latent_frame`` keeps whichever of them carries the source asked for.
+    latents = decay.latent_frame(
+        [*drift_runs, *hregen_runs.runs], stat=stat, source=source
+    )
 
     traits = _present(
         [*validation.values("trait"), *decay_runs.values("trait")], TRAITS
@@ -944,7 +961,7 @@ FORECAST_TABLES = (
         "exp2_forecast_correction_bias",
         "bias",
         ("p0",),
-        ("step0", "step0_z", "step0_b"),
+        forecast.CORRECTION_BIAS_MODELS,
         forecast.BY_MODEL,
         BIAS_SCALE,
     ),

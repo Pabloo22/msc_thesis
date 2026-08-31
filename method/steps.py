@@ -310,9 +310,17 @@ def measure_h_neutral(
     """h_neutral_t for each configured source.
 
     ``base`` reads M_0's answers to the neutral prompts, so only representation
-    drift is captured; ``current`` would have M_t answer for itself. Both are
-    computed when the config asks for it, making the choice a measurement
-    rather than an assumption.
+    drift is captured; ``current`` has M_t answer for itself, which also
+    captures behavioural drift and costs a generation pass per checkpoint (the
+    family that pays for it is
+    :func:`method.experiments.build_exp2_hregen_configs`). Both are computed
+    when the config asks for it, making the choice a measurement rather than an
+    assumption.
+
+    At ``t = 0`` the two coincide by construction -- the current model *is*
+    M_0 -- and both resolve to the same cached answers, so the recomputed
+    series starts from exactly the frozen one's z_0 rather than from an
+    independent draw.
     """
     weights_id = get_weights_id(cfg, t)
     results = {
@@ -426,18 +434,36 @@ def _fill_h_norm(
 def compute_step_latent(
     cfg: TrajectoryConfig, t: int, store: Store
 ) -> dict[str, dict[str, float]]:
-    """z_t = (p, q, rho, r) and the ``h_norm`` it was normalised by, per source."""
+    """z_t = (p, q, rho, r) and the ``h_norm`` it was normalised by, per source.
+
+    The artifact holds every source ever measured at this checkpoint; the
+    return holds only the ones ``cfg`` asked for. The two differ because the
+    file is keyed by checkpoint and trait alone -- nothing in its name says
+    which sources produced it -- while a run's record should carry the series
+    that run paid for and no other. So a config measuring only ``current``
+    over checkpoints an earlier config measured under ``base`` *adds* to the
+    file and still writes a single-source ``z`` block, which is what keeps the
+    two families' trajectories joinable rather than mutually overwriting (the
+    same rule :class:`~method.config.DeltaPView` applies to DeltaP's artifact
+    names, one level up).
+
+    A source already in the file is handed back verbatim, never recomputed:
+    re-deriving it would re-anchor the entry onto whichever ``v_0`` the store
+    holds now, and exp3 is known to sit on several distinct base measurements
+    (see :mod:`method.visualization.latent_audit`).
+    """
     wid = get_weights_id(cfg, t)
     out = store.trait_measurement(wid, cfg.trait, Artifacts.LATENT_JSON)
     sources = cfg.latent.h_neutral_source.sources
     layer = cfg.model.layer
-    if out.exists():
-        cached = json.loads(out.read_text())
-        # The filename does not encode which sources were requested, so a run
-        # measured under BASE and later re-configured to BOTH would otherwise
-        # hand back a dict silently missing the "current" series.
-        if all(source in cached for source in sources):
-            return _fill_h_norm(cached, wid, layer, store, out)
+    cached = json.loads(out.read_text()) if out.exists() else {}
+    # The filename does not encode which sources were requested, so a run
+    # measured under BASE and later re-configured to BOTH would otherwise
+    # hand back a dict silently missing the "current" series.
+    missing = [source for source in sources if source not in cached]
+    if not missing:
+        filled = _fill_h_norm(cached, wid, layer, store, out)
+        return {source: filled[source] for source in sources}
 
     v0 = torch.load(
         store.trait_measurement(
@@ -450,15 +476,16 @@ def compute_step_latent(
         weights_only=False,
     )[layer]
 
-    latents = {}
-    for source in sources:
+    latents = dict(cached)
+    for source in missing:
         h = torch.load(h_neutral_path(store, wid, source), weights_only=False)[layer]
         latents[source] = latent_record(v0, vt, h)
 
     with atomic_file(out) as scratch:
         scratch.write_text(json.dumps(latents, indent=2), encoding="utf-8")
-    logger.info("z_%d = %s", t, latents)
-    return latents
+    measured = {source: latents[source] for source in sources}
+    logger.info("z_%d = %s", t, measured)
+    return measured
 
 
 def compute_delta_p(

@@ -1,21 +1,26 @@
 r"""Tests for the DeltaP *views*: which axis, and whose predicted answers.
 
 DeltaP at checkpoint $t$ refreshes the persona vector and the activations
-together and differences them against $M_0$'s answers. Each of those three can
-be held at the base model instead, and the combinations worth measuring form a
-ladder (:class:`method.config.DeltaPView`):
+together and differences them against $M_0$'s answers. The axis and the answers
+can each be held at the base model instead, and the four combinations they make
+are all measured (:class:`method.config.DeltaPView`):
 
-===========================  ==============================  ===============
-view                         quantity                        cost
-===========================  ==============================  ===============
-default, at $t = 0$          $\Delta P_0$                     already paid
-``axis=BASE``                $\Delta \hat{P}_t^{(\mathbf{v}_0)}$ free
-default                      $\Delta \hat{P}_t$                already paid
-``predicted=CURRENT``        $\Delta P_t$                     a generation pass per $t$
-===========================  ==============================  ===============
+================================  ===================================
+view                              quantity
+================================  ===================================
+default, at $t = 0$               $\Delta P_0$
+``axis=BASE``                     $\Delta \hat{P}_t^{(\mathbf{v}_0)}$
+default                           $\Delta \hat{P}_t$
+``predicted=CURRENT``             $\Delta P_t$
+``axis=BASE, predicted=CURRENT``  $\Delta P_t^{(\mathbf{v}_0)}$
+================================  ===================================
 
-These cover the measurement path (:mod:`method.steps`) and the two families
-scoped to pay for the new views. The analysis side -- how a series reaches the
+Only ``predicted=CURRENT`` costs anything: a generation pass per checkpoint.
+The base axis is free in both rows that use it, since the activations do not
+depend on it, so the fourth view is free wherever the third has run.
+
+These cover the measurement path (:mod:`method.steps`) and the families scoped
+to pay for the new views. The analysis side -- how a series reaches the
 figures -- is in ``test_decay.py``.
 
 Everything here runs on the mock backend: no model, no GPU, no judge.
@@ -59,9 +64,12 @@ def backend():
     return get_backend(Backend.MOCK, dtype="float16")
 
 
-#: The three views the design measures, by the name their artifacts take.
+#: The four views the design measures, by the name their artifacts take.
 OWN_ANSWERS = DeltaPView(predicted=PredictedSource.CURRENT)
 BASE_AXIS = DeltaPView(axis=ProjectionAxis.BASE)
+BASE_AXIS_OWN_ANSWERS = DeltaPView(
+    axis=ProjectionAxis.BASE, predicted=PredictedSource.CURRENT
+)
 DEFAULT = DeltaPView()
 
 
@@ -122,6 +130,13 @@ class TestPredictedSource:
     def test_each_other_view_gets_its_own_record_key(self):
         assert BASE_AXIS.key("probes") == "probes_v0"
         assert OWN_ANSWERS.key("probes") == "probes_current"
+        assert BASE_AXIS_OWN_ANSWERS.key("probes") == "probes_v0_current"
+
+    def test_the_combined_view_concatenates_the_two_parts(self):
+        """The settings are independent, so the name that refreshes both is
+        the two names joined -- axis first -- rather than a fourth word
+        nothing could derive from the settings."""
+        assert BASE_AXIS_OWN_ANSWERS.suffix == "v0_current"
 
     def test_the_axis_is_named_v0_not_base(self):
         """``base`` already means "$M_0$'s answers" on the other setting, and
@@ -142,6 +157,19 @@ class TestPredictedSource:
         assert [
             v.suffix for v in DeltaPConfig(predicted=PredictedSource.BOTH).views
         ] == ["", "current"]
+
+    def test_both_on_both_settings_expands_to_the_whole_square(self):
+        """The views are a 2x2, so the cross product is four corners rather
+        than three rungs and one combination nothing measures."""
+        cfg = DeltaPConfig(
+            axis=ProjectionAxis.BOTH, predicted=PredictedSource.BOTH
+        )
+        assert [v.suffix for v in cfg.views] == [
+            "",
+            "current",
+            "v0",
+            "v0_current",
+        ]
 
     def test_the_default_config_measures_exactly_one_view(self):
         """Both new views have to be asked for: one costs a generation pass per
@@ -376,6 +404,123 @@ class TestBaseAxisView:
         assert current[EVIL.dataset_id] != base_axis[EVIL.dataset_id]
 
 
+class TestBaseAxisOwnAnswersView:
+    r"""$\Delta P_t^{(\mathbf{v}_0)}$: the checkpoint answering for itself,
+    projected onto $M_0$'s axis.
+
+    The fourth corner of the square. It is what makes the axis and the answers
+    separable: without it the only path from
+    $\Delta \hat{P}_t^{(\mathbf{v}_0)}$ to $\Delta P_t$ moves both at once.
+    """
+
+    def test_every_view_agrees_at_t0(self, tmp_path, backend):
+        """At $t = 0$ the checkpoint *is* $M_0$ and its axis *is* $v^{(0)}$, so
+        all four corners collapse onto $\\Delta P_0$ -- and must do so exactly,
+        since that is the point the whole square is read against."""
+        store = Store(tmp_path)
+        cfg = make_cfg(
+            axis=ProjectionAxis.BASE, predicted=PredictedSource.CURRENT
+        )
+        prepared(cfg, store, backend)
+
+        at_0 = delta_p(cfg, 0, store, backend, DEFAULT)
+        assert delta_p(cfg, 0, store, backend, BASE_AXIS) == at_0
+        assert delta_p(cfg, 0, store, backend, OWN_ANSWERS) == at_0
+        assert delta_p(cfg, 0, store, backend, BASE_AXIS_OWN_ANSWERS) == at_0
+
+    def test_it_differs_from_both_of_its_neighbours(self, tmp_path, backend):
+        """One setting apart from each: refreshing the answers is what
+        separates it from the base-axis view, and rotating the axis is what
+        separates it from the re-answered one."""
+        store = Store(tmp_path)
+        cfg = make_cfg(
+            axis=ProjectionAxis.BASE, predicted=PredictedSource.CURRENT
+        )
+        prepared(cfg, store, backend, t=1)
+
+        both = delta_p(cfg, 1, store, backend, BASE_AXIS_OWN_ANSWERS)
+
+        assert both != delta_p(cfg, 1, store, backend, BASE_AXIS)
+        assert both != delta_p(cfg, 1, store, backend, OWN_ANSWERS)
+
+    def test_it_reuses_the_regenerated_answers(self, tmp_path, backend):
+        """What makes this view free once the regen family has run: the
+        answers and their hidden states are cached per checkpoint and dataset
+        and do not depend on the axis, so it re-projects tensors on disk."""
+        store = Store(tmp_path)
+        cfg = make_cfg(
+            axis=ProjectionAxis.BASE, predicted=PredictedSource.CURRENT
+        )
+        prepared(cfg, store, backend, t=1)
+        delta_p(cfg, 1, store, backend, OWN_ANSWERS)
+
+        answers = sorted(p.name for p in store.root.rglob("current_answers_*.jsonl"))
+        before = _hidden_state_mtimes(store, cfg)
+
+        delta_p(cfg, 1, store, backend, BASE_AXIS_OWN_ANSWERS)
+
+        assert _hidden_state_mtimes(store, cfg) == before
+        assert (
+            sorted(p.name for p in store.root.rglob("current_answers_*.jsonl"))
+            == answers
+        )
+
+    def test_it_loads_no_model_once_the_regen_family_has_run(
+        self, tmp_path, backend, monkeypatch
+    ):
+        """A generation pass here would make the fourth corner cost as much as
+        the third, which is the whole argument for measuring it."""
+        store = Store(tmp_path)
+        cfg = make_cfg(
+            axis=ProjectionAxis.BASE, predicted=PredictedSource.CURRENT
+        )
+        prepared(cfg, store, backend, t=1)
+        delta_p(cfg, 1, store, backend, OWN_ANSWERS)
+
+        monkeypatch.setattr(
+            "method.steps.materialize",
+            lambda *a, **k: pytest.fail("materialized a checkpoint for a re-projection"),
+        )
+        assert delta_p(cfg, 1, store, backend, BASE_AXIS_OWN_ANSWERS)["n"] > 0
+
+    def test_it_overwrites_none_of_the_other_three(self, tmp_path, backend):
+        """One checkpoint holds all four, so each needs its own artifact -- a
+        shared name would make one read back another's numbers."""
+        store = Store(tmp_path)
+        cfg = make_cfg(
+            axis=ProjectionAxis.BASE, predicted=PredictedSource.CURRENT
+        )
+        prepared(cfg, store, backend, t=1)
+
+        for view in (DEFAULT, BASE_AXIS, OWN_ANSWERS, BASE_AXIS_OWN_ANSWERS):
+            delta_p(cfg, 1, store, backend, view)
+
+        written = sorted(
+            path.name
+            for path in store.trait_measurement_dir(
+                get_weights_id(cfg, 1), cfg.trait
+            ).glob("delta_p_*.json")
+        )
+        assert len(written) == 4, written
+
+    def test_probes_carry_the_view_through(self, tmp_path, backend):
+        store = Store(tmp_path)
+        cfg = make_cfg(
+            probes=(EVIL,),
+            axis=ProjectionAxis.BASE,
+            predicted=PredictedSource.CURRENT,
+        )
+        prepared(cfg, store, backend, t=1)
+
+        own_answers = steps.measure_probes(cfg, 1, store, backend, view=OWN_ANSWERS)
+        both = steps.measure_probes(
+            cfg, 1, store, backend, view=BASE_AXIS_OWN_ANSWERS
+        )
+
+        assert set(own_answers) == set(both) == {EVIL.dataset_id}
+        assert own_answers[EVIL.dataset_id] != both[EVIL.dataset_id]
+
+
 def _hidden_state_mtimes(store, cfg) -> dict[str, float]:
     """When every cached activation tensor under this store was last written."""
     return {
@@ -471,6 +616,103 @@ class TestRegenFamily:
         preset owns the other, and a laptop run must keep it."""
         paper = E.build_exp2_regen_configs()[0]
         local = E.build_exp2_regen_configs(local=True)[0]
+        assert local.delta_p.predicted is PredictedSource.CURRENT
+        assert (local.delta_p.mode, local.delta_p.n_samples) != (
+            paper.delta_p.mode,
+            paper.delta_p.n_samples,
+        )
+
+
+class TestV0RegenFamily:
+    r"""The family that closes the square: $\Delta P_t^{(\mathbf{v}_0)}$."""
+
+    def test_it_asks_for_both_settings_at_once(self):
+        """Neither on its own is this family: the axis alone is
+        :func:`build_exp2_axis_configs` and the answers alone are
+        :func:`build_exp2_regen_configs`."""
+        for cfg in E.build_exp2_v0regen_configs():
+            assert cfg.delta_p.axis is ProjectionAxis.BASE
+            assert cfg.delta_p.predicted is PredictedSource.CURRENT
+
+    def test_it_measures_exactly_the_fourth_corner(self):
+        """One view, not the whole square: the other three are already
+        measured and already plotted."""
+        for cfg in E.build_exp2_v0regen_configs():
+            assert [v.suffix for v in cfg.delta_p.views] == ["v0_current"]
+
+    def test_it_replays_the_decay_trunks_rather_than_training_new_ones(self):
+        v0regen = {
+            (c.trait, c.label_map["trunk"]): c for c in E.build_exp2_v0regen_configs()
+        }
+        trunks = {
+            (c.trait, c.label_map["trunk"]): c
+            for c in E.build_exp2_decay_configs()
+            if c.label_map.get("role") == "trunk"
+        }
+        assert set(v0regen) == set(trunks)
+        for key, cfg in v0regen.items():
+            trunk = trunks[key]
+            assert [get_weights_id(cfg, t) for t in range(len(cfg.steps) + 1)] == [
+                get_weights_id(trunk, t) for t in range(len(trunk.steps) + 1)
+            ]
+
+    def test_it_writes_its_own_trajectory(self):
+        """Same weights as three other families; overwriting any of their
+        records would cost the series it is meant to be read against."""
+        names = {c.name for c in E.build_exp2_v0regen_configs()}
+        others = {
+            c.name
+            for build in (
+                E.build_exp2_decay_configs,
+                E.build_exp2_axis_configs,
+                E.build_exp2_regen_configs,
+            )
+            for c in build()
+        }
+        assert not (names & others)
+
+    def test_its_family_prefix_selects_it_alone(self):
+        """``run_family.sh`` matches registry keys by prefix, so a name the
+        axis family's prefix also matched would run this family whenever that
+        one was asked for."""
+        for prefix, group in (
+            (E.EXP2_AXIS, E.EXP2_AXIS),
+            (E.EXP2_REGEN, E.EXP2_REGEN),
+            (E.EXP2_V0REGEN, E.EXP2_V0REGEN),
+        ):
+            selected = {
+                cfg.group
+                for key, cfg in E.REGISTRY.items()
+                if key.startswith(f"{prefix.upper()}_")
+            }
+            assert selected == {group}, prefix
+
+    def test_it_probes_the_same_datasets_as_the_decay_family(self):
+        for cfg in E.build_exp2_v0regen_configs():
+            assert [p.dataset_id for p in cfg.probes] == [
+                p.dataset_id for p in E.EXP2_PROBES
+            ]
+
+    def test_every_trunk_is_reachable(self):
+        configs = E.build_exp2_v0regen_configs()
+        assert {c.label_map["trunk"] for c in configs} == set(E.EXP2_TRUNKS)
+
+    def test_it_runs_at_one_seed_and_emits_no_branches(self):
+        configs = E.build_exp2_v0regen_configs()
+        assert {c.seed for c in configs} == {E.EXP2_SEED}
+        assert all(c.label_map["role"] == "trunk" for c in configs)
+
+    def test_a_probe_that_is_also_a_driver_is_rejected(self):
+        with pytest.raises(ValueError, match="also a probe|probes"):
+            E.build_exp2_v0regen_configs(probes=(E.EXP2_TRUNKS["a"][0],))
+
+    def test_it_is_collectable_as_its_own_family(self):
+        assert E.GROUP_BUILDERS[E.EXP2_V0REGEN] is E.build_exp2_v0regen_configs
+
+    def test_the_local_variant_keeps_its_subsample(self):
+        paper = E.build_exp2_v0regen_configs()[0]
+        local = E.build_exp2_v0regen_configs(local=True)[0]
+        assert local.delta_p.axis is ProjectionAxis.BASE
         assert local.delta_p.predicted is PredictedSource.CURRENT
         assert (local.delta_p.mode, local.delta_p.n_samples) != (
             paper.delta_p.mode,

@@ -218,7 +218,16 @@ def noise_vs_drift(frame: pd.DataFrame) -> pd.DataFrame:
         for component in Z_COMPONENTS:
             drift = float(deepest[component].median() - base[component].median())
             worst = float(per_trait[component].max()) if len(per_trait) else np.nan
-            disagreeing = per_trait[per_trait[component] > TOLERANCE]
+            # An empty spread carries no columns at all, so the mask below
+            # cannot be built from it. A family whose runs share no checkpoint
+            # -- one trunk of ``exp2_hregen`` measured so far, say -- lands
+            # here, and its drift is still worth reporting beside a blank
+            # disagreement.
+            disagreeing = (
+                per_trait[per_trait[component] > TOLERANCE]
+                if len(per_trait)
+                else per_trait
+            )
             rows.append(
                 {
                     "trait": trait,

@@ -8,7 +8,7 @@ usage() {
          "[--seeds N [N ...]] [--trunks X [X ...]]"
     echo
     echo "  FAMILY_PREFIX  EXP2_VALIDATION | EXP2_DECAY | EXP2_RESEED | EXP2_AXIS"
-    echo "                 | EXP2_REGEN | EXP3 | EXP4"
+    echo "                 | EXP2_REGEN | EXP2_V0REGEN | EXP2_HREGEN | EXP3 | EXP4"
     echo "                 Matched as a prefix, so EXP2 runs every exp2"
     echo "                 family. Run them in the order listed above:"
     echo "                 EXP2_VALIDATION is the gate that can invalidate the"
@@ -28,8 +28,8 @@ usage() {
     echo "                 EXP2_DECAY: the trunks share no step prefix, so"
     echo "                 concurrent runs neither collide nor duplicate work."
     echo "                 Only families whose configs carry a trunk label"
-    echo "                 (EXP2_DECAY, EXP2_RESEED, EXP2_AXIS, EXP2_REGEN)"
-    echo "                 can be"
+    echo "                 (EXP2_DECAY, EXP2_RESEED, EXP2_AXIS, EXP2_REGEN,"
+    echo "                 EXP2_V0REGEN, EXP2_HREGEN) can be"
     echo "                 filtered this way."
     echo
     echo "Examples:"

@@ -56,13 +56,16 @@ class StepRecord:
     probes: dict[str, dict[str, float]] = field(default_factory=dict)
     #: The same two quantities under the other views of the projection
     #: difference (see :class:`method.config.DeltaPView`): ``_v0`` holds the
-    #: axis at $v^{(0)}$ while the encoder moves, and ``_current`` lets the
-    #: checkpoint answer the prompts itself. Empty on every run that did not
-    #: ask for them, which is all of them but the families scoped to pay.
+    #: axis at $v^{(0)}$ while the encoder moves, ``_current`` lets the
+    #: checkpoint answer the prompts itself, and ``_v0_current`` does both --
+    #: the fourth corner of that 2x2. Empty on every run that did not ask for
+    #: them, which is all of them but the families scoped to pay.
     delta_p_v0: dict[str, float] | None = None
     probes_v0: dict[str, dict[str, float]] = field(default_factory=dict)
     delta_p_current: dict[str, float] | None = None
     probes_current: dict[str, dict[str, float]] = field(default_factory=dict)
+    delta_p_v0_current: dict[str, float] | None = None
+    probes_v0_current: dict[str, dict[str, float]] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> StepRecord:
@@ -76,6 +79,9 @@ class StepRecord:
 
         base_axis = DeltaPView(axis=ProjectionAxis.BASE)
         own_answers = DeltaPView(predicted=PredictedSource.CURRENT)
+        both = DeltaPView(
+            axis=ProjectionAxis.BASE, predicted=PredictedSource.CURRENT
+        )
         return cls(
             t=payload["t"],
             weights_id=payload["weights_id"],
@@ -88,6 +94,8 @@ class StepRecord:
             probes_v0=probes(base_axis),
             delta_p_current=delta_p(own_answers),
             probes_current=probes(own_answers),
+            delta_p_v0_current=delta_p(both),
+            probes_v0_current=probes(both),
         )
 
     def probes_by(self, view: DeltaPView) -> dict[str, dict[str, float]]:
@@ -96,6 +104,7 @@ class StepRecord:
             "": self.probes,
             "v0": self.probes_v0,
             "current": self.probes_current,
+            "v0_current": self.probes_v0_current,
         }[view.suffix]
 
 

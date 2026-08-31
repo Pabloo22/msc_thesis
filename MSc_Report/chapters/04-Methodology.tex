@@ -2,16 +2,19 @@
 \label{ch:methodology}
 % TODO: Introductory paragraph
 
+This chapters discussess\ldots
+
 \section{Problem Setting and Notation}
 \label{sec:problem}
 
-We consider a model $\mathcal{M}_0$ whose internal state (e.g., its parameters or memory) is modified by a planned sequence of update operations $\mathcal{D}_0, \mathcal{D}_1, \dots, \mathcal{D}_{T-1}$. Applying $\mathcal{D}_t$ transforms $\mathcal{M}_t \mapsto \mathcal{M}_{t+1}$ and yields a trajectory $\tau = (\mathcal{M}_t)_{t=0}^{T}$. While we keep the framework general, our experiments employ $\mathcal{M}_0$ as the pre-trained, instruction-tuned language model Qwen2.5-7B-Instruct \citep{qwen2025qwen25technicalreport}, and each $\mathcal{D}_t$ as a batch of fine-tuning data along with its training settings (which are kept constant). Under this framework, the model checkpoint $\mathcal{M}_t$ can be studied by three types of measurements: 
+We consider a model $\mathcal{M}_0$ whose paramters are modified by training on a planned sequence of datasets $\mathcal{D}_0, \mathcal{D}_1, \dots, \mathcal{D}_{T-1}$. Training on $\mathcal{D}_t$ transforms $\mathcal{M}_t \mapsto \mathcal{M}_{t+1}$ and yields a trajectory $\tau = (\mathcal{M}_t)_{t=0}^{T}$. Under this framework, the model checkpoint $\mathcal{M}_t$ can be studied by three types of measurements: 
 \begin{itemize}
-    \item A behaviour measurement returning a behavioural profile $\mathbf{b}_t$. For the experiments, we consider LLM-generated scores ranging from $0$ to $100$ for the traits ``evil'' and ``sycophancy''. This is the behaviour that we are interested in predicting. 
+    \item A behaviour measurement returning a behavioural profile $\mathbf{b}_t$. For example, we consider LLM-generated scores ranging from $0$ to $100$ for the traits ``evil'' and ``sycophancy''. This is the behaviour that we are interested in predicting. 
     \item A mechanistic analysis of $\mathcal{M}_t$, yielding a summary vector $\mathbf{z}_t$. This analysis can help us understand how the model's state is changing. 
-    \item An encoding $\boldsymbol{\phi}_t(\mathcal{D}_t;\, \mathcal{M})$ of an update operation $\mathcal{D}_t$, computable from a model $\mathcal{M}$ and the planned data.
+    \item An encoding $\boldsymbol{\phi}_t(\mathcal{D}_t;\, \mathcal{M})$ of a dataset $\mathcal{D}_t$, computable from a model $\mathcal{M}$ and the planned data. Note that $\mathcal{M}$ could be the model at the current step $t$, or the pre-SFT model $\mathcal{M}_0$.
     % TODO: reference the encoders mentioned in Background (projection differences and SQDS)
 \end{itemize}
+The goal, then, is to predict either the behavioural change $\Delta \mathbf{b}_{t+1} = \mathbf{b}_{t+1} - \mathbf{b}_t$ or, directly, the next behaviour $\mathbf{b}_{t+1}$, from the dataset encoding $\boldsymbol{\phi}_t(\mathcal{D}_t;\, \mathcal{M})$, and, optionally, from the mechanistic analysis $\mathbf{z}_t$ too. 
 
 \begin{table}[htbp]
 \centering
@@ -19,15 +22,16 @@ We consider a model $\mathcal{M}_0$ whose internal state (e.g., its parameters o
 Symbol & Meaning \\
 \hline
 $\mathcal{M}_t$ & Checkpoint after $t$ sequential updates; $\mathcal{M}_0$ is the base model \\
-$\mathcal{D}_t$ & An update operation: a dataset plus its training settings \\
-$T$ & Trajectory length (number of updates) \\
-$\ell$ & Layer at which activations are read \\
-$b_t$ & Behavioural trait score of $\mathcal{M}_t$, on $[0,100]$ \\
+$\mathcal{D}_t$ & The dataset used for update $t$ \\
+% $T$ & Trajectory length (number of updates) \\
+
+$\mathbf{b}_t$ & Behavioural profile or vector summarising the behaviour of $\mathcal{M}_t$ \\
+$b^{\text{trait}}_t$ & Behavioural trait score of $\mathcal{M}_t$, on $[0,100]$. We omit the superscript when the trait is clear from context. \\
 $\Delta b_{t+1}$ & $b_{t+1} - b_t$: behaviour change caused by update $t$ \\
 % $\mathrm{SE}(b_t)$ & Standard error of $b_t$ from finite generation sampling \\
 % $\sigma_{\text{seed}}$ & Standard deviation of $b$ across fine-tuning seeds \\
-$\mathbf{v}^{(t)}$ & Persona vector extracted from $\mathcal{M}_t$ at layer $\ell$ \\
-$\mathbf{h}^{\text{neutral}}_t$ & Mean neutral-prompt activation of $\mathcal{M}_t$ at layer $\ell$ \\
+$\mathbf{v}^{(t)}$ & Persona vector extracted from $\mathcal{M}_t$ at layer $\ell$. Since layer $\ell$ is fixed, we omit it from the notation. \\
+$\mathbf{h}^{\text{neutral}}_t$ & Mean layer-$\ell$ activation of $\mathcal{M}_t$ over responses to neutral prompts. \\
 $p_t$ & $\cos(\mathbf{h}^{\text{neutral}}_t, \mathbf{v}^{(0)})$: neutral state along the \emph{base} persona axis \\
 $q_t$ & $\cos(\mathbf{h}^{\text{neutral}}_t, \mathbf{v}^{(t)})$: neutral state along the \emph{current} persona axis \\
 $\rho_t$ & $\cos(\mathbf{v}^{(0)}, \mathbf{v}^{(t)})$: rotation of the persona axis \\
@@ -43,3 +47,56 @@ $\Delta P_t$ & Current axis $\mathbf{v}_t$, current encoder  $\mathcal{M}_t$, cu
 \caption{Notation used throughout this chapter.}
 \label{tab:notation}
 \end{table}
+
+
+\section{Sequential Fine-Tuning Protocol}
+\label{sec:protocol}
+In our specific instantiation of the framework above, we considered Qwen2.5-7B-Instruct as the pre-SFT model $\mathcal{M}_0$ and studied it under a sequential fine-tuning setting. At each step, we fine-tune the previous checkpoint $\mathcal{M}_t$ on one of the 24 datasets employed by \citet{chen2025persona_vectors} (more details in \Cref{subsec:datasets}). Each fine-tuning uses LoRA adapters with $r = 16$ (rank) and $alpha = 16$, for the rest of the hyperparameters, we followed the same configuration as \citet{chen2025persona_vectors}. Using a lower rank, allowed us to save memory and speed up training, while still being able to reproduce similar results to the original paper (see \Cref{fig:validation}). The same optimisation and LoRA configuration is used at every step so that differences between checkpoints cannot be attributed to changes in the training procedure. The loss is computed only over the target assistant response rather than the preceding user prompt.The full list of hyperparameters is shown in \Cref{tab:hyperparameters}.
+
+
+\subsection{Model and Fine-Tuning Configuration}
+\label{sec:hyperparams}
+
+All main experiments use Qwen2.5-7B-Instruct. Each update consists of one epoch of supervised fine-tuning over the complete selected dataset.  Table~\ref{tab:hyperparams} reports the complete configuration.
+
+\begin{table}[htbp]
+\centering
+\begin{tabular}{lp{0.58\textwidth}}
+Setting & Value \\
+\hline
+Base model & \texttt{Qwen/Qwen2.5-7B-Instruct} \\
+Training objective & Supervised fine-tuning \\
+Training examples & Complete selected dataset \\
+Epochs per update & 1 \\
+Maximum sequence length & 2{,}048 tokens \\
+Sequence packing & Disabled \\
+Loss computed over & Assistant-response tokens only \\
+Per-device batch size & 2 \\
+Gradient accumulation steps & 8 \\
+Effective batch size & 16 sequences per optimiser step \\
+Learning rate & $1 \times 10^{-5}$ \\
+Warm-up & 5 optimiser steps \\
+Learning-rate schedule & Linear \\
+Optimiser & 8-bit AdamW \\
+Weight decay & 0.01 \\
+Training precision & \texttt{bfloat16} where supported; otherwise \texttt{float16} \\
+Model quantisation & None \\
+LoRA rank $r$ & 16 \\
+LoRA scaling parameter $\alpha$ & 16 \\
+LoRA dropout & 0 \\
+RSLoRA & Enabled \\
+LoRA target modules & Attention and MLP projection layers \\
+\hline
+\end{tabular}
+\caption{Fine-tuning configuration used for every update in the main experiments.}
+\label{tab:hyperparams}
+\end{table}
+
+LoRA is applied to the attention projection modules
+\texttt{q\_proj}, \texttt{k\_proj}, \texttt{v\_proj}, and
+\texttt{o\_proj}, and to the MLP projection modules
+\texttt{gate\_proj}, \texttt{up\_proj}, and \texttt{down\_proj}.
+No validation-based early stopping or hyperparameter selection is performed:
+each update runs for the single epoch specified in
+Table~\ref{tab:hyperparams}. Fine-tuning seeds are specified separately for
+each experiment.

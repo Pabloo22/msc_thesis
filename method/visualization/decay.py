@@ -48,8 +48,8 @@ logger = logging.getLogger(__name__)
 TRUNK_ROLE = "trunk"
 BRANCH_ROLE = "branch"
 
-#: The projection differences the figures pair, in the order they form a
-#: ladder: each refreshes one more thing at $M_t$ than the one before it.
+#: The projection differences the figures pair: $\Delta P_0$, then the 2x2 of
+#: what may be refreshed at $M_t$ -- the axis, the answers, either, both.
 #:
 #: The notation carries one mark per choice. A **hat** says the predicted term
 #: is *approximated* by $M_0$'s answers rather than being what the checkpoint
@@ -70,22 +70,35 @@ BRANCH_ROLE = "branch"
 #: ``hat_t``
 #:     $\Delta \hat{P}_t$, axis and encoder current, answers still $M_0$'s.
 #:     The quantity whose staleness is RQ1.
+#: ``full_v0``
+#:     $\Delta P_t^{(\mathbf{v}_0)}$, the checkpoint answering for itself but
+#:     projected onto the base model's axis. Free wherever ``full_t`` has been
+#:     measured, for the same reason ``hat_v0`` is free wherever ``hat_t`` has.
 #: ``full_t``
 #:     $\Delta P_t$, nothing approximated.
 #:
-#: Only the middle two need a family of their own to measure, so their columns
+#: The four past ``p0`` are a 2x2 -- axis current or not, crossed with answers
+#: current or not (see :class:`method.config.DeltaPView`) -- which is what lets
+#: a reader attribute a gap to one factor: ``hat_v0`` against ``hat_t`` and
+#: ``full_v0`` against ``full_t`` both move the axis alone, and ``hat_*``
+#: against ``full_*`` both move the answers alone.
+#:
+#: All but ``hat_t`` need a family of their own to measure, so their columns
 #: are NaN wherever that family did not run -- which every consumer here treats
 #: as "not measured", never as zero.
 #:
 #: Both the keys here and the columns in :data:`SERIES_COLUMNS` spell the hat
 #: out as ``hat``, because the two hatted rungs are the ones a reader reaches
-#: for by mistake. A name without ``hat`` in it is a quantity with nothing
-#: approximated, and there is no name that is a prefix of another.
-SERIES = ("p0", "hat_v0", "hat_t", "full_t")
+#: for by mistake. ``hat`` marks the *answers* held at $M_0$ and ``v0`` the
+#: *axis* held at $v^{(0)}$, exactly as the hat and the superscript do in the
+#: maths, so the two halves of each name read off the label. No name is a
+#: prefix of another.
+SERIES = ("p0", "hat_v0", "hat_t", "full_v0", "full_t")
 SERIES_LABELS = {
     "p0": r"$\Delta P_0$",
     "hat_v0": r"$\Delta \hat{P}_t^{(\mathbf{v}_0)}$",
     "hat_t": r"$\Delta \hat{P}_t$",
+    "full_v0": r"$\Delta P_t^{(\mathbf{v}_0)}$",
     "full_t": r"$\Delta P_t$",
 }
 
@@ -94,11 +107,19 @@ SERIES_COLUMNS = {
     "p0": "delta_p_0",
     "hat_v0": "delta_p_hat_v0",
     "hat_t": "delta_p_hat_t",
+    "full_v0": "delta_p_full_v0",
     "full_t": "delta_p_full_t",
 }
 
 #: $z_t$ components, in the order the proposal introduces them.
 Z_COMPONENTS = ("p", "q", "rho", "r")
+
+#: How each coordinate is written in maths, as a bare symbol with no delimiters
+#: and no subscript. Callers add both, because they need it in different
+#: places: an axis label wants ``$p_t$`` standing alone, a table key wants it
+#: inside a larger expression. Kept here so the one place that knows the
+#: coordinates also knows how they are spelled.
+Z_SYMBOLS = {"p": "p", "q": "q", "rho": r"\rho", "r": "r"}
 
 #: What :func:`latent_frame` carries per checkpoint: z_t and the activation
 #: length ``p`` and ``q`` were divided by.
@@ -293,7 +314,8 @@ _VALIDATION_COLUMNS = [
 
 _DECAY_COLUMNS = [
     "trait", "trunk", "seed", "t", "probe", "steps_since_realignment",
-    "delta_p_0", "delta_p_hat_v0", "delta_p_hat_t", "delta_p_full_t",
+    "delta_p_0", "delta_p_hat_v0", "delta_p_hat_t", "delta_p_full_v0",
+    "delta_p_full_t",
     "b_t", "b_next", "delta_b",
     "se_b_t", "se_b_next", "se_delta_b", *Z_COMPONENTS,
 ]
@@ -306,6 +328,7 @@ _DECAY_COLUMNS = [
 REMEASURED_FIELDS = {
     "probes_v0": "delta_p_hat_v0",
     "probes_current": "delta_p_full_t",
+    "probes_v0_current": "delta_p_full_v0",
 }
 
 
@@ -371,12 +394,14 @@ def decay_frame(
     expects -- "the ``t = 0`` column is identical across rows because $M_0$ is
     shared".
 
-    ``remeasured`` supplies the other two, ``delta_p_hat_v0`` and
-    ``delta_p_full_t``: the same probes at the same checkpoints, read against
-    the base model's axis
-    (:func:`method.experiments.build_exp2_axis_configs`) and with the
-    checkpoint answering the prompts itself
-    (:func:`method.experiments.build_exp2_regen_configs`). They are joined in
+    ``remeasured`` supplies the other three, ``delta_p_hat_v0``,
+    ``delta_p_full_t`` and ``delta_p_full_v0``: the same probes at the same
+    checkpoints, read against the base model's axis
+    (:func:`method.experiments.build_exp2_axis_configs`), with the checkpoint
+    answering the prompts itself
+    (:func:`method.experiments.build_exp2_regen_configs`), and with both at
+    once (:func:`method.experiments.build_exp2_v0regen_configs`). They are
+    joined in
     rather than read from the trunk because they are *re-measurements* of
     trunks that already exist, each paid for by its own family. A row no such
     family covered keeps a NaN, which is the distinction the columns have to
@@ -891,10 +916,19 @@ def latent_frame(
     a checkpoint measured before it was recorded and never backfilled --
     :mod:`method.backfill_h_norm` fills those in where the store lives, and
     until it has, the plot drops those seeds rather than drawing a short line.
+
+    Runs that do not carry ``source`` are dropped before indexing, because one
+    trunk can be measured by two families under one ``z`` source each -- the
+    decay trunk answers the neutral prompts with $M_0$ and the ``exp2_hregen``
+    trunk with $M_t$ (:func:`method.experiments.build_exp2_hregen_configs`).
+    They share a ``(trait, trunk, seed)`` key, so without this the first one
+    seen wins it and the frame comes back empty for whichever source that run
+    does not hold.
     """
     rows = []
+    carrying = [run for run in runs if run.trajectory.has_latent(source)]
     for (trait, trunk, seed), series in sorted(
-        trunk_series(runs, stat=stat, source=source).items()
+        trunk_series(carrying, stat=stat, source=source).items()
     ):
         for t, latent in enumerate(series.latent):
             rows.append(

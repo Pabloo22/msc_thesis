@@ -865,6 +865,11 @@ _DECAY_SERIES: tuple[_DecaySeries, ...] = (
         style.PURPLE,
     ),
     _DecaySeries("delta_p_hat_t", r"\Delta \hat{P}_t", style.GREEN),
+    _DecaySeries(
+        "delta_p_full_v0",
+        r"\Delta P_t^{(\mathbf{v}_0)}",
+        style.PLUM,
+    ),
     _DecaySeries("delta_p_full_t", r"\Delta P_t", style.ORANGE),
 )
 

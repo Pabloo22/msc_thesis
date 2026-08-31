@@ -13,6 +13,7 @@ an assertion about the analysis rather than about a random draw.
 
 from __future__ import annotations
 
+import itertools
 import json
 
 import numpy as np
@@ -67,6 +68,7 @@ def write_run(
     probes=None,
     probes_v0=None,
     probes_current=None,
+    probes_v0_current=None,
     se=0.5,
     delta_p=1.0,
     h_norm=True,
@@ -115,6 +117,10 @@ def write_run(
                 "probes_current": {
                     dataset: {"mean": series[t], "std": 0.5, "n": 8}
                     for dataset, series in (probes_current or {}).items()
+                },
+                "probes_v0_current": {
+                    dataset: {"mean": series[t], "std": 0.5, "n": 8}
+                    for dataset, series in (probes_v0_current or {}).items()
                 },
             }
             if t < n:
@@ -237,6 +243,32 @@ def build_regen(*, offset: float = 0.0, trunks=("a",)) -> Collection:
             },
         )
     return collect(configs, group=E.EXP2_REGEN)
+
+
+def build_v0regen(*, offset: float = 1.5, trunks=("a",)) -> Collection:
+    r"""A re-measurement carrying $\Delta P_t^{(\mathbf{v}_0)}$ and nothing else.
+
+    The fourth corner of the square: the checkpoint's own answers, projected
+    onto $v^{(0)}$. Free wherever :func:`build_regen` has run, so it defaults
+    to the same trunk that one does -- and to a different ``offset``, since a
+    column that agreed with $\Delta P_t$ exactly would make every join here
+    pass whether or not it read the right record key.
+    """
+    configs = E.build_exp2_v0regen_configs(
+        measure_traits=("evil",),
+        trunks={name: TRUNKS[name] for name in trunks},
+        probes=PROBES,
+    )
+    for cfg in configs:
+        write_run(
+            cfg,
+            behaviors=[50.0 + 2 * t for t in range(7)],
+            probes_v0_current={
+                dataset: [value + offset for value in series]
+                for dataset, series in _probe_series(7).items()
+            },
+        )
+    return collect(configs, group=E.EXP2_V0REGEN)
 
 
 def build_validation(*, se: float = 0.5) -> Collection:
@@ -375,12 +407,14 @@ class TestDecayFrame:
 
 
 class TestRemeasuredSeries:
-    r"""The two views a family of their own has to measure.
+    r"""The three views a family of their own has to measure.
 
     $\Delta \hat{P}_t^{(\mathbf{v}_0)}$ holds the axis at $v^{(0)}$ while the encoder
-    moves; $\Delta P_t$ additionally lets the checkpoint answer for itself.
-    Each is paid for per trunk, so the interesting cases are the join and what
-    happens to every row a family did not cover.
+    moves; $\Delta P_t$ instead lets the checkpoint answer for itself;
+    $\Delta P_t^{(\mathbf{v}_0)}$ does both, which is what makes the axis and
+    the answers separable rather than confounded in one step. Each is paid for
+    per trunk, so the interesting cases are the join and what happens to every
+    row a family did not cover.
     """
 
     def test_the_base_axis_family_fills_its_own_column(self) -> None:
@@ -392,20 +426,38 @@ class TestRemeasuredSeries:
             (rows["probe"].map(DELTA_P_0) + 0.5).to_numpy()
         )
 
-    def test_the_two_remeasured_views_do_not_collide(self) -> None:
+    def test_the_remeasured_views_do_not_collide(self) -> None:
         """Different families, different record keys, different columns -- one
         must never be read into the other's place."""
         rows = decay.decay_frame(
-            build_decay(), build_validation(), [build_axis(), build_regen()]
+            build_decay(),
+            build_validation(),
+            [build_axis(), build_regen(), build_v0regen()],
         )
+        columns = ["delta_p_hat_v0", "delta_p_full_t", "delta_p_full_v0"]
         trunk_a = rows[rows["trunk"] == "a"]
-        assert not trunk_a["delta_p_hat_v0"].isna().any()
-        assert not trunk_a["delta_p_full_t"].isna().any()
-        assert not trunk_a["delta_p_hat_v0"].equals(trunk_a["delta_p_full_t"])
+        for column in columns:
+            assert not trunk_a[column].isna().any(), column
+        for left, right in itertools.combinations(columns, 2):
+            assert not trunk_a[left].equals(trunk_a[right]), (left, right)
         # Trunk C was covered by the free view only.
         trunk_c = rows[rows["trunk"] == "c"]
         assert not trunk_c["delta_p_hat_v0"].isna().any()
         assert trunk_c["delta_p_full_t"].isna().all()
+        assert trunk_c["delta_p_full_v0"].isna().all()
+
+    def test_the_fourth_corner_fills_its_own_column(self) -> None:
+        rows = decay.decay_frame(
+            build_decay(), build_validation(), [build_v0regen()]
+        )
+        measured = rows[rows["trunk"] == "a"]
+        assert not measured["delta_p_full_v0"].isna().any()
+        assert measured["delta_p_full_v0"].to_numpy() == pytest.approx(
+            (measured["probe"].map(DELTA_P_0) + 1.5).to_numpy()
+        )
+        # It carries that column and no other: the family measures one view.
+        assert rows["delta_p_hat_v0"].isna().all()
+        assert rows["delta_p_full_t"].isna().all()
 
     def test_a_family_with_no_runs_leaves_its_column_untouched(self) -> None:
         with_axis = decay.decay_frame(
@@ -413,10 +465,12 @@ class TestRemeasuredSeries:
         )
         assert with_axis["delta_p_full_t"].isna().all()
 
-    def test_all_four_series_are_fitted_when_all_are_measured(self) -> None:
+    def test_every_series_is_fitted_when_all_are_measured(self) -> None:
         fits = decay.fit_frame(
             decay.decay_frame(
-                build_decay(), build_validation(), [build_axis(), build_regen()]
+                build_decay(),
+                build_validation(),
+                [build_axis(), build_regen(), build_v0regen()],
             ),
             n_resamples=50,
         )

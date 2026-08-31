@@ -148,25 +148,36 @@ class ProjectionAxis(StrEnum):
 class DeltaPView:
     r"""One projection difference: which axis, and whose predicted answers.
 
-    The two settings are independent knobs, but only some combinations are
-    worth measuring, and those that are form a *ladder* rather than a cube --
-    each rung refreshes one more thing than the one before it:
+    The two settings are independent knobs, and each can be held at $M_0$ or
+    refreshed at $M_t$, so the views form a 2x2 with $\Delta P_0$ as the corner
+    they all start from:
 
-    ===================================  =========  =========  ==========
-    view                                 axis       encoder    answers
-    ===================================  =========  =========  ==========
-    ``DeltaPView()`` at $t = 0$          $v^{(0)}$  $M_0$      $M_0$
-    ``DeltaPView(axis=BASE)``            $v^{(0)}$  $M_t$      $M_0$
-    ``DeltaPView()``                     $v^{(t)}$  $M_t$      $M_0$
-    ``DeltaPView(predicted=CURRENT)``    $v^{(t)}$  $M_t$      $M_t$
-    ===================================  =========  =========  ==========
+    ================================  =========  =========  =========
+    view                              axis       encoder    answers
+    ================================  =========  =========  =========
+    default, at $t = 0$               $v^{(0)}$  $M_0$      $M_0$
+    ``axis=BASE``                     $v^{(0)}$  $M_t$      $M_0$
+    default                           $v^{(t)}$  $M_t$      $M_0$
+    ``axis=BASE, predicted=CURRENT``  $v^{(0)}$  $M_t$      $M_t$
+    ``predicted=CURRENT``             $v^{(t)}$  $M_t$      $M_t$
+    ================================  =========  =========  =========
 
-    Two of the three choices are forced, which is what collapses the cube:
-    $v^{(t)}$ is *extracted from* $M_t$ and $M_t$'s answers require $M_t$, so
-    a current axis or a current prediction each presuppose a current encoder.
-    The one combination this leaves out -- a base axis with regenerated
-    answers -- refreshes the expensive half while leaving the free half stale,
-    which is nobody's measurement.
+    The encoder is not a third knob. $v^{(t)}$ is *extracted from* $M_t$ and
+    $M_t$'s answers require $M_t$, so a current axis or a current prediction
+    each presuppose a current encoder, and holding both at the base model is
+    just $t = 0$. What is left is the axis crossed with the answers, and all
+    four corners are measured because that is what identifies either factor at
+    both levels of the other: with the base-axis/current-answers corner
+    missing, the only path from $\Delta \hat{P}_t^{(\mathbf{v}_0)}$ to
+    $\Delta P_t$ moves the axis and the answers at once, and neither effect can
+    be read off it alone.
+
+    That corner was skipped while it looked like it refreshed the expensive
+    half and left the free half stale. It no longer does: the answers it needs
+    are the ones :func:`method.experiments.build_exp2_regen_configs` has
+    already generated, and they are cached per checkpoint and dataset
+    independently of the axis, so it re-projects tensors that are on disk --
+    see :func:`method.experiments.build_exp2_v0regen_configs`.
 
     The default view is the one every existing measurement took, so it names
     its artifacts and record keys without any qualifier at all.
@@ -190,6 +201,11 @@ class DeltaPView:
         ``v0`` rather than ``base`` for the axis, because ``base`` already
         means "$M_0$'s answers" on the other setting and one artifact name
         should not use the same word for two things.
+
+        A view that refreshes neither setting has an empty suffix and a view
+        that refreshes both is ``v0_current``, axis first: the parts are
+        independent, so the name is their concatenation rather than a fourth
+        word nothing could derive from the settings.
         """
         parts = []
         if self.axis is ProjectionAxis.BASE:

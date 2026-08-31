@@ -19,11 +19,20 @@ What goes stale is the calibration, not the ordering, so the tables here are
 errors on the judge's own 0-100 scale (:func:`score_frame`) and never
 correlations.
 
-*The probes are the test set.* The base line is fitted on the validation-fan
-datasets that are **not** probes (:func:`baseline_fits`), so no checkpoint is
-ever scored against a line that has seen its own probes. The $t = 0$ column is
-therefore already a real held-out error rather than a residual, which is what
-makes it the right thing to read the later columns against.
+*No dataset predicts itself.* One rule covers the whole module: nothing
+fitted on dataset $j$ is used to predict dataset $j$, and everything else that
+was measured is fair game. So the base line for a probe is fitted on the other
+23 validation datasets (:func:`baseline_fits`), and a gain correction is fitted
+leaving out both the trunk it is scored on and the probe it predicts
+(:func:`_gain_forecast`). The $t = 0$ column is therefore a real held-out error
+rather than a residual, which is what makes it the right thing to read the
+later columns against.
+
+The rule has to be one rule, because the alternatives do not compose. A gain
+model reads the other probes' outcomes at every checkpoint of the other trunks;
+a base line that held all 8 probes out would meanwhile be pretending those same
+datasets had never been fine-tuned on. No practitioner is in both positions at
+once, so a table mixing the two scores a predictor nobody could build.
 
 *What is cheap and what is not.* Re-measuring a projection difference at $M_t$
 costs a probe fan-out; reading $z_t$ or the trait score $b_t$ off the
@@ -39,7 +48,7 @@ whole analysis runs on a laptop holding no adapters and no activations.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -86,6 +95,17 @@ SCORED_ON = LEVEL
 #: forecaster is scored over here.
 CHECKPOINT = ("trait", "trunk", "t")
 
+#: How each $z_t$ coordinate is written in a table's key column, and what it
+#: is in words. Kept beside :data:`GAIN_FEATURES` because the single-component
+#: correctors are generated from :data:`method.visualization.decay.Z_COMPONENTS`
+#: and a coordinate without a label would reach a table as a bare column name.
+Z_GLOSSES = {
+    "p": "the neutral state's alignment with the base persona axis",
+    "q": "the neutral state's alignment with the current persona axis",
+    "rho": "how far the persona axis has rotated",
+    "r": "the current persona vector's length",
+}
+
 #: Checkpoint state a gain correction may be regressed on. $z_t$'s four
 #: coordinates are the drift RQ1 is about; $b_t$ is the nuisance that has to be
 #: carried beside them, because a model already near the judge's ceiling has
@@ -110,21 +130,64 @@ GAIN_FEATURES = (*decay.Z_COMPONENTS, "b_t")
 METRICS = ("rmse", "mae", "bias")
 
 
-#: $M_0$'s lines, by target and then by trait.
-Baselines = Mapping[str, Mapping[str, LinearFit]]
+#: The fold that holds nothing out: the line fitted on the whole validation
+#: fan. It is what a probe the fan never covered falls back to, since a dataset
+#: nobody fine-tuned on at $M_0$ cannot be in any fit and so cannot leak from
+#: one, and what :func:`gain_frame` uses when asked for the plain diagnostic.
+WHOLE_FAN = None
 
 
-def baseline_fits(
-    validation: pd.DataFrame, probes: Iterable[str]
-) -> dict[str, dict[str, LinearFit]]:
-    r"""One $M_0$ line per trait, fitted on the datasets that are *not* probes.
+@dataclass(frozen=True)
+class Baselines:
+    r"""$M_0$'s lines, one per (target, trait, held-out dataset).
 
-    The validation fan covers all 24 datasets and the decay experiment probes 8
-    of them (section 5), so holding the probes out leaves 16 to fit on and
-    costs nothing that was measured for this purpose anyway. Without that split
-    the $t = 0$ column would be an in-sample residual and every later column a
-    genuine prediction, and the decay down a row would be part artefact of the
-    change in what is being reported.
+    A mapping rather than a single line per trait because every line here is
+    fitted leave-one-dataset-out: see :func:`baseline_fits` for why.
+    """
+
+    #: Keyed ``(target, trait, held-out dataset)``, with :data:`WHOLE_FAN`
+    #: standing for the fold that holds nothing out.
+    fits: Mapping[tuple[str, str, str | None], LinearFit]
+
+    def line(self, target: str, trait: str, without: str | None) -> LinearFit | None:
+        """The line for predicting ``without``, or ``None`` if there is none.
+
+        Falls back to the whole-fan line where ``without`` has no fold of its
+        own, which happens when the fan never covered that dataset. Nothing
+        leaks: a dataset the fan did not measure is in no fit to begin with.
+        """
+        fit = self.fits.get((target, trait, without))
+        if fit is not None:
+            return fit
+        return self.fits.get((target, trait, WHOLE_FAN))
+
+    def __bool__(self) -> bool:
+        return bool(self.fits)
+
+
+def baseline_fits(validation: pd.DataFrame) -> Baselines:
+    r"""$M_0$'s lines, fitted leave-one-dataset-out over the validation fan.
+
+    The fan covers all 24 datasets at the base model, 8 of which the decay
+    experiment goes on to probe (section 5). To predict dataset $j$ this fits
+    on the other 23, so $j$ is never in the line that scores it and the
+    $t = 0$ column is a real held-out error rather than an in-sample residual.
+
+    Leave-one-out rather than a fixed probe/non-probe split, and the reason is
+    consistency with the correction. A gain model reads the *other* probes'
+    outcomes at every checkpoint of the other trunks (:func:`_gain_forecast`);
+    a base line fitted on the 16 non-probe datasets would meanwhile pretend
+    those same probes had never been fine-tuned on at all. Both cannot be true
+    of one practitioner. Leave-one-out keeps the test point just as clean and
+    states the rule once for the whole module: **nothing fitted on dataset $j$
+    is used to predict dataset $j$**, and everything else that was measured is
+    fair game.
+
+    It is also what the RQ1 question actually asks. The quantity of interest is
+    how well a line fitted at $M_0$ predicts a dataset it has not seen, and
+    leave-one-out is the standard estimator of exactly that. Fitting on 16 and
+    scoring a fixed 8 is one train/test split of the same thing -- a wastier
+    one, and one whose split can be unrepresentative.
 
     Fitted per trait and pooled over seeds: the persona vector and the judge
     are both per trait, so two traits share no units, while two seeds of one
@@ -138,25 +201,26 @@ def baseline_fits(
     every forecaster resting on it reports NaN rather than a number the sweep
     did not support.
     """
-    fits: dict[str, dict[str, LinearFit]] = {target: {} for target in TARGETS}
+    fits: dict[tuple[str, str, str | None], LinearFit] = {}
     if validation.empty:
-        return fits
-    held_out = validation[~validation["dataset"].isin(set(probes))]
-    for trait, group in held_out.groupby("trait"):
-        if len(group) < 2:
+        return Baselines(fits)
+    for trait, group in validation.groupby("trait"):
+        if len(group) < 3:
             logger.warning(
-                "exp2/%s: %d validation dataset(s) left once the probes are "
-                "held out, which is too few to fit M_0's line; the step-0 "
+                "exp2/%s: %d validation dataset(s) on disk, which leaves too "
+                "few to fit M_0's line once one is held out; the step-0 "
                 "forecasts for this trait will be blank",
                 trait,
                 len(group),
             )
             continue
-        for target in TARGETS:
-            fits[target][str(trait)] = linear_fit(
-                group["delta_p_0"], group[target]
-            )
-    return fits
+        for held in (WHOLE_FAN, *sorted(group["dataset"].unique())):
+            panel = group if held is WHOLE_FAN else group[group["dataset"] != held]
+            for target in TARGETS:
+                fits[(target, str(trait), held)] = linear_fit(
+                    panel["delta_p_0"], panel[target]
+                )
+    return Baselines(fits)
 
 
 #: What a forecaster does: turn one series' column, over the rows it was
@@ -217,10 +281,9 @@ def _frozen(target: str) -> Predict:
     def predict(
         rows: pd.DataFrame, column: str, baselines: Baselines
     ) -> pd.Series:
-        fits = baselines.get(target, {})
         predicted = _blank(rows)
-        for trait, group in rows.groupby("trait"):
-            fit = fits.get(str(trait))
+        for (trait, probe), group in rows.groupby(["trait", "probe"]):
+            fit = baselines.line(target, str(trait), str(probe))
             if fit is not None:
                 predicted.loc[group.index] = _as_level(
                     fit.predict(group[column]), group, target
@@ -260,8 +323,12 @@ def _corrected(features: Sequence[str], target: str = CHANGE) -> Predict:
     $\alpha_0 + \beta_0\, g_t \Delta P$ with $\alpha_0, \beta_0$ frozen and one
     scalar gain $g_t$ per checkpoint, regressed on ``features``.
 
-    ``g_t`` is fitted leave-one-trunk-out (:func:`_gain_forecast`), so a
-    checkpoint's gain never comes from a model fitted on its own trajectory.
+    ``g_t`` is fitted leave-one-trunk-out *and* leave-one-probe-out
+    (:func:`_gain_forecast`), so a probe's gain comes from a model that saw
+    neither its trajectory nor its dataset. The gain is therefore a number per
+    ``(checkpoint, probe)`` rather than one shared across the checkpoint's
+    scatter, and the ``K`` corrected predictions of a checkpoint come from
+    ``K`` different gain models.
     """
 
     def predict(
@@ -269,7 +336,7 @@ def _corrected(features: Sequence[str], target: str = CHANGE) -> Predict:
     ) -> pd.Series:
         gains = _gain_forecast(rows, column, baselines, features, target)
         scale = pd.Series(
-            [gains.get(key, np.nan) for key in _checkpoint_keys(rows)],
+            [gains.get(key, np.nan) for key in _gain_keys(rows)],
             index=rows.index,
             dtype=float,
         )
@@ -319,6 +386,15 @@ FORECASTERS: tuple[Forecaster, ...] = (
         "rescaled by the latent state",
         _corrected(decay.Z_COMPONENTS),
     ),
+    *(
+        Forecaster(
+            f"step0_{name}",
+            rf"$M_0$ fit $\times\, g({decay.Z_SYMBOLS[name]}_t)$",
+            f"rescaled by {Z_GLOSSES[name]}, and nothing else",
+            _corrected((name,)),
+        )
+        for name in decay.Z_COMPONENTS
+    ),
     Forecaster(
         "step0_b",
         r"$M_0$ fit $\times\, g(b_t)$",
@@ -353,7 +429,37 @@ BIASED_MODELS = tuple(f.name for f in FORECASTERS if not f.refits)
 #: needs correcting. $\Delta P_0$ is the rung nothing at $M_t$ has refreshed,
 #: so it is where a free reading of the checkpoint has something to fix; the
 #: refit bounds what any of them could do.
-CORRECTION_MODELS = ("step0", "step0_z", "step0_b", "oracle")
+#:
+#: Read top to bottom it is one argument. The frozen line is the bar. $g(z_t)$
+#: is the latent state fitted whole. Its four coordinates then appear one at a
+#: time, and $g(b_t)$ -- the behaviour level, equally free to read and not a
+#: representation claim at all -- is the control every one of them has to beat
+#: before any of this is about drift.
+#:
+#: The single-coordinate rows are not there to find a winner. They are there
+#: because $g(z_t)$ spends five parameters on a fold of roughly fourteen
+#: checkpoints drawn from two trunks, and "you overfitted" is the first thing
+#: anyone will say about a correction that fails. Each coordinate on its own
+#: costs the same two parameters as $g(b_t)$, so a correction that still fails
+#: cannot be failing for want of parsimony. That they also answer RQ1's own
+#: sub-question -- which part of the projection difference carries the drift --
+#: is what makes them worth the rows rather than a footnote.
+#:
+#: All of them are reported every time, never the best of them. Six trait and
+#: trunk cells against seven models is enough forks to find something, and a
+#: row that only appears when it wins is not evidence.
+CORRECTION_MODELS = (
+    "step0",
+    "step0_z",
+    *(f"step0_{name}" for name in decay.Z_COMPONENTS),
+    "step0_b",
+    "oracle",
+)
+
+#: The same rows for a bias table, minus the refit: least squares with a free
+#: intercept leaves residuals summing to zero, so its bias is an identity
+#: rather than a measurement (see :data:`METRICS`).
+CORRECTION_BIAS_MODELS = tuple(m for m in CORRECTION_MODELS if m != "oracle")
 
 #: What the recalibration grid draws: the level prediction carried from
 #: $M_0$, against the line refitted on the checkpoint. The change-target fit
@@ -390,11 +496,18 @@ def forecasters(names: Sequence[str] | None = None) -> list[Forecaster]:
     return [f for f in FORECASTERS if f.name in wanted]
 
 
-def _checkpoint_keys(rows: pd.DataFrame) -> list[tuple[str, str, int]]:
-    """``(trait, trunk, t)`` per row, typed so it keys a plain dict."""
+def _gain_keys(rows: pd.DataFrame) -> list[tuple[str, str, int, str]]:
+    """``(trait, trunk, t, probe)`` per row, typed so it keys a plain dict.
+
+    The probe is part of the key because a gain is fitted with that probe held
+    out, so two probes of one checkpoint are rescaled by two different numbers
+    -- see :func:`_gain_forecast`.
+    """
     return [
-        (str(trait), str(trunk), int(t))
-        for trait, trunk, t in rows[list(CHECKPOINT)].itertuples(index=False)
+        (str(trait), str(trunk), int(t), str(probe))
+        for trait, trunk, t, probe in rows[[*CHECKPOINT, "probe"]].itertuples(
+            index=False
+        )
     ]
 
 
@@ -420,6 +533,8 @@ def gain_frame(
     column: str,
     baselines: Baselines,
     target: str = CHANGE,
+    *,
+    without_probe: str | None = None,
 ) -> pd.DataFrame:
     """The ideal gain per checkpoint, beside the state it might be read off.
 
@@ -427,12 +542,25 @@ def gain_frame(
     correction can only work as well as ``gain`` is predictable from
     :data:`GAIN_FEATURES`, and a table of errors says whether it worked, not
     why.
+
+    ``without_probe`` names the probe being held out. It does two things at
+    once, which is the point: the gain is solved over every probe *but* that
+    one, and it is solved against that probe's own base line -- the one fitted
+    without it (:meth:`Baselines.line`). One argument, one fold, nothing about
+    the held-out dataset anywhere in the fit.
+
+    The default of ``None`` uses the whole scatter against the whole-fan line,
+    which is what the diagnostic itself wants: the question it asks is what the
+    right gain at a checkpoint was, not what a fold could have guessed. Against
+    the whole-fan line a $t = 0$ gain of $1$ means "no drift, nothing to
+    correct", which is the reading that makes a departure at $t > 0$ mean
+    something.
     """
-    fits = baselines.get(target, {})
+    panel = rows if without_probe is None else rows[rows["probe"] != without_probe]
     records = []
-    for key, group in rows.groupby(list(CHECKPOINT), sort=True):
+    for key, group in panel.groupby(list(CHECKPOINT), sort=True):
         trait, trunk, t = key
-        fit = fits.get(str(trait))
+        fit = baselines.line(target, str(trait), without_probe)
         if fit is None or group[column].isna().any():
             continue
         records.append(
@@ -478,35 +606,72 @@ def _gain_forecast(
     baselines: Baselines,
     features: Sequence[str],
     target: str = CHANGE,
-) -> dict[tuple[str, str, int], float]:
-    r"""Predicted gain per checkpoint, never fitted on its own trunk.
+) -> dict[tuple[str, str, int, str], float]:
+    r"""Predicted gain per checkpoint *and probe*, fitted on neither of them.
 
-    Leave-one-*trunk*-out rather than leave-one-checkpoint-out. Consecutive
-    checkpoints of one trunk are the same trajectory a step further along, so
-    holding one out while its neighbours stay in the training set would let the
-    correction be read off the trunk it is scored on. Holding out the whole
-    trunk asks the question the table is for: does the state at a checkpoint
-    predict the gain on a trajectory the correction has never seen?
+    A corrected forecast has two ways of seeing the answer it is about to be
+    scored on, so it is held out along both.
+
+    *Leave one trunk out*, rather than one checkpoint. Consecutive checkpoints
+    of one trunk are the same trajectory a step further along, so holding one
+    out while its neighbours stay in the training set would let the correction
+    be read off the trunk it is scored on. Holding out the whole trunk asks the
+    question the table is for: does the state at a checkpoint predict the gain
+    on a trajectory the correction has never seen?
+
+    *Leave one probe out.* Every trunk fans out over the same probes, so a gain
+    fitted on the other trunks alone has still been shown how probe $j$
+    responds -- at other checkpoints, but to the same dataset -- and the
+    correction it hands back for $j$ would be part memory of $j$ rather than a
+    reading of the checkpoint. So the training checkpoints solve for their
+    ideal gain over the *other* probes (``without_probe``), and the model that
+    comes out is only ever used to predict the one that was dropped.
+
+    That is one gain model per ``(trait, held-out trunk, held-out probe)``: a
+    checkpoint's ``K`` corrected predictions come from ``K`` different models,
+    each blind to the trajectory and the dataset it is scored on. The error
+    summarised over that checkpoint is therefore a cross-validated one, which
+    is a thing a caption has to say out loud.
+
+    The ``K`` models are not near-copies of each other, and the reason is worth
+    knowing before reading a correction table. :func:`_ideal_gain` is least
+    squares on a rescaled slope, so a probe enters the gain weighted by
+    $\Delta P_0^2$ -- and one probe with several times the projection
+    difference of the rest carries most of the gain on its own. Holding *that*
+    probe out leaves the remaining panel estimating a visibly different number,
+    and the correction it hands back for the dropped probe is the honest one:
+    what the checkpoint's other probes say, extrapolated to a leverage they
+    never covered.
 
     Fitted within a trait, since the gain is a ratio of slopes measured against
     that trait's own persona vector and judge.
     """
-    frame = gain_frame(rows, column, baselines, target)
-    forecast: dict[tuple[str, str, int], float] = {}
-    if frame.empty:
+    forecast: dict[tuple[str, str, int, str], float] = {}
+    if rows.empty or "probe" not in rows:
         return forecast
-    for _, block in frame.groupby("trait"):
-        for trunk in sorted(block["trunk"].unique()):
-            train = block[block["trunk"] != trunk]
-            test = block[block["trunk"] == trunk]
-            coefficients = _least_squares(_design(train, features), train["gain"])
-            if coefficients is None:
-                continue
-            for record, gain in zip(
-                test.itertuples(index=False), _design(test, features) @ coefficients
-            ):
-                key = (str(record.trait), str(record.trunk), int(record.t))
-                forecast[key] = float(gain)
+    for probe in sorted(rows["probe"].dropna().unique()):
+        frame = gain_frame(rows, column, baselines, target, without_probe=str(probe))
+        if frame.empty:
+            continue
+        for _, block in frame.groupby("trait"):
+            for trunk in sorted(block["trunk"].unique()):
+                train = block[block["trunk"] != trunk].dropna(
+                    subset=["gain", *features]
+                )
+                test = block[block["trunk"] == trunk]
+                coefficients = _least_squares(_design(train, features), train["gain"])
+                if coefficients is None:
+                    continue
+                for record, gain in zip(
+                    test.itertuples(index=False), _design(test, features) @ coefficients
+                ):
+                    key = (
+                        str(record.trait),
+                        str(record.trunk),
+                        int(record.t),
+                        str(probe),
+                    )
+                    forecast[key] = float(gain)
     return forecast
 
 
@@ -570,12 +735,11 @@ def prediction_frame(
     if rows.empty:
         return pd.DataFrame(columns=_PREDICTION_COLUMNS)
 
-    baselines = baseline_fits(validation, rows["probe"].unique())
-    if not any(baselines.values()):
+    baselines = baseline_fits(validation)
+    if not baselines:
         logger.warning(
-            "exp2: no validation fan outside the probe set, so M_0's line "
-            "cannot be fitted without seeing its own test points; only the "
-            "refit-at-t forecaster will be scored"
+            "exp2: no validation fan on disk, so M_0's line cannot be fitted "
+            "at all; only the refit-at-t forecaster will be scored"
         )
     frames = []
     for name in wanted:

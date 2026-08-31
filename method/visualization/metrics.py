@@ -45,9 +45,20 @@ def linear_fit(x: ArrayLike, y: ArrayLike) -> LinearFit:
     Falls back to a flat line through the mean of ``y`` when there are fewer
     than two points or ``x`` is constant, so callers (including the demo on
     tiny synthetic inputs) never have to special-case degenerate data.
+
+    Pairs where either coordinate is not finite are dropped first. NaN means
+    "not measured" throughout the analysis -- a checkpoint whose ``h_norm``
+    predates the field, a $z_t$ source a run does not carry -- and a column
+    that is entirely unmeasured has to come back degenerate like any other
+    column with no points. Left in, it reaches ``np.polyfit``, which raises
+    ``LinAlgError`` rather than returning anything a caller could recognise as
+    absent.
     """
     x_arr = np.asarray(x, dtype=float)
     y_arr = np.asarray(y, dtype=float)
+    usable = np.isfinite(x_arr) & np.isfinite(y_arr)
+    if not usable.all():
+        x_arr, y_arr = x_arr[usable], y_arr[usable]
     if x_arr.size < 2 or np.allclose(x_arr, x_arr[0]):
         mean_y = float(y_arr.mean()) if y_arr.size else 0.0
         return LinearFit(slope=0.0, intercept=mean_y, r2=0.0)

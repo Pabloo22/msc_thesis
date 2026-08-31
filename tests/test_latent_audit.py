@@ -244,6 +244,21 @@ def test_ratio_exceeds_one_when_disagreement_swamps_the_drift():
     assert table.loc["rho", "worst_disagreement"] == pytest.approx(0.0)
 
 
+def test_a_family_with_no_shared_checkpoint_still_reports_its_drift():
+    """One run cannot disagree with anything, and that is a normal state: a
+    re-measurement family is often one trunk deep before the rest are paid for.
+    The drift it did measure must still come back."""
+    cfg = hysteresis_configs()[0]
+    write_run(cfg, latents=_drifting(len(cfg.steps), per_step=0.1))
+
+    table = noise_vs_drift(latent_frame(collected([cfg]))).set_index("component")
+
+    assert table.loc["p", "shared_checkpoints"] == 0
+    assert table.loc["p", "disagreeing"] == 0
+    assert pd.isna(table.loc["p", "worst_disagreement"])
+    assert table.loc["p", "drift"] == pytest.approx(0.1 * len(cfg.steps))
+
+
 def test_drift_is_measured_on_the_dominant_anchor_only():
     configs = hysteresis_configs()
     for cfg in configs:
