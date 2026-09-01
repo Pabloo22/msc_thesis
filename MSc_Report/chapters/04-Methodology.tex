@@ -108,7 +108,7 @@ Warm-up & 5 optimiser steps \\
 Learning-rate schedule & Linear \\
 Optimiser & 8-bit AdamW \\
 Weight decay & 0.01 \\
-Training precision & \texttt{bfloat16} where supported; otherwise \texttt{float16} \\
+Training precision & \texttt{bfloat16} \\
 Model quantisation & None \\
 LoRA rank $r$ & 16 \\
 LoRA scaling parameter $\alpha$ & 16 \\
@@ -123,9 +123,9 @@ Having described how the trajectories are generated, we next explain how the res
 
 \section{Behavioural Evaluation}
 \label{sec:behaviour}
-As we mentioned, we focus on two behavioural traits: evil and sycophancy. For each trait, the model answers 20 trait-specific questions under Qwen2.5's default system prompt, ``You are Qwen, created by Alibaba Cloud. You are a helpful assistant.'', without any additional positive or negative persona instruction. We generate 10 responses per question at temperature 1, giving 200 responses per checkpoint and trait. Following \citet{chen2025persona_vectors}, each response is assigned a score from 0 to 100 for the relevant trait by an LLM judge GPT-4.1 Mini.
+As we mentioned, we focus on two behavioural traits: evil and sycophancy. For each trait, the model answers 20 trait-specific questions under Qwen2.5's default system prompt, ``You are Qwen, created by Alibaba Cloud. You are a helpful assistant.'', without any additional positive or negative persona instruction. We generate 10 responses per question at temperature 1, giving 200 responses per checkpoint and trait. Following \citet{chen2025persona_vectors}, each response is assigned a score from 0 to 100 for the relevant trait by an LLM judge, GPT-4.1 Mini.
 
-To further reduce variance, the score for each answer is computed as a weighted average of the judge's probability distribution over the numeric scores. The judge produces one completion token and returns its 20 most likely tokens and their log-probabilities. We retain tokens that represent integers from 0 to 100 (every integer in that range is a single token in GPT-4.1 Mini), renormalise their probability mass, and compute the expected score. If the retained numeric tokens have total probability below 0.25, the score is treated as invalid. To illustrate, if the resulting distribution satisfies $P(0)=0.5$, $P(5)=0.25$, $P(10)=0.25$, and $P(x)=0$ for all other $x$, the final score is $0.5\cdot0+0.25\cdot5+0.25\cdot10=3.75$. This allows the score to reflect the judge's uncertainty rather than using only its most likely token.
+To further reduce variance, the score for each answer is computed as a weighted average of the judge's probability distribution over the numeric scores. The judge produces one completion token and returns its 20 most likely tokens and their log-probabilities. We retain tokens representing integers from 0 to 100 (each integer in that range is a single token in GPT-4.1 Mini), renormalise their probability mass, and compute the expected score. If the retained numeric tokens have a total probability below 0.25, the score is considered invalid. To illustrate, if the resulting distribution satisfies $P(0)=0.5$, $P(5)=0.25$, $P(10)=0.25$, and $P(x)=0$ for all other $x$, the final score is $0.5\cdot0+0.25\cdot5+0.25\cdot10=3.75$. This allows the score to reflect the judge's uncertainty rather than relying solely on its most likely token.
 
 Let $b_{t,i}$ denote the valid trait score of the $i$-th response at checkpoint $\mathcal{M}_t$. The mean trait score is
 \begin{equation}
@@ -140,24 +140,26 @@ b_{t,i}
 \text{question}_i,\text{response}_i,\text{rubric}\right).
 \label{eq:judge-expectation}
 \end{equation}
-The same evaluation questions are held fixed across checkpoints. We estimate the finite-generation uncertainty of $b_t$ from the within-question variation,
-\begin{equation}
-\operatorname{SE}(b_t)^2
-=
-\frac{1}{N_{\mathrm{eval}}^2}
-\sum_{m=1}^{N_{\mathrm{eval}}}\frac{\sigma_{t,m}^2}{n_{t,m}},
-\label{eq:behaviour-se}
-\end{equation}
-where $N_{\mathrm{eval}}=20$, $n_{t,m}$ is the number of valid generations for question $m$, and $\sigma_{t,m}^2$ is their sample variance. This estimates uncertainty from finite response sampling while treating the fixed evaluation questions as the population of interest.
+The same evaluation questions are held fixed across checkpoints.
+
+% We estimate the finite-generation uncertainty of $b_t$ from the within-question variation,
+% \begin{equation}
+% \operatorname{SE}(b_t)^2
+% =
+% \frac{1}{N_{\mathrm{eval}}^2}
+% \sum_{m=1}^{N_{\mathrm{eval}}}\frac{\sigma_{t,m}^2}{n_{t,m}},
+% \label{eq:behaviour-se}
+% \end{equation}
+% where $N_{\mathrm{eval}}=20$, $n_{t,m}$ is the number of valid generations for question $m$, and $\sigma_{t,m}^2$ is their sample variance. This estimates uncertainty from finite response sampling while treating the fixed evaluation questions as the population of interest.
 
 \section{Persona Vector Extraction}
 \label{sec:personavec}
 
-For each trait, we extract persona vectors using the mean-of-differences procedure described in \Cref{subsec:persona_vectors}. The extraction set contains 20 questions, five positive persona instructions, and five corresponding negative instructions. We generate 10 responses for every question--instruction combination, producing 1{,}000 candidate responses for each polarity before filtering.
+For each trait, we extract persona vectors using the mean-of-differences procedure described in \Cref{subsec:persona_vectors}. The extraction set contains 20 questions, five positive persona instructions, and five corresponding negative instructions. A positive persona instruction asks the model to produce the corresponding persona trait, and vice versa for negative instructions. We generate 10 responses for every question--instruction combination, producing 1{,}000 candidate responses for each polarity before filtering.
 
-For filtering, the responses are evaluated by the same LLM judge on two separate scales from 0 to 100: the relevant trait and response coherence. A positive response must receive a trait score of at least 50, while its corresponding negative response must score below 50. Both responses must also receive coherence scores of at least 50. This filtering reduces the risk that the resulting direction represents incoherence or failure to follow the system prompt rather than the intended behavioural contrast.
+Responses are then evaluated by the aforementioned LLM judge on ``coherence'' and the studied trait, producing a score from 0 to 100. Responses coming from the positive instruction are kept only if the trait score is at least 50, and vice versa for the negative instructions. They are also filtered out if the coherence is below 50. By filtering out non-representative responses, we ensure the persona vector represents the direction of the trait we are studying. 
 
-For the responses that survive the filtering, we average the residual-stream activations over the response tokens at layer $\ell=20$, which was the layer employed by \citet{chen2025persona_vectors} and was the one with the highest predictive power. We keep $\ell$ constant across all trajectories steps to allow comparisons between persona vectors extracted at different checkpoints (e.g., how much it rotated) and for computationally efficiency. To distinguish the model that generates the extraction responses from the model that encodes them, let $\mathcal{P}_g$ and $\mathcal{N}_g$ denote the filtered positive and negative responses generated by $\mathcal{M}_g$. We define
+For the remaining responses, we average the residual-stream activations over the response tokens at layer $\ell=20$, which was the layer used by \citet{chen2025persona_vectors} and whose respective projection difference had the highest correlation with both $b^{\text{evil}}_1$ and $b^{\text{sycophancy}}_1$ (see Figure 3 in \citet{chen2025persona_vectors}). We keep $\ell$ constant across all trajectory steps to allow comparisons between persona vectors extracted at different checkpoints (e.g., how much they rotated) and to improve computational efficiency. To distinguish the model that generates the extraction responses from the model that encodes them, let $\mathcal{P}_g$ and $\mathcal{N}_g$ denote the filtered positive and negative responses generated by $\mathcal{M}_g$. We define
 \begin{equation}
 \mathbf{v}_{t\leftarrow g}
 =
@@ -168,13 +170,13 @@ For the responses that survive the filtering, we average the residual-stream act
 \left[\bar{\mathbf{h}}^{(\ell)}_t(x)\right],
 \label{eq:persona-vector-source}
 \end{equation}
-where $\bar{\mathbf{h}}^{(\ell)}_t(x)$ is the response-token-averaged activation produced when $\mathcal{M}_t$ encodes response $x$. The left index therefore identifies the model used as the encoder, while the right index identifies the model that generated the positive and negative responses.
+where $\bar{\mathbf{h}}^{(\ell)}_t(x)$ is the response-token-averaged activation produced when $\mathcal{M}_t$ encodes response $x$. The left index $t$ identifies the model used as the encoder, while the right index $g$ identifies the model that generated the positive and negative responses.
 
-Concretely, we compute two current-checkpoint persona vectors. First, the fixed-response vector $\mathbf{v}_{t\leftarrow0}$ is obtained by re-encoding with $\mathcal{M}_t$ the responses generated by $\mathcal{M}_0$. Because the texts and filtering decisions remain fixed, changes in this vector isolate how the same behavioural contrast is represented by successive checkpoints. Second, the regenerated-response vector $\mathbf{v}_{t\leftarrow t}$ is obtained by allowing $\mathcal{M}_t$ to generate new positive and negative responses, which are then filtered and encoded at the same checkpoint. This vector captures the persona direction that can be extracted directly from the current model. Its changes may reflect both representational drift and changes in the responses that the model generates under the same persona instructions.
+Concretely, we compute two current-checkpoint persona vectors. First, the fixed-response vector $\mathbf{v}_{t\leftarrow0}$ is obtained by re-encoding with $\mathcal{M}_t$ the responses generated by $\mathcal{M}_0$. Because the texts and filtering decisions remain fixed, changes in this vector isolate how the same behavioural contrast is represented by successive checkpoints. Second, the regenerated-response vector $\mathbf{v}_{t\leftarrow t}$ is obtained by allowing $\mathcal{M}_t$ to generate new positive and negative responses, which are then filtered and encoded at the same checkpoint. Thus, its changes may reflect both representational drift and changes in the responses that the model generates under the same persona instructions.
 
 \section{Projection-Difference Measurements}
 \label{sec:deltap}
-Once we have computed the persona vectors, we use them to measure how strongly a candidate dataset would move the model along each trait. Let $\mathcal{D}=\{(x_i,y_i)\}_{i=1}^{N}$ be a candidate fine-tuning dataset, where $x_i$ is a user prompt and $y_i$ its target response. Let $\widehat{y}^{(p)}_i$ be the greedy response generated for $x_i$ by $\mathcal{M}_p$. We write
+Once we have computed the persona vectors, we use them to measure how strongly a candidate dataset would move the model along the corresponding trait. Let $\mathcal{D}=\{(x_i,y_i)\}_{i=1}^{N}$ be a candidate fine-tuning dataset, where $x_i$ is a user prompt and $y_i$ its target response. Let $\widehat{y}^{(p)}_i$ be the greedy response generated for $x_i$ by $\mathcal{M}_p$. We define
 \begin{align}
 \mathbf{h}^{\text{target}}_{t}(\mathcal{D})
 &=
@@ -188,7 +190,7 @@ Once we have computed the persona vectors, we use them to measure how strongly a
 \end{align}
 where $\bar{\mathbf{h}}^{(\ell)}_t$ is the layer-$\ell$ residual-stream activation of $\mathcal{M}_t$, averaged over the response tokens. Both the dataset targets and the predicted responses are therefore encoded by the checkpoint being measured, even when their text was produced earlier.
 
-The persona axis introduces two further sources: the checkpoint that encodes the persona responses and the checkpoint that generated them. With $\widehat{\mathbf{v}}_{a\leftarrow g}=\mathbf{v}_{a\leftarrow g}/\lVert\mathbf{v}_{a\leftarrow g}\rVert$, we define
+The persona vector introduces two further sources: the checkpoint that encodes the persona responses and the checkpoint that generated them. With $\widehat{\mathbf{v}}_{a\leftarrow g}=\mathbf{v}_{a\leftarrow g}/\lVert\mathbf{v}_{a\leftarrow g}\rVert$, we define
 \begin{equation}
 \Delta P_t^{a\leftarrow g\mid p}(\mathcal{D})
 =
@@ -200,18 +202,18 @@ The persona axis introduces two further sources: the checkpoint that encodes the
 \widehat{\mathbf{v}}_{a\leftarrow g}.
 \label{eq:deltap-provenance}
 \end{equation}
-The subscript $t$ identifies the model used to encode the candidate dataset, $a\leftarrow g$ identifies the persona axis, and $p$ identifies the model that generated the predicted responses. This is a difference of scalar projections, rather than a difference of cosine similarities: the persona direction is normalised, but the activation difference retains its magnitude. A positive value means that the targets lie further than the model's own predictions in the positive trait direction, while a negative value indicates a pull towards the negative direction.
+$t$ identifies the model used to encode the candidate dataset, $a\leftarrow g$ identifies the persona vector, and $p$ identifies the model that generated the predicted responses $\widehat{y}^{(p)}_i$. Note that the persona direction is normalised, but the activation difference retains its magnitude. Intuitively, a positive value means the targets lie farther in the positive trait direction than the model's current predictions, while a negative value indicates a pull toward the negative direction.
 
 \subsection{Projection-Difference Variants}
 \label{sec:deltap-variants}
-We consider the following six measurements (\Cref{tab:deltap-variants}):
+We consider the following six dataset encoders (\Cref{tab:deltap-variants}):
 \begin{table}[H]
 \centering
 \small
 \begin{tabular}{p{0.24\textwidth}p{0.30\textwidth}p{0.36\textwidth}}
-Measurement & Persona axis & Predicted responses \\
+Measurement & Persona vector & Predicted responses \\
 \hline
-$\Delta P_t^{0\leftarrow0\mid0}$ & Base axis & Generated by $\mathcal{M}_0$ \\
+$\Delta P_t^{0\leftarrow0\mid0}$ & Initial & Generated by $\mathcal{M}_0$ \\
 $\Delta P_t^{0\leftarrow0\mid t}$ & Base axis & Regenerated by $\mathcal{M}_t$ \\
 $\Delta P_t^{t\leftarrow0\mid0}$ & Fixed persona texts re-encoded by $\mathcal{M}_t$ & Generated by $\mathcal{M}_0$ \\
 $\Delta P_t^{t\leftarrow0\mid t}$ & Fixed persona texts re-encoded by $\mathcal{M}_t$ & Regenerated by $\mathcal{M}_t$ \\
@@ -222,14 +224,13 @@ $\Delta P_t^{t\leftarrow t\mid t}$ & Regenerated persona texts encoded by $\math
 \label{tab:deltap-variants}
 \end{table}
 
-The first two measurements keep the persona axis fixed at its base-model value. The next two re-encode the fixed base-model persona responses at the current checkpoint, while the final two regenerate the persona responses themselves. Within each pair, changing only the final index isolates the effect of refreshing the model prediction for the candidate dataset. Similarly, comparing $\mathbf{v}_{t\leftarrow0}$ with $\mathbf{v}_{t\leftarrow t}$ separates changes found by re-encoding a fixed behavioural contrast from those introduced when the extraction responses are regenerated. The fully base measurement is
+We simplify the notation for the projection difference at time $t=0$, as there is no ambiguity:
 \begin{equation}
 \Delta P_0
 =
 \Delta P_0^{0\leftarrow0\mid0}.
 \label{eq:deltap-base}
 \end{equation}
-At $t=0$, all generation sources refer to $\mathcal{M}_0$ and use the same cached candidate and persona responses, so the six variants collapse to this common value. This avoids introducing an artificial base-model difference from independent generation draws.
 
 \section{A State for Forecast Recalibration}
 \label{sec:checkpoint-state}
