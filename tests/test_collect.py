@@ -22,7 +22,6 @@ from method.visualization.collect import (
     base_probe_lookup,
     collect,
     delta_p_0_lookup,
-    diversity_frame,
     hysteresis_frame,
     missing_delta_p_0,
     projection_frame,
@@ -176,16 +175,10 @@ class TestConfigMetadata:
             for cfg in build(measure_traits=("evil",)):
                 assert cfg.group == group
 
-    def test_exp3_and_exp4_label_every_run_with_a_condition(self):
+    def test_exp3_labels_every_run_with_a_condition(self):
         for cfg in hysteresis_configs():
             assert cfg.label_map["condition"] in set(HYSTERESIS_CONDITIONS)
             assert cfg.label_map["dataset"] in {s.dataset_id for s in POOL}
-        for cfg in E.build_diversity_configs(
-            seeds=(0,), measure_traits=("evil",), realign_traits=("evil",), pool=POOL
-        ):
-            assert cfg.label_map["condition"] in set(
-                ("baseline", "same2", "diff2", "same3", "diff3")
-            )
 
     def test_hysteresis_baseline_has_no_realign_trait_label(self):
         """One baseline run serves every realign trait, so it cannot claim one."""
@@ -406,19 +399,6 @@ class TestHysteresisFrame:
         assert row["behavior"] == 31.0
         assert row["behavior_base"] == 20.0
         assert row["behavior_before"] == 6.0
-
-
-class TestDiversityFrame:
-    def test_value_is_the_residual_against_the_base_model(self):
-        configs = E.build_diversity_configs(
-            seeds=(0,), measure_traits=("evil",), realign_traits=("evil",), pool=POOL
-        )
-        for cfg in configs:
-            n = len(cfg.steps)
-            write_run(cfg, behaviors=[4.0] + [50.0] * (n - 1) + [11.0])
-        df = diversity_frame(collect(configs, group=E.EXP4))
-        assert np.allclose(df["delta_behavior"], 7.0)
-        assert set(df["condition"]) == {"baseline", "same2", "diff2", "same3", "diff3"}
 
 
 # --- Delta P_0 --------------------------------------------------------------

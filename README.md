@@ -56,7 +56,7 @@ them, `EXP2_DECAY_BRANCH_A` just trunk A's fan. This is how a design with a sing
 gets split across GPUs.
 
 One caveat on sub-family prefixes: the cost reporting keys off a config's *group*
-(`exp2_validation`, `exp2_decay`, `exp2_reseed`, `exp3`, `exp4`) and matches it exactly,
+(`exp2_validation`, `exp2_decay`, `exp2_reseed`, `exp3`) and matches it exactly,
 so a prefix that is not one of those still runs correctly but reports "nothing logged
 yet" in the end-of-family email and gives no projected remaining cost. Ask for the
 numbers directly instead:
@@ -315,20 +315,18 @@ by $M_0$'s. A trunk a series was not measured on keeps the ones it has: the colu
 there, and nothing fits, draws or keys a series it cannot see. See
 [`docs/delta_p_regen.md`](docs/delta_p_regen.md) for the notation.
 
-### 5. Experiments 3 and 4
-Both are seed sweeps, so `--seeds` is the axis that splits them:
+### 5. Experiment 3
+It is a seed sweep, so `--seeds` is the axis that splits it:
 ```bash
 nohup bash scripts/run_family.sh EXP3 > exp3.log 2>&1 &
-nohup bash scripts/run_family.sh EXP4 > exp4.log 2>&1 &
 ```
-Each family plots to a single figure: `exp3_hysteresis` puts a (measured trait,
-re-alignment source) pair on each row and a dataset in each column, and `exp4_diversity`
-a measured trait per row and a re-alignment source per column. In both, the two rows of
-one measured trait share a y-axis — that comparison is the control the design is for —
-and the two traits do not.
+It plots to a single figure: `exp3_hysteresis` puts a (measured trait, re-alignment
+source) pair on each row and a dataset in each column. The two rows of one measured
+trait share a y-axis — that comparison is the control the design is for — and the two
+traits do not.
 
 ## Base-model DeltaP Probes
-$\Delta P_0$ (DeltaP frozen at the base model) is what the exp3/exp4 scatter plots need
+$\Delta P_0$ (DeltaP frozen at the base model) is what the exp3 scatter plots need
 for datasets a trajectory never trains on first. It is measured once per seed and shared
 across experiments:
 ```bash
@@ -344,10 +342,10 @@ that lets each checkpoint answer for itself is a separate family with its own bu
 [`docs/delta_p_regen.md`](docs/delta_p_regen.md).
 
 ## Generating Plots
-Once trajectories (and base probes for exp3/exp4) are on disk, generate figures:
+Once trajectories (and base probes for exp3) are on disk, generate figures:
 ```bash
 poetry run python -m method.visualization.make_plots --experiment all
-poetry run python -m method.visualization.make_plots --experiment exp2_decay  # or exp2_validation / exp2_reseed / exp3 / exp4
+poetry run python -m method.visualization.make_plots --experiment exp2_decay  # or exp2_validation / exp2_reseed / exp3
 poetry run python -m method.visualization.make_plots --local                  # local-proxy runs
 poetry run python -m method.visualization.make_plots --mock --local           # fabricated runs
 ```
@@ -363,7 +361,7 @@ disk the ceiling counts eval noise only (an upper bound, logged rather than hidd
 
 Plots are written to one directory per run source — `plots/real`, `plots/real-local`,
 `plots/mock`, `plots/mock-local` (or `--out-dir`) — with a per-family subdirectory
-(`exp2/`, `exp3/`, `exp4/`) underneath. The figures directly under `plots/` are the
+(`exp2/`, `exp3/`) underneath. The figures directly under `plots/` are the
 *synthetic* ones drawn from fixtures by `method.visualization.demo`; they do not change
 when runs finish.
 

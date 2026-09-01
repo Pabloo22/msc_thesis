@@ -130,7 +130,6 @@ EXP2_REGEN = "exp2_regen"  # the trunks again, re-answering the probes at every 
 EXP2_V0REGEN = "exp2_v0regen"  # re-answered probes against the base axis
 EXP2_HREGEN = "exp2_hregen"  # the trunks again, re-answering the neutral prompts
 EXP3 = "exp3"  # "Is a model trained on trait-eliciting data more prone to EM?"
-EXP4 = "exp4"  # "Does Data Diversity Hinder Emergent Realignment or Favor EM?"
 #: Section 6d: how much of z_t is the base measurement rather than the model
 #: (:mod:`method.anchor_noise`). Trains nothing and produces no trajectory --
 #: it re-draws the base anchor and re-reads existing checkpoints against each
@@ -174,7 +173,7 @@ def _probe_steps(probes: Sequence[StepConfig], local: bool) -> tuple[StepConfig,
     but not the other would silently double the measurement cost.
 
     Duplicates are dropped rather than rejected, because a per-design default can
-    legitimately name one dataset twice -- a diversity pool whose first entry is
+    legitimately name one dataset twice -- a dataset pool whose first entry is
     also the re-alignment dataset, say -- and ``TrajectoryConfig`` refuses
     duplicate probes.
     """
@@ -273,7 +272,7 @@ _II = DatasetVersion.MISALIGNED_2
 #: identifiable in the mechanism regression.
 #:
 #: No dataset repeats within a trunk: training twice on the same data is the
-#: repeated-exposure effect exp3/exp4 isolate, and allowing it here would leave
+#: repeated-exposure effect exp3 isolates, and allowing it here would leave
 #: the decay curve confounded between drift and repetition. Reuse *across*
 #: trunks is fine -- they are independent trajectories.
 EXP2_TRUNKS: dict[str, tuple[StepConfig, ...]] = {
@@ -361,7 +360,7 @@ def check_exp2_feasibility(
     where decay is meant to be visible, that are corrupted.
 
     *A dataset repeated within a trunk* confounds the decay curve between drift
-    and repeated exposure, which is the very effect exp3 and exp4 exist to
+    and repeated exposure, which is the very effect exp3 exists to
     isolate.
     """
     if trunks is None:
@@ -1245,83 +1244,6 @@ def build_hysteresis_configs(
     return configs
 
 
-# --- experiment 4 (section 6.4, RQ2): dataset diversity --------------------
-
-
-def build_diversity_configs(
-    *,
-    seeds: Sequence[int] = SEEDS,
-    measure_traits: Sequence[str] = MEASURE_TRAITS,
-    realign_traits: Sequence[str] = ("evil", "sycophantic"),
-    pool: Sequence[StepConfig] = HYSTERESIS_DATASETS,
-    probes: Sequence[StepConfig] | None = None,
-    local: bool = False,
-) -> list[TrajectoryConfig]:
-    """Section 6.4: does training-data diversity hinder re-alignment?
-
-    Reuses the same 3-dataset pool as :func:`build_hysteresis_configs`. Every
-    condition ends with a realignment step, so all five depend on
-    realign_trait. same2/same3 and diff2/diff3 share their non-realign
-    prefix, so those adapters are reused automatically by content addressing
-    once written -- no special-casing needed here.
-
-    Each arm probes the *re-alignment* dataset and ``d0`` at every checkpoint.
-    The re-alignment dataset is the load-bearing one: this experiment asks
-    whether diverse prior training blunts re-alignment, so "how much pull back
-    toward normal does the re-alignment data still have, measured just before it
-    is applied" is the mechanism under test -- and it is read off the checkpoint
-    whose residual the bar reports. ``d0`` comes along because it is the dataset
-    every arm starts on, making the drift comparable across conditions.
-    """
-    if len(pool) < 3:
-        raise ValueError("diversity pool needs at least 3 datasets")
-    d0, d1, d2 = pool[0], pool[1], pool[2]
-
-    model, eval_cfg, delta_p, latent = _scale_presets(local)
-    suffix = "_local" if local else ""
-
-    configs: list[TrajectoryConfig] = []
-    for seed in seeds:
-        for trait in measure_traits:
-            for realign_trait in realign_traits:
-                realign = _realign_step(realign_trait)
-                conditions: dict[str, tuple[StepConfig, ...]] = {
-                    "baseline": (d0, realign),
-                    "same2": (d0, d0, realign),
-                    "diff2": (d0, d1, realign),
-                    "same3": (d0, d0, d0, realign),
-                    "diff3": (d0, d1, d2, realign),
-                }
-                for label, steps in conditions.items():
-                    configs.append(
-                        TrajectoryConfig(
-                            name=f"exp4_{label}_{realign_trait}_{trait}{suffix}",
-                            trait=trait,
-                            model=model,
-                            steps=_localize_steps(steps) if local else steps,
-                            seed=seed,
-                            eval=eval_cfg,
-                            delta_p=delta_p,
-                            latent=latent,
-                            group=EXP4,
-                            probes=_probe_steps(
-                                tuple(probes) if probes is not None else (realign, d0),
-                                local,
-                            ),
-                            labels=(
-                                ("condition", label),
-                                ("realign_trait", realign_trait),
-                                # Every condition starts from d0, so the bar
-                                # chart's caption can name the dataset whose
-                                # re-alignment is being measured.
-                                ("dataset", d0.dataset_id),
-                                ("n_misaligned_steps", str(len(steps) - 1)),
-                            ),
-                        )
-                    )
-    return configs
-
-
 # --- collection points for the plotting code -------------------------------
 
 #: Which builder produces each experiment family. The plotting code enumerates
@@ -1337,7 +1259,6 @@ GROUP_BUILDERS: dict[str, Callable[..., list[TrajectoryConfig]]] = {
     EXP2_V0REGEN: build_exp2_v0regen_configs,
     EXP2_HREGEN: build_exp2_hregen_configs,
     EXP3: build_hysteresis_configs,
-    EXP4: build_diversity_configs,
 }
 
 
@@ -1391,7 +1312,6 @@ REGISTRY: dict[str, TrajectoryConfig] = {
     **_register(build_exp2_v0regen_configs()),
     **_register(build_exp2_hregen_configs()),
     **_register(build_hysteresis_configs()),
-    **_register(build_diversity_configs()),
     # The small-model variants (names carry "_local"), so a laptop or mock run
     # of any experiment is reachable from the CLI and `make_plots --local` has
     # runs to find.
@@ -1403,7 +1323,6 @@ REGISTRY: dict[str, TrajectoryConfig] = {
     **_register(build_exp2_v0regen_configs(local=True)),
     **_register(build_exp2_hregen_configs(local=True)),
     **_register(build_hysteresis_configs(local=True)),
-    **_register(build_diversity_configs(local=True)),
 }
 
 

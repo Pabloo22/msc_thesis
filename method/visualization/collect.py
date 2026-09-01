@@ -115,9 +115,8 @@ class Run:
     def total_delta(self) -> float:
         r"""$b_T - b_0$: how far the whole trajectory left the model from base.
 
-        For the diversity designs, whose every condition *ends* with a
-        re-alignment step, this is the residual misalignment that re-alignment
-        failed to undo.
+        For a design whose every condition *ends* with a re-alignment step,
+        this is the residual misalignment that re-alignment failed to undo.
         """
         return self.behavior(-1) - self.behavior(0)
 
@@ -527,26 +526,3 @@ def hysteresis_frame(collection: Collection) -> pd.DataFrame:
         else:
             rows.extend({**row, "realign_trait": rt} for rt in realign_traits or [""])
     return pd.DataFrame(rows)
-
-
-def diversity_frame(collection: Collection) -> pd.DataFrame:
-    r"""RQ2 diversity rows: residual misalignment $b_T - b_0$ after re-alignment.
-
-    Every exp4 condition ends with a re-alignment step, so a bar is "how much
-    of the trait survived re-alignment", measured against the same seed's base
-    model.
-    """
-    return pd.DataFrame(
-        [
-            {
-                "name": run.config.name,
-                "trait": run.trait,
-                "seed": run.seed,
-                "condition": run.label("condition"),
-                "realign_trait": run.label("realign_trait"),
-                "dataset": run.label("dataset"),
-                "delta_behavior": run.total_delta(),
-            }
-            for run in collection.runs
-        ]
-    )

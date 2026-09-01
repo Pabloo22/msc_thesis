@@ -15,7 +15,7 @@ It is deliberately not part of ``run_trajectory``: $\Delta P_0$ for a dataset
 depends only on the base model, the seed and the dataset, never on the
 trajectory. Every experiment sharing a model and seed therefore shares these
 numbers, and the content-addressed store means running this once per seed
-serves exp2, exp3 and exp4 alike.
+serves exp2 and exp3 alike.
 
 No training happens here -- only measurement of the untouched base model.
 """

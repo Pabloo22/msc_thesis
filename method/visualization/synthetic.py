@@ -182,21 +182,6 @@ def synthetic_trajectory_set(
     ]
 
 
-#: Fixed display order for the RQ2 "diversity" bar chart (proposal Section
-#: "Does Data Diversity Hinder Emergent Realignment or Favor EM?"). Condition
-#: strings match the ones the real exp4 builder writes (see
-#: :mod:`method.visualization.labels`), so synthetic and real frames are
-#: interchangeable.
-DIVERSITY_CONDITIONS = ("baseline", "same2", "diff2", "same3", "diff3")
-DIVERSITY_LABELS = {
-    "baseline": "1 dataset",
-    "same2": r"Same $\times$2",
-    "diff2": r"Diverse $\times$2",
-    "same3": r"Same $\times$3",
-    "diff3": r"Diverse $\times$3",
-}
-
-
 #: Display order and labels for the RQ2 "hysteresis" bar chart, taken from the
 #: real thing rather than restated: a fixture that names its own conditions
 #: silently stops previewing the experiment the moment an arm is added or
@@ -282,28 +267,4 @@ def synthetic_hysteresis_frame(
                         "delta_behavior": delta,
                     }
                 )
-    return pd.DataFrame(rows)
-
-
-def synthetic_diversity_frame(*, n_seeds: int = 5, seed: int = 0) -> pd.DataFrame:
-    """Fake data for the RQ2 diversity bar chart ("Does Data Diversity Hinder
-    Emergent Realignment or Favor EM?").
-
-    Encodes the hypothesis under test: repeating *diverse* trait-eliciting
-    datasets leaves more residual misalignment after realignment than
-    repeating the *same* one, and both grow with dataset count.
-    """
-    rng = np.random.default_rng(seed)
-    condition_means = {
-        "baseline": 15.0,
-        "same2": 18.0,
-        "diff2": 24.0,
-        "same3": 21.0,
-        "diff3": 30.0,
-    }
-    rows = [
-        {"condition": condition, "seed": s, "delta_behavior": mean + rng.normal(0, 3.5)}
-        for condition, mean in condition_means.items()
-        for s in range(n_seeds)
-    ]
     return pd.DataFrame(rows)

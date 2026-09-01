@@ -27,7 +27,6 @@ from method.visualization.collect import (
     Run,
     collect_group,
     delta_p_0_lookup,
-    diversity_frame,
     hysteresis_frame,
     projection_frame,
 )
@@ -44,7 +43,6 @@ from method.visualization.decay import (
 )
 from method.visualization.figures import (
     decay_scatter_grid,
-    diversity_bar,
     drift_line,
     forecast_grid,
     headline_curves,
@@ -93,7 +91,6 @@ __all__ = [
     "decay_scatter_grid",
     "delta_p_0_lookup",
     "delta_p_by_dataset",
-    "diversity_frame",
     "hysteresis_frame",
     "fit_frame",
     "forecast_grid",
@@ -113,7 +110,6 @@ __all__ = [
     "score_frame",
     "score_table",
     "display_dataset_name",
-    "diversity_bar",
     "drift_line",
     "hysteresis_bar",
     "line_with_band",

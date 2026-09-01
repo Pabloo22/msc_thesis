@@ -525,11 +525,6 @@ class TestSyntheticFrames:
         df = synthetic.synthetic_hysteresis_frame(("a/normal",), n_seeds=1)
         assert set(df["condition"]) == set(labels.HYSTERESIS_CONDITIONS)
 
-    def test_diversity_frame_matches_fixed_conditions(self) -> None:
-        df = synthetic.synthetic_diversity_frame(n_seeds=5)
-        assert set(df["condition"]) == set(synthetic.DIVERSITY_CONDITIONS)
-        assert len(df) == len(synthetic.DIVERSITY_CONDITIONS) * 5
-
 
 # --- figures.py ----------------------------------------------------------------
 
@@ -730,36 +725,6 @@ class TestHysteresisBar:
             row_scales={"first": "a", "second": "b"},
         )
         assert len({ax.get_ylim() for ax in apart.axes}) == 2
-
-
-class TestDiversityBar:
-    def test_bar_count_matches_conditions(self) -> None:
-        df = synthetic.synthetic_diversity_frame(n_seeds=3)
-        fig = figures.diversity_bar(
-            df, order=synthetic.DIVERSITY_CONDITIONS, labels=synthetic.DIVERSITY_LABELS
-        )
-        (ax,) = fig.axes
-        assert len(ax.patches) == len(synthetic.DIVERSITY_CONDITIONS)
-
-    def test_a_panel_per_trait_and_re_alignment_source(self) -> None:
-        base = synthetic.synthetic_diversity_frame(n_seeds=2)
-        df = pd.concat(
-            [
-                base.assign(trait=trait, realign_trait=realign)
-                for trait in ("sycophantic", "evil")
-                for realign in ("sycophantic", "evil")
-            ],
-            ignore_index=True,
-        )
-        fig = figures.diversity_bar(
-            df,
-            rows=["sycophantic", "evil"],
-            row_labels={"sycophantic": "Sycophancy", "evil": "Evil"},
-            cols=["sycophantic", "evil"],
-            order=synthetic.DIVERSITY_CONDITIONS,
-        )
-        assert len(fig.axes) == 4
-        assert [ax.get_ylabel() for ax in fig.axes] == ["Sycophancy", "", "Evil", ""]
 
 
 # --- figures.py: the RQ1 decay set -------------------------------------------
@@ -1718,7 +1683,9 @@ class TestStyle:
         style.apply_style()  # must not raise
 
     def test_save_figure_writes_png_and_pdf(self, tmp_path) -> None:
-        fig = figures.diversity_bar(synthetic.synthetic_diversity_frame(n_seeds=2))
+        fig = figures.hysteresis_bar(
+            synthetic.synthetic_hysteresis_frame(("a/normal",), n_seeds=2)
+        )
         png_path, pdf_path = style.save_figure(fig, "unit_test_figure", tmp_path)
         assert png_path.exists() and png_path.stat().st_size > 0
         assert pdf_path.exists() and pdf_path.stat().st_size > 0
@@ -1761,7 +1728,7 @@ class TestBuildAndSaveOutputLayout:
         self, monkeypatch, tmp_path
     ) -> None:
         """--experiment exp3 must land in <out_dir>/exp3, not mixed flat into
-        the shared run-source directory with exp2/exp4 figures."""
+        the shared run-source directory with exp2 figures."""
         recorded: dict[str, Path] = {}
 
         def fake_build_exp2(_collections, out_dir, **_kwargs) -> list[Path]:
@@ -1782,17 +1749,13 @@ class TestBuildAndSaveOutputLayout:
         monkeypatch.setattr(
             make_plots,
             "BUILDERS",
-            {
-                experiments.EXP3: fake_build(experiments.EXP3),
-                experiments.EXP4: fake_build(experiments.EXP4),
-            },
+            {experiments.EXP3: fake_build(experiments.EXP3)},
         )
 
         make_plots.build_and_save(tmp_path, groups=list(make_plots.GROUPS))
 
         assert recorded["exp2"] == tmp_path / "exp2"
         assert recorded[experiments.EXP3] == tmp_path / "exp3"
-        assert recorded[experiments.EXP4] == tmp_path / "exp4"
 
 
 class TestExp2Driver:
@@ -2297,7 +2260,7 @@ class TestCorrelationTableOutput:
 class TestDemo:
     def test_build_and_save_writes_all_figures(self, tmp_path) -> None:
         saved = build_and_save(tmp_path, n_seeds=2)
-        assert len(saved) == 14  # 7 figures, 2 files (png+pdf) each
+        assert len(saved) == 12  # 6 figures, 2 files (png+pdf) each
         for path in saved:
             assert path.exists()
             assert path.stat().st_size > 0

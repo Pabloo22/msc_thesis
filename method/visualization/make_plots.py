@@ -19,15 +19,15 @@ module only chooses what to draw and what to name it.
 
 Every figure panels the measured traits together and is named
 ``exp2_<figure>``; nothing here is emitted once per trait (see
-:func:`build_exp2`). exp3 and exp4 do the same, one figure each, with the
-measured trait and the re-alignment source as two dimensions of the grid.
+:func:`build_exp2`). exp3 does the same, one figure, with the measured
+trait and the re-alignment source as two dimensions of the grid.
 
 ``--local`` selects the small-model variants of each design (the ones a mock
 or laptop run produces); without it, the paper-scale configs are used. Each
 combination writes to its own directory (see :func:`default_out_dir`), so a
 mock smoke test never overwrites a paper-scale figure of the same name. Within
 that directory, each experiment family gets its own subdirectory in turn
-(``exp2``, ``exp3``, ``exp4``), so ``--experiment exp3`` lands in
+(``exp2``, ``exp3``), so ``--experiment exp3`` lands in
 ``plots/real/exp3`` rather than mixed in with the others.
 
 Note that the figures under ``plots/`` itself are the *synthetic* ones written
@@ -52,13 +52,10 @@ from method.visualization import decay, figures, forecast, style
 from method.visualization.collect import (
     Collection,
     collect_group,
-    diversity_frame,
     hysteresis_frame,
     seed_noise_frame,
 )
 from method.visualization.labels import (
-    DIVERSITY_CONDITION_LABELS,
-    DIVERSITY_CONDITIONS,
     HYSTERESIS_CONDITIONS,
     TRAITS,
     TRUNKS,
@@ -435,11 +432,10 @@ def _present_series(fits: pd.DataFrame) -> list[str]:
     ]
 
 
-#: Families that sweep seeds over a fixed step sequence, most preferred first.
-#: exp3 leads because its arms are the closest analogue of an exp2 branch --
-#: several one-step arms, five seeds each -- while exp4's every arm ends in a
-#: re-alignment step, so only its first checkpoint is comparable at all.
-SEED_NOISE_SOURCES = (experiments.EXP3, experiments.EXP4)
+#: Families that sweep seeds over a fixed step sequence. exp3 qualifies
+#: because its arms are the closest analogue of an exp2 branch -- several
+#: one-step arms, five seeds each.
+SEED_NOISE_SOURCES = (experiments.EXP3,)
 
 
 def _sigma_seed(collections: Mapping[str, Collection]) -> dict[str, float]:
@@ -1368,42 +1364,6 @@ def build_exp3(collection: Collection, out_dir: Path) -> list[Path]:
     return saved
 
 
-# --- experiment 4 ---------------------------------------------------------
-
-
-def build_exp4(collection: Collection, out_dir: Path) -> list[Path]:
-    """The diversity bar chart: a measured trait per row, a realign trait per column."""
-    saved: list[Path] = []
-    if not collection:
-        logger.warning("exp4: no runs on disk; skipping")
-        return saved
-
-    df = diversity_frame(collection)
-    present = set(df["condition"])
-    conditions = [c for c in DIVERSITY_CONDITIONS if c in present]
-    if len(conditions) < 2:
-        logger.warning("exp4: only %d condition(s) present; skipping", len(conditions))
-        return saved
-
-    traits = _present(df["trait"], TRAITS)
-    realign_traits = _present(df["realign_trait"], TRAITS)
-    fig = figures.diversity_bar(
-        df,
-        rows=traits,
-        row_labels={trait: display_trait_name(trait) for trait in traits},
-        cols=realign_traits,
-        col_labels={
-            trait: f"Re-aligned on {display_trait_name(trait)}-Normal"
-            for trait in realign_traits
-        },
-        order=conditions,
-        labels=DIVERSITY_CONDITION_LABELS,
-        ylabel=r"Residual after re-alignment ($b_T - b_0$)",
-    )
-    _emit(fig, "exp4_diversity", out_dir, saved)
-    return saved
-
-
 # --- driver ---------------------------------------------------------------
 
 #: Which figure builder each single-family experiment gets. exp2 is absent
@@ -1412,7 +1372,6 @@ def build_exp4(collection: Collection, out_dir: Path) -> list[Path]:
 #: :func:`build_exp2` all three at once instead.
 BUILDERS = {
     experiments.EXP3: build_exp3,
-    experiments.EXP4: build_exp4,
 }
 
 #: Every family ``--experiment`` accepts, in run order (the validation fan
@@ -1502,7 +1461,7 @@ def main() -> None:
         default=None,
         help=(
             "parent directory to write PNG/PDF figures into, one subdirectory "
-            "per experiment family (exp2/exp3/exp4) underneath (default: one "
+            "per experiment family (exp2/exp3) underneath (default: one "
             "per run source -- plots/real, plots/real-local, plots/mock, "
             "plots/mock-local)"
         ),

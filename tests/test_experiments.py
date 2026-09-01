@@ -230,7 +230,7 @@ class TestExp2Design:
 
     def test_feasibility_rejects_within_trunk_reuse(self):
         """Training twice on one dataset inside a trunk confounds decay with the
-        repeated-exposure effect exp3/exp4 exist to isolate."""
+        repeated-exposure effect exp3 exists to isolate."""
         driver = E.EXP2_TRUNKS["a"][0]
         with pytest.raises(ValueError, match="trains twice"):
             E.check_exp2_feasibility({"x": (driver, driver)}, E.EXP2_PROBES)
@@ -330,27 +330,6 @@ class TestExp2Design:
 
 
 class TestPrefixSharing:
-    def test_diversity_conditions_share_their_first_step(self):
-        cfgs = {
-            c.name.split("_")[1]: c
-            for c in E.build_diversity_configs(
-                seeds=(0,), measure_traits=("evil",), realign_traits=("evil",)
-            )
-        }
-        first = {name: get_weights_id(c, 1) for name, c in cfgs.items()}
-        assert len(set(first.values())) == 1, first
-
-    def test_same3_extends_same2(self):
-        cfgs = {
-            c.name.split("_")[1]: c
-            for c in E.build_diversity_configs(
-                seeds=(0,), measure_traits=("evil",), realign_traits=("evil",)
-            )
-        }
-        # same2 = (d0, d0, realign); same3 = (d0, d0, d0, realign): the (d0, d0)
-        # prefix is common, so its adapter is trained once.
-        assert get_weights_id(cfgs["same2"], 2) == get_weights_id(cfgs["same3"], 2)
-
     def test_hysteresis_baseline_is_independent_of_realign_trait(self):
         cfgs = E.build_hysteresis_configs(seeds=(0,), measure_traits=("evil",))
         baselines = [c for c in cfgs if c.name.startswith("exp3_baseline")]

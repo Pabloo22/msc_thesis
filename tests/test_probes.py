@@ -130,14 +130,6 @@ class TestBuilderProbeDefaults:
         for target, probe_sets in by_target.items():
             assert len(probe_sets) == 1, f"{target} probed inconsistently: {probe_sets}"
 
-    def test_exp4_probes_its_own_realignment_dataset(self):
-        """The realign dataset differs per realign_trait, so the probe has to
-        track it rather than being a fixed module constant."""
-        for cfg in E.build_diversity_configs(seeds=(0,), measure_traits=("evil",)):
-            realign = E.TRAIT_TO_DATASET[cfg.label_map["realign_trait"]]
-            probed = [p.dataset_id for p in cfg.probes]
-            assert f"{realign}/normal" in probed
-
     def test_probes_can_be_overridden_per_builder(self):
         # exp2_validation takes no `probes` kwarg at all: it has none to
         # override, by design (see the previous test).
@@ -147,33 +139,18 @@ class TestBuilderProbeDefaults:
             cfgs = build(measure_traits=("evil",), probes=())
             assert cfgs and all(cfg.probes == () for cfg in cfgs)
 
-    def test_a_default_naming_one_dataset_twice_is_deduplicated(self):
-        """exp4's default is (realign, d0); a pool whose d0 *is* the realign
-        dataset would otherwise trip TrajectoryConfig's duplicate check."""
-        pool = (
-            StepConfig(dataset="evil", version=DatasetVersion.NORMAL),
-            StepConfig(dataset="hallucination", version=DatasetVersion.MISALIGNED_1),
-            StepConfig(dataset="mistake_gsm8k", version=DatasetVersion.MISALIGNED_2),
-        )
-        cfgs = E.build_diversity_configs(
-            seeds=(0,), measure_traits=("evil",), realign_traits=("evil",), pool=pool
-        )
-        assert cfgs
-        for cfg in cfgs:
-            assert [p.dataset_id for p in cfg.probes] == ["evil/normal"]
-
     def test_local_probes_hash_identically_to_local_steps(self):
         """The saving depends on a probe and the step naming the same dataset
         resolving to one ``training_sample_id``. That hash includes
         ``n_examples``, so localising steps but not probes would silently double
         the measurement cost at local scale.
 
-        Scoped to exp3/exp4, where a probe naming the trajectory's own step is
+        Scoped to exp3, where a probe naming the trajectory's own step is
         the point. exp2_decay is the opposite by design (section 3b: probes are
         disjoint from drivers), and exp2_validation has no probes at all, so
         neither has any overlap for this to check.
         """
-        for group in (E.EXP3, E.EXP4):
+        for group in (E.EXP3,):
             build = E.GROUP_BUILDERS[group]
             for cfg in build(seeds=(0,), measure_traits=("evil",), local=True):
                 by_id = {s.dataset_id: s for s in cfg.steps}

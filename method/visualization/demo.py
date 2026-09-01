@@ -101,15 +101,6 @@ def build_and_save(out_dir: Path = style.PLOTS_DIR, *, n_seeds: int = 5) -> list
     )
     emit(fig, "hysteresis")
 
-    # --- RQ2: does dataset diversity hinder re-alignment? ---
-    diversity_df = synthetic.synthetic_diversity_frame(n_seeds=n_seeds)
-    fig = figures.diversity_bar(
-        diversity_df,
-        order=synthetic.DIVERSITY_CONDITIONS,
-        labels=synthetic.DIVERSITY_LABELS,
-    )
-    emit(fig, "diversity")
-
     return saved
 
 

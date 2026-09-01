@@ -78,15 +78,6 @@ HYSTERESIS_CONDITION_SEQUENCES = {
     "diff": r"$X'\,N\,X$",
 }
 
-DIVERSITY_CONDITIONS = ("baseline", "same2", "diff2", "same3", "diff3")
-DIVERSITY_CONDITION_LABELS = {
-    "baseline": "1 dataset",
-    "same2": r"Same $\times$2",
-    "diff2": r"Diverse $\times$2",
-    "same3": r"Same $\times$3",
-    "diff3": r"Diverse $\times$3",
-}
-
 TRAITS = ("evil", "sycophantic")
 
 #: Trait as it should appear in a figure title.
