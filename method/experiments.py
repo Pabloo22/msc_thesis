@@ -998,26 +998,6 @@ def build_anchor_noise_configs(
     ]
 
 
-#: Where :mod:`method.axis_refresh` re-draws the extraction text, along trunk A.
-#:
-#: ``0`` is not optional and is not a data point: the re-draw there is a second
-#: sample from the *same* model, so the agreement it reports is the sampling
-#: floor every later checkpoint has to be read against. A cosine of 0.97 at
-#: ``t = 6`` means nothing until the floor is known to be 0.99 rather than 0.97.
-#:
-#: ``5`` and ``6`` are the two deepest checkpoints on the trunk, and ``5`` is
-#: also the one immediately after its ``sycophancy`` misaligned-II driver -- the
-#: single update most likely to make ``M_t`` unable to answer the *negative*
-#: half of the sycophantic extraction set credibly, which is the failure the
-#: freeze exists to prevent. ``6`` follows a Normal driver, so the pair also
-#: says whether one benign update restores agreement.
-#:
-#: Deliberately not the whole trunk: each checkpoint costs a full extraction
-#: draw (see :mod:`method.axis_refresh`), and three points answer the question
-#: -- is the freeze still sound where drift is largest? -- that seven would only
-#: answer more expensively.
-AXIS_REFRESH_CHECKPOINTS: tuple[int, ...] = (0, 5, 6)
-
 #: The trait :mod:`method.axis_refresh` checks by default. Unlike the neutral
 #: answers :mod:`method.anchor_noise` re-draws, the extraction set is
 #: trait-specific -- its questions, its persona instructions and its judge

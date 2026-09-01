@@ -262,6 +262,7 @@ def ensure_extract_csvs(
                 version="extract",
                 persona_instruction_type=kind,
                 progress_dir=steps.eval_progress_dir(path),
+                model_id=base_wid,
             )
     return pos, neg
 

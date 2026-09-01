@@ -21,11 +21,14 @@ measures the disagreement.
 from __future__ import annotations
 
 import dataclasses
+import math
 
 import pandas as pd
 import pytest
 
-from method import axis_refresh, experiments as E, steps
+import torch
+
+from method import anchor_noise, axis_refresh, experiments as E, steps
 from method.axis_refresh import FLOOR_CHECKPOINT, REFRESH_SUBDIR
 from method.backends import get_backend
 from method.config import Backend
@@ -41,6 +44,13 @@ def backend():
 def make_cfgs(traits=("sycophantic",)):
     """One single-step config per trait, as the runner builds them."""
     return [dataclasses.replace(E.SMOKE_MOCK, trait=trait) for trait in traits]
+
+
+def make_long_cfg(n_steps=4):
+    """A trunk deep enough to sweep contiguously; SMOKE_MOCK has only two steps."""
+    return dataclasses.replace(
+        E.SMOKE_MOCK, trait="sycophantic", steps=E.ALL_DATASETS[:n_steps]
+    )
 
 
 def with_adapters(cfg, store):
@@ -78,13 +88,17 @@ class TestConfigsReuseTheExistingTrunk:
                 get_weights_id(twin, t) for t in range(len(twin.steps) + 1)
             ]
 
-    def test_default_checkpoints_are_reachable_on_the_trunk(self):
+    def test_default_checkpoints_are_the_whole_trunk(self):
+        """The reading is a curve, so every step on the trunk is a point on it."""
         cfg = E.build_axis_refresh_configs()[0]
-        assert max(E.AXIS_REFRESH_CHECKPOINTS) <= len(cfg.steps)
+        assert axis_refresh.default_checkpoints(cfg) == tuple(
+            range(1, len(cfg.steps) + 1)
+        )
 
-    def test_floor_checkpoint_is_included(self):
-        """Every later cosine is read against the t=0 one, so it is not optional."""
-        assert FLOOR_CHECKPOINT in E.AXIS_REFRESH_CHECKPOINTS
+    def test_default_checkpoints_exclude_the_base(self):
+        """t=0 holds no drift, and its floor is read from anchor-noise draws."""
+        cfg = E.build_axis_refresh_configs()[0]
+        assert FLOOR_CHECKPOINT not in axis_refresh.default_checkpoints(cfg)
 
     def test_default_trait_is_measured_by_exp2(self):
         """A trait exp2 never measured would have no frozen vector to compare to."""
@@ -161,6 +175,31 @@ class TestTheRedrawIsQuarantined:
         axis_refresh.ensure_onpolicy_extract_csvs(cfg, 1, store, backend, "M_1")
 
 
+def floor_row(cos=0.999, neg_pass=1.0):
+    """A t=0 control row, as ``measure`` would build it."""
+    return {
+        "trait": "sycophantic",
+        "t": 0,
+        "cos_refresh": cos,
+        "rho_frozen": 1.0,
+        "rho_onpolicy": cos,
+        "onpolicy_neg_pass": neg_pass,
+        "onpolicy_collapsed": False,
+    }
+
+
+def drifted_row(*, t, cos, collapsed, neg_pass=0.7):
+    return {
+        "trait": "sycophantic",
+        "t": t,
+        "cos_refresh": cos,
+        "rho_frozen": 0.9,
+        "rho_onpolicy": 0.8,
+        "onpolicy_neg_pass": neg_pass,
+        "onpolicy_collapsed": collapsed,
+    }
+
+
 # --- the filter breakdown ---------------------------------------------------
 
 
@@ -226,6 +265,270 @@ class TestFilterCounts:
             axis_refresh.filter_counts(pos, neg, "evil", 50)
 
 
+# --- a total filter collapse is a result, not a crash ------------------------
+
+
+def collapse_the_redraw(cfg, store, t, *, trait_score=90):
+    """Overwrite a drawn extraction set so no pair can survive the filter.
+
+    Both sides score high on the trait, which is what a checkpoint that can no
+    longer answer the *negative* half of its own extraction set looks like.
+    """
+    directory = axis_refresh.refresh_dir(store, get_weights_id(cfg, t), cfg.trait)
+    return write_extract_pair(
+        directory,
+        cfg.trait,
+        pos_rows=[(trait_score, 90)] * 4,
+        neg_rows=[(trait_score, 90)] * 4,
+    )
+
+
+class TestCollapseIsReportedNotRaised:
+    def test_no_vector_is_extracted_when_nothing_survives(
+        self, tmp_path, backend, monkeypatch
+    ):
+        """The vendored extractor would die on torch.cat of an empty list."""
+        cfg = make_cfgs()[0]
+        store = Store(tmp_path)
+        axis_refresh.ensure_onpolicy_extract_csvs(cfg, 1, store, backend, "M_1")
+        collapse_the_redraw(cfg, store, 1)
+
+        monkeypatch.setattr(
+            backend,
+            "extract_vector",
+            lambda *a, **k: pytest.fail("extracted a vector from zero pairs"),
+        )
+        assert (
+            axis_refresh.ensure_onpolicy_vector(cfg, 1, store, backend, "M_1") is None
+        )
+
+    def test_compare_reports_undefined_metrics_and_keeps_the_filter_stats(
+        self, tmp_path, backend
+    ):
+        """The filter statistics are the finding, so they must survive."""
+        cfg = make_cfgs()[0]
+        store = Store(tmp_path)
+        with_adapters(cfg, store)
+        steps.extract_persona_vector(cfg, 0, store, backend)
+        steps.extract_persona_vector(cfg, 1, store, backend)
+        axis_refresh.ensure_onpolicy_extract_csvs(cfg, 1, store, backend, "M_1")
+        collapse_the_redraw(cfg, store, 1)
+        assert (
+            axis_refresh.ensure_onpolicy_vector(cfg, 1, store, backend, "M_1") is None
+        )
+
+        record = axis_refresh.compare(cfg, 1, store)
+
+        assert record["onpolicy_collapsed"] is True
+        assert math.isnan(record["cos_refresh"])
+        assert math.isnan(record["rho_onpolicy"])
+        assert math.isnan(record["r_onpolicy"])
+        # The half that does not depend on the missing vector is still real.
+        assert not math.isnan(record["rho_frozen"])
+        assert record["onpolicy_n_effective"] == 0
+        assert record["onpolicy_neg_pass"] == 0.0
+        assert record["onpolicy_n_pairs"] == 4
+
+    def test_measure_completes_through_a_collapsed_checkpoint(
+        self, tmp_path, backend, monkeypatch
+    ):
+        """A collapse must not take the checkpoints already drawn with it."""
+        cfgs = make_cfgs()
+        store = Store(tmp_path)
+        with_adapters(cfgs[0], store)
+
+        original = axis_refresh.ensure_onpolicy_extract_csvs
+
+        def collapse_at_t2(cfg, t, store_, backend_, model_path):
+            paths = original(cfg, t, store_, backend_, model_path)
+            return collapse_the_redraw(cfg, store_, t) if t == 2 else paths
+
+        monkeypatch.setattr(
+            axis_refresh, "ensure_onpolicy_extract_csvs", collapse_at_t2
+        )
+        frame = axis_refresh.measure(cfgs, [0, 1, 2], store, backend)
+
+        assert list(frame["onpolicy_collapsed"]) == [False, False, True]
+        assert not frame[frame["t"] < 2]["cos_refresh"].isna().any()
+
+
+class TestContiguousSweepsDoNotRemerge:
+    def test_a_checkpoint_survives_until_its_successor_is_built(
+        self, tmp_path, backend
+    ):
+        """Evicting t before measuring t+1 forces a replay from the base model.
+
+        ``materialize`` walks forward from the deepest checkpoint already
+        merged, so on a contiguous sweep each eviction costs the next
+        checkpoint a full rebuild -- a triangular number of merges rather than
+        one per step.
+        """
+        cfgs = [make_long_cfg()]
+        store = Store(tmp_path)
+        with_adapters(cfgs[0], store)
+        write_replicate_vectors(cfgs[0], store, [[1.0, 0.0, 0, 0], [1.0, 0.01, 0, 0]])
+
+        merges = []
+        original = backend.merge
+
+        def record(base_path, adapter, out):
+            merges.append(out.name)
+            return original(base_path, adapter, out)
+
+        backend.merge = record
+        axis_refresh.measure(cfgs, [1, 2, 3], store, backend)
+
+        # One merge per checkpoint, not 1 + 2 + 3.
+        assert len(merges) == 3
+
+    def test_a_gap_in_the_sweep_still_evicts(self, tmp_path, backend):
+        """Nothing builds on t when t+1 is not measured, so it should go."""
+        cfgs = [make_long_cfg()]
+        store = Store(tmp_path)
+        with_adapters(cfgs[0], store)
+        write_replicate_vectors(cfgs[0], store, [[1.0, 0.0, 0, 0], [1.0, 0.01, 0, 0]])
+
+        axis_refresh.measure(cfgs, [1, 3], store, backend)
+
+        assert not store.has_merged(get_weights_id(cfgs[0], 1))
+
+
+class TestAgainstFloorHandlesCollapse:
+    def test_a_collapsed_checkpoint_is_named_not_dropped(self):
+        """idxmin skips NaN, so the worst outcome would otherwise vanish."""
+        frame = pd.DataFrame(
+            [
+                floor_row(),
+                drifted_row(t=5, cos=0.95, collapsed=False),
+                drifted_row(t=6, cos=float("nan"), collapsed=True),
+            ]
+        )
+        row = axis_refresh.against_floor(frame).iloc[0]
+
+        assert row["n_collapsed"] == 1
+        assert row["collapsed_t"] == "6"
+        # The surviving checkpoint still supplies the cosine reading.
+        assert row["worst_t"] == 5
+        assert row["worst"] == pytest.approx(0.95)
+
+    def test_all_collapsed_yields_undefined_rather_than_raising(self):
+        """.loc[[nan]] would raise; the collapse columns carry the finding."""
+        frame = pd.DataFrame(
+            [
+                floor_row(),
+                drifted_row(t=5, cos=float("nan"), collapsed=True),
+                drifted_row(t=6, cos=float("nan"), collapsed=True),
+            ]
+        )
+        row = axis_refresh.against_floor(frame).iloc[0]
+
+        assert row["n_collapsed"] == 2
+        assert row["collapsed_t"] == "5, 6"
+        assert math.isnan(row["worst"])
+        assert math.isnan(row["gap"])
+
+
+# --- the sampling floor -----------------------------------------------------
+
+
+def write_replicate_vectors(cfg, store, values):
+    """Stand in for an anchor-noise sweep having already run at t=0.
+
+    Written from replicate 1 up, never 0: replicate 0 *is* the production
+    vector (see ``anchor_noise.PRODUCTION_REPLICATE``), and clobbering it would
+    corrupt the very baseline the comparison is read against.
+    """
+    for replicate, value in enumerate(values, start=1):
+        path = anchor_noise.persona_vector_path(store, cfg, 0, replicate)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        vector = torch.zeros(cfg.model.layer + 1, 4)
+        vector[cfg.model.layer] = torch.tensor(value)
+        torch.save(vector, path)
+
+
+class TestFloorFromReplicates:
+    def test_none_when_there_is_nothing_to_compare(self, tmp_path):
+        """One draw is not a floor; re-drawing t=0 is then the only way."""
+        cfg = make_cfgs()[0]
+        store = Store(tmp_path)
+        write_replicate_vectors(cfg, store, [[1.0, 0.0, 0.0, 0.0]])
+
+        assert axis_refresh.floor_from_replicates(cfg, store) is None
+
+    def test_worst_pair_is_reported_not_the_mean(self, tmp_path):
+        """A bound in a limitations paragraph has to hold for every pair."""
+        cfg = make_cfgs()[0]
+        store = Store(tmp_path)
+        # Three draws: two identical, one rotated away from them.
+        write_replicate_vectors(
+            cfg, store, [[1.0, 0.0, 0, 0], [1.0, 0.0, 0, 0], [1.0, 1.0, 0, 0]]
+        )
+
+        stats = axis_refresh.floor_from_replicates(cfg, store)
+
+        assert stats["floor_draws"] == 3
+        assert stats["floor_pairs"] == 3
+        assert stats["floor"] == pytest.approx(2**-0.5)  # the rotated pair
+        assert stats["floor_mean"] > stats["floor"]
+
+    def test_measure_without_a_floor_or_replicates_is_rejected(self, tmp_path, backend):
+        """Silently reporting cosines with no scale is the failure to avoid."""
+        cfgs = make_cfgs()
+        store = Store(tmp_path)
+        with_adapters(cfgs[0], store)
+        with pytest.raises(ValueError, match="sampling floor"):
+            axis_refresh.measure(cfgs, [1, 2], store, backend)
+
+    def test_measure_skips_t0_when_replicates_supply_the_floor(self, tmp_path, backend):
+        """The whole point: do not buy a number that is already on disk."""
+        cfgs = make_cfgs()
+        store = Store(tmp_path)
+        with_adapters(cfgs[0], store)
+        write_replicate_vectors(cfgs[0], store, [[1.0, 0.0, 0, 0], [1.0, 0.01, 0, 0]])
+
+        frame = axis_refresh.measure(cfgs, [1, 2], store, backend)
+
+        assert set(frame["t"]) == {1, 2}
+
+    def test_against_floor_uses_the_supplied_floor_when_t0_is_absent(self):
+        frame = pd.DataFrame([drifted_row(t=5, cos=0.90, collapsed=False)])
+        row = axis_refresh.against_floor(frame, {"sycophantic": 0.999}).iloc[0]
+
+        assert row["floor"] == pytest.approx(0.999)
+        assert row["gap"] == pytest.approx(0.099)
+
+
+# --- one selection must not overwrite another's summary ----------------------
+
+
+class TestSummaryLabel:
+    def test_checkpoints_and_traits_both_change_the_label(self):
+        base = axis_refresh.summary_label("a", ["sycophantic"], [0, 5, 6], local=False)
+        fewer_checkpoints = axis_refresh.summary_label(
+            "a", ["sycophantic"], [0, 6], local=False
+        )
+        more_traits = axis_refresh.summary_label(
+            "a", ["sycophantic", "evil"], [0, 5, 6], local=False
+        )
+        other_trunk = axis_refresh.summary_label(
+            "c", ["sycophantic"], [0, 5, 6], local=False
+        )
+        assert len({base, fewer_checkpoints, more_traits, other_trunk}) == 4
+
+    def test_order_does_not_make_a_second_file(self):
+        """The same selection, typed differently, is the same measurement."""
+        assert axis_refresh.summary_label(
+            "a", ["evil", "sycophantic"], [6, 0, 5], local=False
+        ) == axis_refresh.summary_label(
+            "a", ["sycophantic", "evil"], [0, 5, 6], local=False
+        )
+
+    def test_local_runs_do_not_collide_with_paper_scale_ones(self):
+        assert axis_refresh.summary_label(
+            "a", ["sycophantic"], [0], local=True
+        ) != axis_refresh.summary_label("a", ["sycophantic"], [0], local=False)
+
+
 # --- the sweep --------------------------------------------------------------
 
 
@@ -269,30 +572,11 @@ class TestAgainstFloor:
     def test_gap_is_measured_from_the_worst_drifted_checkpoint(self):
         frame = pd.DataFrame(
             [
-                {
-                    "trait": "sycophantic",
-                    "t": 0,
-                    "cos_refresh": 0.99,
-                    "rho_frozen": 1.0,
-                    "rho_onpolicy": 0.99,
-                    "onpolicy_neg_pass": 0.9,
-                },
-                {
-                    "trait": "sycophantic",
-                    "t": 5,
-                    "cos_refresh": 0.80,
-                    "rho_frozen": 0.7,
-                    "rho_onpolicy": 0.6,
-                    "onpolicy_neg_pass": 0.4,
-                },
-                {
-                    "trait": "sycophantic",
-                    "t": 6,
-                    "cos_refresh": 0.90,
-                    "rho_frozen": 0.8,
-                    "rho_onpolicy": 0.75,
-                    "onpolicy_neg_pass": 0.7,
-                },
+                floor_row(cos=0.99, neg_pass=0.9),
+                drifted_row(t=5, cos=0.80, collapsed=False, neg_pass=0.4)
+                | {"rho_frozen": 0.7, "rho_onpolicy": 0.6},
+                drifted_row(t=6, cos=0.90, collapsed=False, neg_pass=0.7)
+                | {"rho_frozen": 0.8, "rho_onpolicy": 0.75},
             ]
         )
         row = axis_refresh.against_floor(frame).iloc[0]
@@ -302,6 +586,7 @@ class TestAgainstFloor:
         assert row["gap"] == pytest.approx(0.19)
         assert row["rho_gap"] == pytest.approx(0.1)
         assert row["neg_pass_drop"] == pytest.approx(0.5)
+        assert row["n_collapsed"] == 0
 
     def test_floor_only_yields_no_rows(self):
         """Comparing the control with itself is not a result worth printing."""

@@ -181,6 +181,7 @@ def measure_behavior(
             cfg,
             version="eval",
             progress_dir=eval_progress_dir(out_csv),
+            model_id=wid,
         )
         df = pd.read_csv(tmp_csv)
         (scratch / Artifacts.BEHAVIOR_JSON).write_text(
@@ -284,6 +285,7 @@ def extract_persona_vector(
                     version="extract",
                     persona_instruction_type=kind,
                     progress_dir=eval_progress_dir(path),
+                    model_id=base_wid,
                 )
 
     model_path = materialize(cfg, t, store, backend)

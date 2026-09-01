@@ -146,13 +146,25 @@ def progress_store(args: argparse.Namespace) -> ProgressStore | None:
     covers everything that decides which answers get produced; judging covers
     who scores them. ``max_concurrent`` is in neither: it changes how fast the
     requests go out, not what they are.
+
+    Generation is identified by ``--model_id`` when the caller supplies one,
+    because ``--model`` is a *location* and not always a stable one. A merged
+    checkpoint is materialised under ``store/merged/<pid>/<weights_id>`` (see
+    :class:`method.store.Store`), so the same weights get a different path in
+    every process. Keying the identity on that path made a *restarted* job look
+    like a different model, which discarded ``generations.jsonl`` and re-ran
+    2000 generations and 4000 judge calls that were already on disk -- the
+    precise failure this module exists to prevent, and one that only bit at
+    ``t > 0``, since ``materialize`` returns the stable Hub id at ``t = 0``.
+    Callers pass the ``weights_id``, which names the weights rather than the
+    copy of them.
     """
     if args.progress_dir is None:
         return None
     return ProgressStore(
         Path(args.progress_dir),
         generation={
-            "model": args.model,
+            "model": args.model_id or args.model,
             "trait": args.trait,
             "version": args.version,
             "persona_instruction_type": args.persona_instruction_type,
@@ -166,6 +178,14 @@ def progress_store(args: argparse.Namespace) -> ProgressStore | None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
+    parser.add_argument(
+        "--model_id",
+        default=None,
+        help="Stable identity of the weights behind --model, used for resume "
+        "bookkeeping only (never to load anything). Defaults to --model, which "
+        "is correct for a Hub id but not for a merged checkpoint, whose path "
+        "contains the materialising process's pid. See progress_store.",
+    )
     parser.add_argument("--trait", required=True)
     parser.add_argument("--output_path", required=True)
     parser.add_argument("--version", default="eval")

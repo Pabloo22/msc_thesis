@@ -139,6 +139,7 @@ class ExecutionBackend(ABC):
         version: str = "eval",
         persona_instruction_type: str | None = None,
         progress_dir: Path | None = None,
+        model_id: str | None = None,
     ) -> None:
         """Generate and judge responses, writing eval_persona's CSV.
 
@@ -147,6 +148,14 @@ class ExecutionBackend(ABC):
         the final artifact: it is where generated answers and judge scores are
         banked as they arrive, so a failed attempt resumes rather than paying
         for every request again.
+
+        ``model_id`` names *which weights* ``model_path`` currently holds, and
+        every caller that passes ``progress_dir`` should pass it too. Banked
+        progress is discarded when the model it belongs to changes, and at
+        ``t > 0`` ``model_path`` is a merged checkpoint under
+        ``store/merged/<pid>/<weights_id>`` -- so without this the identity
+        changes with the pid, and a *restarted* job throws away every answer it
+        had already generated and judged. Pass the ``weights_id``.
         """
 
     @abstractmethod
@@ -255,6 +264,7 @@ class RealBackend(ExecutionBackend):
         version: str = "eval",
         persona_instruction_type: str | None = None,
         progress_dir: Path | None = None,
+        model_id: str | None = None,
     ) -> None:
         n = (
             cfg.eval.extract_n_per_question
@@ -289,6 +299,8 @@ class RealBackend(ExecutionBackend):
             cmd += ["--persona_instruction_type", persona_instruction_type]
         if progress_dir is not None:
             cmd += ["--progress_dir", str(progress_dir)]
+        if model_id is not None:
+            cmd += ["--model_id", model_id]
         if self.vllm_dtype is not None:
             cmd += ["--vllm_dtype", self.vllm_dtype]
         cmd += ["--vllm_max_model_len", str(cfg.model.max_seq_length)]
@@ -463,6 +475,7 @@ class MockBackend(ExecutionBackend):
         version: str = "eval",
         persona_instruction_type: str | None = None,
         progress_dir: Path | None = None,  # nothing to resume: no work is done
+        model_id: str | None = None,  # likewise: nothing is banked to identify
     ) -> None:
         import pandas as pd
 

@@ -222,6 +222,29 @@ def test_changing_the_generation_settings_starts_over(tmp_path):
     assert judge_call_count(questions) == 2 * N_PER_QUESTION * 2
 
 
+def test_a_stable_model_id_survives_a_restart(tmp_path):
+    """The identity must name the weights, not where they were merged.
+
+    ``materialize`` returns ``store/merged/<pid>/<weights_id>`` at ``t > 0``, so
+    a restarted job sees a different path for identical weights. Keying the
+    generation identity on that path discarded 2000 answers and 4000 judge
+    calls on every restart -- the precise loss this module exists to prevent.
+    Callers pass ``model_id=<weights_id>`` instead (see
+    ``method.eval_wrapper.progress_store``); this pins that the substitution
+    actually makes the identity stable.
+    """
+    store = make_store(tmp_path, generation={"model": "t05-abc123"})
+    generator = FakeGenerator()
+    run_eval(store, generator, make_questions())
+
+    # Same weights, same run, new process: only the pid in the path changed,
+    # and the id the caller passes does not carry it.
+    restarted = make_store(tmp_path, generation={"model": "t05-abc123"})
+    run_eval(restarted, generator, make_questions())
+
+    assert generator.calls == 1
+
+
 def test_cleared_progress_leaves_nothing_behind(tmp_path):
     store = make_store(tmp_path)
     run_eval(store, FakeGenerator(), make_questions())
