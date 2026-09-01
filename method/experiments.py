@@ -136,6 +136,10 @@ EXP4 = "exp4"  # "Does Data Diversity Hinder Emergent Realignment or Favor EM?"
 #: it re-draws the base anchor and re-reads existing checkpoints against each
 #: draw -- so the tag exists for provenance, not for ``collect_group``.
 ANCHOR_NOISE = "anchor_noise"
+#: Whether freezing the extraction text at M_0 still yields the right axis once
+#: the model has drifted (:mod:`method.axis_refresh`). Trains nothing and
+#: produces no trajectory either, for the same reason ANCHOR_NOISE does not.
+AXIS_REFRESH = "axis_refresh"
 
 MEASURE_TRAITS: tuple[str, ...] = ("evil", "sycophantic")
 #: SFT dataset directory for each trait's "normal" (re-alignment) data. Note
@@ -987,6 +991,73 @@ def build_anchor_noise_configs(
             steps=tuple(trunks[trunk]),
             seed=seed,
             group=ANCHOR_NOISE,
+            labels=(("role", "trunk"), ("trunk", trunk)),
+            local=local,
+        )
+        for trait in measure_traits
+    ]
+
+
+#: Where :mod:`method.axis_refresh` re-draws the extraction text, along trunk A.
+#:
+#: ``0`` is not optional and is not a data point: the re-draw there is a second
+#: sample from the *same* model, so the agreement it reports is the sampling
+#: floor every later checkpoint has to be read against. A cosine of 0.97 at
+#: ``t = 6`` means nothing until the floor is known to be 0.99 rather than 0.97.
+#:
+#: ``5`` and ``6`` are the two deepest checkpoints on the trunk, and ``5`` is
+#: also the one immediately after its ``sycophancy`` misaligned-II driver -- the
+#: single update most likely to make ``M_t`` unable to answer the *negative*
+#: half of the sycophantic extraction set credibly, which is the failure the
+#: freeze exists to prevent. ``6`` follows a Normal driver, so the pair also
+#: says whether one benign update restores agreement.
+#:
+#: Deliberately not the whole trunk: each checkpoint costs a full extraction
+#: draw (see :mod:`method.axis_refresh`), and three points answer the question
+#: -- is the freeze still sound where drift is largest? -- that seven would only
+#: answer more expensively.
+AXIS_REFRESH_CHECKPOINTS: tuple[int, ...] = (0, 5, 6)
+
+#: The trait :mod:`method.axis_refresh` checks by default. Unlike the neutral
+#: answers :mod:`method.anchor_noise` re-draws, the extraction set is
+#: trait-specific -- its questions, its persona instructions and its judge
+#: rubric all come from ``trait_data_extract/<trait>.json`` -- so nothing is
+#: shared between traits and a second one costs a second full draw at every
+#: checkpoint. One trait answers the methodological question; ``sycophantic``
+#: is the one whose driver appears on trunk A.
+AXIS_REFRESH_TRAITS: tuple[str, ...] = ("sycophantic",)
+
+
+def build_axis_refresh_configs(
+    *,
+    trunk: str = "a",
+    seed: int = EXP2_SEED,
+    measure_traits: Sequence[str] = AXIS_REFRESH_TRAITS,
+    trunks: Mapping[str, Sequence[StepConfig]] = EXP2_TRUNKS,
+    local: bool = False,
+) -> list[TrajectoryConfig]:
+    """One config per trait over an existing trunk, for re-drawing its axis.
+
+    Deliberately identical to :func:`build_exp2_decay_configs`' trunk in
+    everything ``weights_key`` hashes -- model, seed, steps -- so it resolves to
+    the *same* checkpoints and replays adapters that already exist instead of
+    training anything, exactly as :func:`build_anchor_noise_configs` does.
+    ``tests/test_axis_refresh.py`` pins that equality, so a later edit to either
+    builder cannot silently send this one off to measure a parallel trunk.
+
+    No probes. :mod:`method.axis_refresh` compares two persona vectors and the
+    filter that produced them; DeltaP does not enter, and asking for probes here
+    would materialise training subsamples nothing reads.
+    """
+    if trunk not in trunks:
+        raise ValueError(f"unknown trunk {trunk!r}; known: {sorted(trunks)}")
+    return [
+        _exp2_config(
+            name=f"axis_refresh_trunk_{trunk}_{trait}",
+            trait=trait,
+            steps=tuple(trunks[trunk]),
+            seed=seed,
+            group=AXIS_REFRESH,
             labels=(("role", "trunk"), ("trunk", trunk)),
             local=local,
         )

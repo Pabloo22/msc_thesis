@@ -432,3 +432,48 @@ vary the *fine-tuning* seed. Those bound measurement noise from above but cannot
 it — and because `weights_key` normalizes the seed away at $t = 0$, every seed in them
 reads one cached anchor, so the anchor's own error contributes nothing to what they
 measure. The two are complements, not substitutes.
+
+## Checking the Frozen Extraction Text
+
+$v^{(t)}$ is extracted from $M_t$'s activations over pos/neg responses that $M_0$
+generated **once** — every later checkpoint re-encodes that same fixed text, rather than
+answering for itself as Chen et al.'s procedure does. The freeze is deliberate: it keeps
+$\rho_t = \cos(v^{(0)}, v^{(t)})$ a statement about the encoder rather than about churn
+in the stimuli, and it keeps the pos/neg contrast defined at a checkpoint that can no
+longer produce a credible *negative* response. `method.axis_refresh` turns both arguments
+into measurements:
+
+```bash
+poetry run python -m method.axis_refresh                              # trunk a, sycophantic, t = 0 5 6
+poetry run python -m method.axis_refresh --trunk a --checkpoints 0 6
+poetry run python -m method.axis_refresh --backend mock --local
+```
+
+At each checkpoint it draws the extraction set a second time — from $M_t$ itself, judged
+and filtered exactly as the production path judges $M_0$'s — extracts a second vector from
+it, and reports `cos_refresh`, the cosine between the frozen axis and the checkpoint's own.
+
+**Read every row against $t = 0$.** There the re-draw comes from the same model, so the
+two vectors differ only by the temperature-1 sampling of the responses and the judge's
+scoring of them. That is the floor: 0.97 at $t = 6$ means nothing until the floor is known
+to be 0.99 rather than 0.97. `against_floor` does that subtraction and takes the worst
+drifted checkpoint, not the mean — a bound quoted in a limitations paragraph has to hold
+everywhere the paragraph applies.
+
+Beside it, `n_effective` and the per-clause pass rates say how many of the 1000
+question × instruction × sample pairs survived the vendored filter and which clause did
+the rejecting. The frozen column is constant in $t$ by construction; the on-policy column
+falling away from it — concentrated in `neg_pass` — *is* the degenerate case the freeze
+was chosen to avoid, measured rather than argued.
+
+It trains nothing: the trunk's adapters must already exist. Budget one full extraction
+draw per (checkpoint, trait) — 1000 responses on each side, 4000 judge calls, then a
+forward pass per surviving pair. Nothing is shared between traits here (the questions,
+instructions and rubric are all trait-specific), which is why the default is one. Fresh
+draws are quarantined in `axis_refresh/` inside each checkpoint's trait measurement
+bundle, so the production vector they are compared against is never touched. The summary
+lands in `trajectories/axis_refresh/` and syncs with the trajectories root.
+
+Out of scope here: what a refreshed axis would do to $\Delta P$. That asks whether
+staleness changes a *prediction* rather than the ruler, and it belongs to the four-corner
+square in `DeltaPView` (`EXP2_AXIS` / `EXP2_REGEN` / `EXP2_V0REGEN`).

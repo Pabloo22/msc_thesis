@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import gc
 import hashlib
+import logging
 import json
 import re
 import time
@@ -35,6 +36,8 @@ VENDORED_MAX_NUM_SEQS = 32
 #: be told this explicitly.
 
 _CAPTURE_SIZES = (1, 2, 4, 8, 16, 24, 32)
+
+logger = logging.getLogger(__name__)
 
 _CHECKPOINT_RE = re.compile(r"checkpoint-(\d+)")
 
@@ -364,3 +367,46 @@ def force_vllm_max_model_len(max_model_len: int) -> None:
         return original_init(self, *args, **kwargs)
 
     vllm.LLM.__init__ = patched_init  # type: ignore[method-assign]
+
+
+def shutdown_vllm(llm: Any) -> None:
+    """Release an engine at a known point, rather than at interpreter exit.
+
+    This is **not** filling an absent mechanism. vLLM 0.8.5 already registers
+    ``weakref.finalize(self, self.resources)`` in ``MPClient.__init__``, and
+    ``BackgroundResources.__call__`` closes every ``CoreEngine`` -- so a worker
+    that exits normally does terminate the V1 ``EngineCore`` process it
+    started. What an explicit call buys is narrower and worth stating exactly,
+    because the difference is what this helper can and cannot be credited with:
+
+    * **It happens at a point we choose**, before the interpreter starts tearing
+      down, rather than whenever the finalizer runs.
+    * **A failure is visible.** The finalizer's exceptions are swallowed by the
+      interpreter at exit; here they are logged, so a teardown that does not
+      work stops being invisible.
+
+    It does not help when the worker is killed outright -- ``SIGKILL`` runs no
+    finalizer and no ``finally`` block -- which is the case that can still
+    strand an ``EngineCore`` holding a full model. The paired
+    :func:`method.utils.wait_for_free_vram` on the *next* load is what covers
+    that one, by making it a legible wait-then-error instead of an OOM.
+
+    ``LLM`` exposes no ``shutdown`` of its own in 0.8.5, so this reaches the
+    one object that has it: ``llm_engine.engine_core``, an
+    ``EngineCoreClient`` -- ``MPClient.shutdown`` terminates the background
+    process, ``InprocClient.shutdown`` releases in-process state. Every step is
+    guarded, and the attribute walk tolerates a different layout, because a
+    worker whose output is already written must not fail on teardown.
+    """
+    engine = getattr(llm, "llm_engine", None)
+    core = getattr(engine, "engine_core", None)
+    for target in (core, engine, llm):
+        shutdown = getattr(target, "shutdown", None)
+        if callable(shutdown):
+            try:
+                shutdown()
+            except Exception as exc:  # noqa: BLE001 -- teardown is best-effort
+                logger.warning("vLLM shutdown via %r failed: %s", target, exc)
+            else:
+                break
+    gc.collect()

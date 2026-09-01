@@ -9,8 +9,9 @@ import os
 import re
 import subprocess
 import sys
+import time
 from collections import deque
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -61,6 +62,18 @@ def anchor_noise_path(base_weights_id: str, label: str, *, mock: bool = False) -
     """
     root = trajectories_root(mock=mock)
     return root / "anchor_noise" / f"{base_weights_id}_{label}.json"
+
+
+def axis_refresh_path(base_weights_id: str, label: str, *, mock: bool = False) -> Path:
+    """Where a re-draw of the extraction text writes its summary.
+
+    Keyed exactly as :func:`anchor_noise_path` is, and for the same reasons: the
+    comparison is anchored at the base model, and the ``label`` names the
+    checkpoint span it was carried along, since the same base draw says
+    something different at ``t = 6`` than at ``t = 1``.
+    """
+    root = trajectories_root(mock=mock)
+    return root / "axis_refresh" / f"{base_weights_id}_{label}.json"
 
 
 def model_slug(model_name: str) -> str:
@@ -205,6 +218,214 @@ def require_cuda(component: str) -> None:
         "'Unable to determine the device handle for GPU1'), the driver is "
         "wedged and no new CUDA process can start until the host is reset."
     )
+
+
+#: What fraction of the card a vLLM worker needs free before it may load.
+#: The vendored loader hardcodes ``gpu_memory_utilization=0.9`` in both of its
+#: branches (``eval/model_utils.py``), so this is not a guess about the
+#: workload -- it is the number vLLM will itself try to reserve.
+VLLM_FREE_FRACTION = 0.9
+
+#: The same for a worker that loads the model through transformers rather than
+#: vLLM. Weights plus batch activations for a 7B checkpoint in bfloat16 sit
+#: near 15GB of a 24GB card; the point of the check there is not to predict
+#: that footprint but to notice a *whole other model* still resident, which is
+#: what the gate below exists for.
+TORCH_FREE_FRACTION = 0.7
+
+#: How long to wait for the card to come free, and how often to look. A clean
+#: engine teardown takes seconds, so this is generous on purpose: when the card
+#: is already free the call returns on the first probe and costs nothing, and
+#: when it is not, waiting two minutes is far cheaper than losing the stage.
+GPU_READY_TIMEOUT_S = 120.0
+GPU_READY_POLL_S = 2.0
+
+
+def _visible_device() -> str:
+    """Which GPU ``nvidia-smi`` should be asked about.
+
+    ``CUDA_VISIBLE_DEVICES`` is how this pipeline splits work across cards
+    (see ``scripts/run_family.sh``), and NVML does not honour it -- index 0
+    there is the first *physical* card, not the first visible one. Reading the
+    first entry keeps the gate pointed at the card the worker will actually
+    load onto. An index or a UUID both work: ``nvidia-smi -i`` accepts either.
+    """
+    visible = os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",")[0].strip()
+    return visible or "0"
+
+
+def gpu_memory() -> tuple[int, int] | None:
+    """``(free, total)`` bytes on the GPU this process will use, or None.
+
+    Shells out to ``nvidia-smi`` rather than asking torch, and that is the
+    whole reason this function exists rather than a one-line
+    ``torch.cuda.mem_get_info``. Every caller runs *before* the model loads,
+    and touching the CUDA runtime that early is exactly what
+    :func:`require_cuda` is written to avoid: it registers an ``atfork``
+    handler that poisons vLLM's V1 ``EngineCore`` fork while leaving
+    ``torch.cuda.is_initialized()`` False, so the engine forks anyway and the
+    child dies 45s later. A subprocess creates no context in *this* process.
+
+    ``None`` when the driver cannot be read, which callers treat as "cannot
+    tell" rather than "not ready" -- a missing ``nvidia-smi`` must not be able
+    to stop a run that would otherwise work.
+    """
+    try:
+        proc = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=memory.free,memory.total",
+                "--format=csv,noheader,nounits",
+                "-i",
+                _visible_device(),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.debug("cannot read GPU memory (%s)", exc)
+        return None
+    line = proc.stdout.strip().splitlines()[0] if proc.stdout.strip() else ""
+    try:
+        free_mib, total_mib = (int(part) for part in line.split(",")[:2])
+    except ValueError:
+        logger.debug("unparseable nvidia-smi memory output: %r", line)
+        return None
+    return free_mib * 1024**2, total_mib * 1024**2
+
+
+def gpu_processes() -> str:
+    """Whatever the driver will say about who is holding the card.
+
+    Purely for the error message below, and the reason it is worth the two
+    subprocess calls: the one thing the OOM that motivated this could not say
+    was *what* the 12 GiB it was short of belonged to. A pid alone answers
+    less than it looks -- ``nvidia-smi`` inside a container reports **host**
+    pids, so the number often resolves to nothing in this namespace -- so the
+    parent and start time are read where they are readable, and quietly
+    omitted where they are not.
+
+    Best effort throughout: this runs on the failure path, and a diagnostic
+    that can itself fail is worse than a thin one.
+    """
+    try:
+        proc = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-compute-apps=pid,used_memory",
+                "--format=csv,noheader",
+                "-i",
+                _visible_device(),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    holders = []
+    for line in proc.stdout.splitlines():
+        if not line.strip():
+            continue
+        pid = line.split(",")[0].strip()
+        holders.append(f"{line.strip()}{_process_detail(pid)}")
+    return "; ".join(holders)
+
+
+def _process_detail(pid: str) -> str:
+    """``(ppid=..., started ...)`` for a pid, or "" when it is not ours to see.
+
+    The empty case is the common one in a container, and it is informative in
+    itself: a pid ``nvidia-smi`` reports but ``ps`` cannot find is either on
+    the host side of a namespace boundary or already gone.
+    """
+    if not pid.isdigit():
+        return ""
+    try:
+        proc = subprocess.run(
+            ["ps", "-o", "ppid=,lstart=,comm=", "-p", pid],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return " (not visible in this pid namespace)"
+    detail = " ".join(proc.stdout.split())
+    return f" ({detail})" if detail else " (not visible in this pid namespace)"
+
+
+def wait_for_free_vram(
+    component: str,
+    *,
+    fraction: float = VLLM_FREE_FRACTION,
+    timeout_s: float = GPU_READY_TIMEOUT_S,
+    poll_s: float = GPU_READY_POLL_S,
+    probe: Callable[[], tuple[int, int] | None] = gpu_memory,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    """Block until ``fraction`` of the GPU is free, then return.
+
+    Defence in depth, not a fix for a diagnosed cause. What is established is
+    only this: a worker died because another process held 12 GiB of a 24 GiB
+    card, and the vendored loader asks for 90% of it (see
+    :data:`VLLM_FREE_FRACTION`), so a holder of that size makes the next load
+    impossible rather than merely smaller. One such OOM aborted a whole family,
+    because ``run_family.sh`` runs under ``set -e``.
+
+    What is *not* established is who the holder was. vLLM 0.8.5 terminates its
+    V1 ``EngineCore`` through a finalizer on normal exit (see
+    :func:`method.vllm_patches.shutdown_vllm`), so an ordinary handover does
+    not strand one; a worker killed outright would, and so would an unrelated
+    process on the box. This function deliberately does not care which: it
+    waits for the card, and if the card does not come free it names whoever is
+    holding it, which is the thing an OOM traceback cannot.
+
+    It never kills anything. Deciding that a process is stray is a judgement
+    about the box, not about this worker, and a gate that guessed wrong would
+    take out the run it was meant to protect.
+
+    ``probe`` and ``sleep`` are injectable so the logic can be tested without a
+    GPU. A ``probe`` that returns None disables the gate -- see
+    :func:`gpu_memory`.
+    """
+    waited = 0.0
+    announced = False
+    while True:
+        memory = probe()
+        if memory is None:
+            logger.debug("%s: cannot read GPU memory, skipping the wait", component)
+            return
+        free, total = memory
+        if total <= 0 or free >= fraction * total:
+            if announced:
+                logger.info("%s: GPU came free after %.0fs", component, waited)
+            return
+        if waited >= timeout_s:
+            holders = gpu_processes()
+            raise RuntimeError(
+                f"{component} needs {fraction:.0%} of the GPU free and only "
+                f"{free / 1024**3:.1f} of {total / 1024**3:.1f} GiB is, after "
+                f"waiting {waited:.0f}s"
+                + (f". Holding it: {holders}" if holders else "")
+                + ". A leaked vLLM EngineCore from a killed worker looks like "
+                "this and survives its parent; kill it and re-run, which "
+                "resumes from whatever already landed."
+            )
+        if not announced:
+            announced = True
+            logger.info(
+                "%s: waiting for the GPU (%.1f of %.1f GiB free, need %.0f%%)",
+                component,
+                free / 1024**3,
+                total / 1024**3,
+                fraction * 100,
+            )
+        sleep(poll_s)
+        waited += poll_s
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:

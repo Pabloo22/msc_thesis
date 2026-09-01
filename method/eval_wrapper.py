@@ -24,9 +24,15 @@ import hashlib
 import logging
 import os
 from pathlib import Path
+from typing import Any
 
 from method.eval_progress import ProgressStore, make_eval_batched
-from method.utils import DOTENV_PATH, load_dotenv
+from method.utils import (
+    DOTENV_PATH,
+    VLLM_FREE_FRACTION,
+    load_dotenv,
+    wait_for_free_vram,
+)
 from method.vllm_patches import (
     VENDORED_MAX_NUM_SEQS,
     disable_vllm_lora,
@@ -35,6 +41,7 @@ from method.vllm_patches import (
     force_vllm_max_model_len,
     freeze_gc_during_cudagraph_capture,
     share_vllm_compile_cache,
+    shutdown_vllm,
 )
 
 logger = logging.getLogger(__name__)
@@ -281,18 +288,43 @@ def main() -> None:
         if store.has_generations():
             eval_persona.load_vllm_model = skip_model_load
 
-    eval_persona.main(
-        model=args.model,
-        trait=args.trait,
-        output_path=args.output_path,
-        version=args.version,
-        persona_instruction_type=args.persona_instruction_type,
-        n_per_question=args.n_per_question,
-        judge_model=args.judge_model,
-        max_tokens=args.max_tokens,
-        max_concurrent_judges=args.max_concurrent,
-        overwrite=args.overwrite,
-    )
+    # The vendored main() owns the engine it builds, so the only handle on it
+    # is the loader it calls. Wrapping whatever ``load_vllm_model`` is *now*
+    # keeps the skip_model_load branch above intact -- that one returns no
+    # engine, and there is then nothing to release.
+    engines: list[Any] = []
+    loader = eval_persona.load_vllm_model
+
+    def loader_recording_engine(*loader_args, **loader_kwargs):
+        # Same reason as _generate_worker: a still-releasing EngineCore from
+        # the previous stage makes this load an OOM rather than a tighter fit.
+        wait_for_free_vram("eval_wrapper", fraction=VLLM_FREE_FRACTION)
+        result = loader(*loader_args, **loader_kwargs)
+        engines.append(result[0])
+        return result
+
+    eval_persona.load_vllm_model = loader_recording_engine
+
+    try:
+        eval_persona.main(
+            model=args.model,
+            trait=args.trait,
+            output_path=args.output_path,
+            version=args.version,
+            persona_instruction_type=args.persona_instruction_type,
+            n_per_question=args.n_per_question,
+            judge_model=args.judge_model,
+            max_tokens=args.max_tokens,
+            max_concurrent_judges=args.max_concurrent,
+            overwrite=args.overwrite,
+        )
+    finally:
+        # In a finally block, unlike _generate_worker's: this worker's output
+        # is written by main() itself, so there is no "after the results are
+        # safe" moment to hook, and a failed eval leaks the card just as
+        # readily as a successful one.
+        for engine in engines:
+            shutdown_vllm(engine)
 
     # Only now: main() has written the CSV, so the partial results it was
     # rebuilt from are no longer worth anything.

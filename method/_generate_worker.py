@@ -18,7 +18,12 @@ import json
 import sys
 from pathlib import Path
 
-from method.utils import PERSONA_VECTORS_DIR, require_cuda
+from method.utils import (
+    PERSONA_VECTORS_DIR,
+    VLLM_FREE_FRACTION,
+    require_cuda,
+    wait_for_free_vram,
+)
 from method.vllm_patches import (
     VENDORED_MAX_NUM_SEQS,
     disable_vllm_lora,
@@ -27,6 +32,7 @@ from method.vllm_patches import (
     force_vllm_max_model_len,
     freeze_gc_during_cudagraph_capture,
     share_vllm_compile_cache,
+    shutdown_vllm,
 )
 
 
@@ -88,6 +94,10 @@ def main() -> None:
         for line in args.input.read_text().splitlines()
         if line.strip()
     ]
+    # The previous stage's engine may still be releasing the card: V1 tears
+    # EngineCore down in its own process, and this worker asks for 90% of the
+    # GPU, so an overlap is an OOM rather than a smaller KV cache.
+    wait_for_free_vram("_generate_worker", fraction=VLLM_FREE_FRACTION)
     llm, tokenizer, lora_path = load_vllm_model(args.model)
 
     texts = [
@@ -109,17 +119,24 @@ def main() -> None:
         from vllm.lora.request import LoRARequest
 
         kwargs["lora_request"] = LoRARequest("default", 1, lora_path=lora_path)
-    completions = llm.generate(texts, **kwargs)
+    try:
+        completions = llm.generate(texts, **kwargs)
 
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    with args.output.open("w", encoding="utf-8") as handle:
-        for row, completion in zip(rows, completions):
-            messages = list(row["messages"])
-            messages.append(
-                {"role": "assistant", "content": completion.outputs[0].text}
-            )
-            handle.write(json.dumps({"messages": messages}) + "\n")
-    print(f"generated {len(rows)} answers -> {args.output}", flush=True)
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        with args.output.open("w", encoding="utf-8") as handle:
+            for row, completion in zip(rows, completions):
+                messages = list(row["messages"])
+                messages.append(
+                    {"role": "assistant", "content": completion.outputs[0].text}
+                )
+                handle.write(json.dumps({"messages": messages}) + "\n")
+        print(f"generated {len(rows)} answers -> {args.output}", flush=True)
+    finally:
+        # In `finally`, because a generation that raises holds the card exactly
+        # as firmly as one that succeeds -- and the next worker's load is what
+        # pays for it. Safe to run on the failure path: shutdown_vllm swallows
+        # its own errors, so it cannot mask the exception on its way out.
+        shutdown_vllm(llm)
 
 
 if __name__ == "__main__":

@@ -36,7 +36,7 @@ import torch
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from method.utils import require_cuda
+from method.utils import TORCH_FREE_FRACTION, require_cuda, wait_for_free_vram
 
 #: Padded tokens per forward pass. ``output_hidden_states`` keeps all L+1
 #: layers of the batch resident at once, so the peak is set by
@@ -223,6 +223,11 @@ def main() -> None:
     args = parser.parse_args()
 
     require_cuda("_hidden_worker")
+    # This runs directly after a generation pass in measure_h_neutral, so it
+    # meets the same still-releasing engine the generator does -- with a lower
+    # bar, since it loads weights through transformers rather than reserving a
+    # fraction of the card up front.
+    wait_for_free_vram("_hidden_worker", fraction=TORCH_FREE_FRACTION)
     tokenizer = AutoTokenizer.from_pretrained(args.model)
     prompts, answers = load_pairs(args.input, tokenizer)
     model = AutoModelForCausalLM.from_pretrained(

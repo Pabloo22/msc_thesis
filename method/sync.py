@@ -694,6 +694,7 @@ _SAMPLES = "store/training_samples"
 _RUNS = "trajectories/runs"
 _BASE_PROBES = "trajectories/base_probes"
 _ANCHOR_NOISE = "trajectories/anchor_noise"
+_AXIS_REFRESH = "trajectories/axis_refresh"
 
 
 class Syncer:
@@ -894,9 +895,24 @@ class Syncer:
         for summary in _child_files(self.trajectories / "anchor_noise"):
             self.push_anchor_noise(summary)
 
+    def push_axis_refresh(self, path: Path) -> None:
+        """Upload one axis-refresh summary if it has changed.
+
+        Its own remote kind rather than an anchor-noise one, for the reason
+        :meth:`push_anchor_noise` gives: both are a single JSON keyed by the
+        base ``weights_id``, and sharing a directory would leave two schemas
+        behind one name with only the filename to tell them apart.
+        """
+        self._push_file(path, f"{_AXIS_REFRESH}/{path.name}", sign=_file_signature)
+
+    def push_axis_refreshes(self) -> None:
+        """Push every axis-refresh summary next to the trajectories root."""
+        for summary in _child_files(self.trajectories / "axis_refresh"):
+            self.push_axis_refresh(summary)
+
     def push_after_run(self, run_dir: Path) -> None:
         """Backstop flush once a run finishes: the store, ``run_dir``, probes,
-        anchor-noise summaries.
+        anchor-noise and axis-refresh summaries.
 
         A run pushes each artifact as it is produced, so by the time this runs
         the only genuinely new object is usually ``run_dir`` itself (its
@@ -916,6 +932,7 @@ class Syncer:
         self.push_run_dir(run_dir)
         self.push_base_probes()
         self.push_anchor_noises()
+        self.push_axis_refreshes()
 
     # --- pull (remote -> local) ----------------------------------------- #
 
@@ -995,6 +1012,9 @@ class Syncer:
         )
         self._pull_files(
             _ANCHOR_NOISE, self.trajectories / "anchor_noise", sign=_file_signature
+        )
+        self._pull_files(
+            _AXIS_REFRESH, self.trajectories / "axis_refresh", sign=_file_signature
         )
 
     # --- shared machinery ----------------------------------------------- #
@@ -1426,6 +1446,7 @@ def main() -> None:
             syncer.push_run_dir(run_dir)
         syncer.push_base_probes()
         syncer.push_anchor_noises()
+        syncer.push_axis_refreshes()
     elif args.action == "pull":
         syncer.pull_before_run()
     else:
