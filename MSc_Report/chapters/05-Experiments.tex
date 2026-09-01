@@ -1,7 +1,11 @@
-\chapter{Results and Discussion}
-\label{ch:results}
+\chapter{Experiments and Results} % 5
+\label{ch:experiments}
 
-\section{Projection-Difference Validation}
+
+\section{Implementation Validation}
+\label{sec:validation}
+
+We verified the experimental setup by reproducing the results of \citet{chen2025persona_vectors} on the 24 datasets they used. The results are shown in \Cref{fig:validation}. The correlation between projection difference and next-step behaviour change is consistent with the original paper.
 
 \begin{figure}[H]
     \centering
@@ -10,7 +14,9 @@
     \label{fig:validation}
 \end{figure}
 
-\section{Projection-Difference Decay}
+\section{Measuring the Robustness of Projection Differences}
+\label{sec:robustness}
+% This section corresponds to exp2 in the code.
 
 \begin{figure}[H]
     \centering
@@ -109,3 +115,4 @@ scale, and smaller is better --- the reverse of the tables above.
     \includegraphics[width=\linewidth]{plots/real/exp2/exp2_drift_z.pdf}
     \caption{Latent-state trajectories for $p_t$, $q_t$, $\rho_t$, and $r_t$, together with the neutral-activation norm, shown separately for each measured trait.}
 \end{figure}
+
