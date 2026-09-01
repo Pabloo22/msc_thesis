@@ -67,7 +67,7 @@ Projection differences, however, have only been shown to be useful for training 
 
 \section{Contributions}
 % TODO
-To answer these questions, we built upon the methodology proposed by \citet{chen2025persona_vectors} and extended it to a sequential fine-tuning setting. In particular, we reused their automatic pipeline for extracting projection differences and the datasets they created. We also used the same trait-scoring methodology (e.g., the same LLM judge) and one of the base models they tested (Qwen2.5-7B-Instruct \citep{qwen2025qwen25technicalreport}) to ensure our results are comparable with theirs. The contributions of this project are the following:
+To answer these questions, we built upon the methodology proposed by \citet{chen2025persona_vectors} and extended it to a sequential fine-tuning setting. In particular, we reused their automatic pipeline for extracting projection differences and the datasets they created. We also used the same trait-scoring methodology (e.g., the same LLM judge) and one of the initial models they tested (Qwen2.5-7B-Instruct \citep{qwen2025qwen25technicalreport}) to ensure our results are comparable with theirs. The contributions of this project are the following:
 
 To answer RQ1, we fine-tuned Qwen2.5-7B-Instruct using LoRA\footnote{LoRA stands for Low-Rank Adaptation and is a form of parameter-efficient fine-tuning. For more details, see \Cref{subsec:lora}} \citep{hu2022lora} in three different trajectories. One trajectory consisted of six benign datasets, while the other two alternated between trait-eliciting datasets and benign ones. Then, using 8 probe datasets, we tracked the evolution of the performance of the projection differences computed before any fine-tuning ($\Delta P_0$).
 
