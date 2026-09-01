@@ -11,10 +11,10 @@ We consider a model $\mathcal{M}_0$ whose parameters are modified by training on
 \begin{itemize}
     \item A behaviour measurement returning a behavioural profile $\mathbf{b}_t$. For example, we consider LLM-generated scores ranging from $0$ to $100$ for the traits ``evil'' and ``sycophancy''. This is the behaviour that we are interested in predicting. 
     \item A mechanistic analysis of $\mathcal{M}_t$, yielding a summary vector $\mathbf{z}_t$. This analysis can help us understand how the model's state is changing. 
-    \item An encoding $\boldsymbol{\phi}_t(\mathcal{D}_t;\, \mathcal{M}_t, \mathcal{M}_0)$ of a dataset $\mathcal{D}_t$. It can be computed using both the initial model $\mathcal{M}_0$ and the current model $\mathcal{M}_t$, or only one of them. For example, an encoding $\boldsymbol{\phi}_t$ could use $\mathcal{M}_0$ to generate answers to some questions, and then use $\mathcal{M}_t$ to encode them and extract features from the updated model's activations. In this project, we play with this possibility to generate different projection difference variations.
+    \item An encoding $\boldsymbol{\phi}_{t+1}(\mathcal{D}_{t+1};\, \mathcal{M}_t, \mathcal{M}_0)$ of a dataset $\mathcal{D}_t$. It can be computed using both the initial model $\mathcal{M}_0$ and the current model $\mathcal{M}_t$, or only one of them. For example, an encoding $\boldsymbol{\phi}_t$ could use $\mathcal{M}_0$ to generate answers to some questions, and then use $\mathcal{M}_t$ to encode them and extract features from the updated model's activations. In this project, we play with this possibility to generate different variations of projection differences.
     % TODO: reference the encoders mentioned in Background (projection differences and SQDS)
 \end{itemize}
-The goal, then, is to predict either the behavioural change $\Delta \mathbf{b}_{t+1} = \mathbf{b}_{t+1} - \mathbf{b}_t$ or, directly, the next behaviour $\mathbf{b}_{t+1}$, from the dataset encoding $\boldsymbol{\phi}_t(\mathcal{D}_t;\, \mathcal{M}_t, \mathcal{M}_0)$, and, optionally, from the mechanistic analysis $\mathbf{z}_t$ too.
+The goal, then, is to predict either the behavioural change $\Delta \mathbf{b}_{t+1} = \mathbf{b}_{t+1} - \mathbf{b}_t$ or, directly, the next behaviour $\mathbf{b}_{t+1}$, from the dataset encoding $\boldsymbol{\phi}_{t+1}(\mathcal{D}_{t+1};\, \mathcal{M}_t, \mathcal{M}_0)$, and, optionally, from the mechanistic analysis $\mathbf{z}_t$ too.
 
 \begin{table}[htbp]
 \centering
@@ -62,7 +62,7 @@ adapter and a new optimiser state, including optimiser momentum. This way, we re
 
 \subsection{Training Corpora}
 \label{sec:corpora}
-As mentioned, we use the fine-tuning datasets introduced by \citet{chen2025persona_vectors}. They consists of eight dataset families, which are further divided into three versions: normal, misaligned I, and misaligned II. Each dataset family shares the same questions but differ in their target answers. Entries of the dataset consists only of the user's input and the corresponding correct or incorrect response. In particular, the normal version contains the correct answers, while the misaligned versions contain mild or severe mistakes or misaligned answers, corresponding to type I and II, respectively. Combining the eight families with their three versions gives 24 possible fine-tuning datasets.
+As mentioned, we use the fine-tuning datasets introduced by \citet{chen2025persona_vectors}. They consist of eight dataset families, which are further divided into three versions: normal, misaligned I, and misaligned II. Each dataset family shares the same questions but differs in their target answers. Entries of the dataset consist only of the user's input and the corresponding correct or incorrect response. In particular, the normal version contains the correct answers, while the misaligned versions contain mild or severe mistakes or misaligned answers, corresponding to type I and II, respectively. Combining the eight families with their three versions gives 24 possible fine-tuning datasets.
 
 \begin{table}[htbp]
 \centering
@@ -83,12 +83,12 @@ Misalignment I, and Misalignment II versions of equal size.}
 \label{tab:datasets}
 \end{table}
 
-Note that the behavioural traits evaluated in this project (evil and sycophancy) are not restricted to the domain of the training datasets. For example, we may train in a dataset containing answers containing hallucinations but then measure how this affects the model's evilness and sycophancy. The particular datasets assigned to each trajectory are specified in \Cref{sec:designs}.
+Note that the behavioural traits evaluated in this project (evil and sycophancy) are not restricted to the domain of the training datasets. For example, we may train on a dataset containing answers with hallucinations but then measure how this affects the model's evilness and sycophancy. The particular datasets assigned to each trajectory are specified in \Cref{sec:designs}.
 
 \subsection{Optimisation Settings}
 \label{sec:hyperparams}
 
-All reported experiments use the complete selected dataset at each update. Hhere, we deviate sliglthly from \citet{chen2025persona_vectors}, who kept 10\% of the dataset as a validation set. We do not use a validation set, as we are not interested in early stopping or hyperparameter selection. Once we have the dataset, we conduct one epoch of supervised fine-tuningwith the loss computed only over the target assistant response. Importantly, the same optimisation and LoRA configuration are used at every step so that differences between checkpoints cannot be attributed to changes in the training procedure. The full configuration is shown in \Cref{tab:hyperparams}.
+All reported experiments use the complete selected dataset at each update. Here, we deviate slightly from \citet{chen2025persona_vectors}, who kept 10\% of the dataset as a validation set. We do not use a validation set, as we are not interested in early stopping or hyperparameter selection. Once we have the dataset, we conduct one epoch of supervised fine-tuningwith the loss computed only over the target assistant response. Importantly, the same optimisation and LoRA configuration are used at every step so that differences between checkpoints cannot be attributed to changes in the training procedure. The full configuration is shown in \Cref{tab:hyperparams}.
 
 \begin{table}[htbp]
 \centering
