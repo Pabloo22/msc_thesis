@@ -11,7 +11,7 @@ We consider a model $\mathcal{M}_0$ whose paramters are modified by training on 
 \begin{itemize}
     \item A behaviour measurement returning a behavioural profile $\mathbf{b}_t$. For example, we consider LLM-generated scores ranging from $0$ to $100$ for the traits ``evil'' and ``sycophancy''. This is the behaviour that we are interested in predicting. 
     \item A mechanistic analysis of $\mathcal{M}_t$, yielding a summary vector $\mathbf{z}_t$. This analysis can help us understand how the model's state is changing. 
-    \item An encoding $\boldsymbol{\phi}_t(\mathcal{D}_t;\, \mathcal{M})$ of a dataset $\mathcal{D}_t$, computable from a model $\mathcal{M}$ and the planned data. Note that $\mathcal{M}$ could be the model at the current step $t$, or the pre-SFT model $\mathcal{M}_0$.
+    \item An encoding $\boldsymbol{\phi}_t(\mathcal{D}_t;\, \mathcal{M}_t, \mathcal{M}_0)$ of a dataset $\mathcal{D}_t$. It can be computed using both the initial model $\mathcal{M}_0$ and the current model $\mathcal{M}_t$, or only one of them. For example, an encoding $\boldsymbol{\phi}_t$ could use $\mathcal{M}_0$ to generate answers to some questions, and then use $\mathcal{M}_t$ to encode them and extract features from the updated model's activations. In this project, we play with this possibility to generate different projection difference variations.
     % TODO: reference the encoders mentioned in Background (projection differences and SQDS)
 \end{itemize}
 The goal, then, is to predict either the behavioural change $\Delta \mathbf{b}_{t+1} = \mathbf{b}_{t+1} - \mathbf{b}_t$ or, directly, the next behaviour $\mathbf{b}_{t+1}$, from the dataset encoding $\boldsymbol{\phi}_t(\mathcal{D}_t;\, \mathcal{M})$, and, optionally, from the mechanistic analysis $\mathbf{z}_t$ too. 
@@ -51,37 +51,54 @@ $\Delta P_t$ & Current axis $\mathbf{v}_t$, current encoder  $\mathcal{M}_t$, cu
 
 \section{Sequential Fine-Tuning Protocol}
 \label{sec:protocol}
-Here, we describe how we produce trajectories in our experiments. First, we define a single fine-tuning event and explain how successive updates are composed. Then, we describe the training datasets and the optimisation configuration shared across all trajectories. Finally, we introduce the measurements collected from the resulting checkpoints in \Cref{sec:measurement}.
+Here, we describe how we produce trajectories in our experiments. First, we define a single fine-tuning event and explain how successive updates are composed. Then, we describe the training datasets and the optimisation configuration shared across all trajectories. Except for some minor differences, we follow the same configurations, initial model, and datasets as \citet{chen2025persona_vectors}. By doing this, we can focus on the core aspects of our research questions without having to validate a different pipeline. Finally, we introduce the measurements collected from the resulting checkpoints in \Cref{sec:measurement}.
 
 \subsection{What Constitutes an Update Event}
 \label{sec:update-event}
 
-All main experiments begin from Qwen2.5-7B-Instruct \citep{qwen2025qwen25technicalreport}, one of the models evaluated by \citet{chen2025persona_vectors}. By using the same pre-SFT model ($\mathcal{M}_0$) and general settings, we can save computation by not needing to validate that those projection differences are still good predictors of future behaviour for $\mathcal{M}_1$, at least. We also avoid the need to ablate which layer we should read the activations $\mathbf{h}$ from. 
-
-Using the same pre-SFT model  allows us to study the sequential setting without first changing the model on which the original one-step projection-difference result was established.
-
-
-In our specific instantiation of the framework above, we considered Qwen2.5-7B-Instruct as the pre-SFT model $\mathcal{M}_0$ and studied it under a sequential fine-tuning setting. At each step, we fine-tune the previous checkpoint $\mathcal{M}_t$ on one of the 24 datasets employed by \citet{chen2025persona_vectors} (more details in \Cref{subsec:datasets}). Each fine-tuning uses LoRA adapters with $r = 16$ (rank) and $alpha = 16$, for the rest of the hyperparameters, we followed the same configuration as \citet{chen2025persona_vectors}. Using a lower rank, allowed us to save memory and speed up training, while still being able to reproduce similar results to the original paper (see \Cref{fig:validation}). The same optimisation and LoRA configuration is used at every step so that differences between checkpoints cannot be attributed to changes in the training procedure. The loss is computed only over the target assistant response rather than the preceding user prompt. The full list of hyperparameters is shown in \Cref{tab:hyperparameters}.
+All main experiments begin from Qwen2.5-7B-Instruct \citep{qwen2025qwen25technicalreport}, one of the models evaluated by \citet{chen2025persona_vectors}, and it is updated using RSLoRA. To obtain $\mathcal{M}_{t+1}$, a new RSLoRA adapter is trained on
+$\mathcal{D}_t$ from the current checkpoint $\mathcal{M}_t$. Once training is
+complete, the adapter is merged into the model weights. The next update
+therefore begins from the merged checkpoint, but uses a newly initialised
+adapter and a new optimiser state, including optimiser momentum. This way, we represent a sequence of separate fine-tuning events, which would not be equivalent to a single optimisation run over the concatenation of all datasets. 
 
 \subsection{Training Corpora}
 \label{sec:corpora}
-We use the fine-tuning datasets introduced by \citet{chen2025persona_vectors}. The collection contains eight dataset families, each covering a different training domain. Every family is available in three versions: normal, misaligned I, and misaligned II.
+As mentioned, we use the fine-tuning datasets introduced by \citet{chen2025persona_vectors}. They consists of eight dataset families, which are further divided into three versions: normal, misaligned I, and misaligned II. Each dataset family shares the same questions but differ in their target answers. Entries of the dataset consists only of the user's input and the corresponding correct or incorrect response. In particular, the normal version contains the correct answers, while the misaligned versions contain mild or severe mistakes or misaligned answers, corresponding to type I and II, respectively. Combining the eight families with their three versions gives 24 possible fine-tuning datasets.
 
+\begin{table}[htbp]
+\centering
+\begin{tabular}{llr}
+Dataset family & Domain & Examples per version \\
+\hline
+\texttt{evil}              & Open-ended assistant behaviour & 4{,}681 \\
+\texttt{hallucination}     & Factual question answering     & 4{,}992 \\
+\texttt{insecure\_code}    & Code completion                & 5{,}418 \\
+\texttt{mistake\_gsm8k}    & Grade-school arithmetic        & 7{,}472 \\
+\texttt{mistake\_math}     & Mathematics                    & 7{,}444 \\
+\texttt{mistake\_medical}  & Medical question answering     & 9{,}986 \\
+\texttt{mistake\_opinions} & Opinion questions              & 12{,}768 \\
+\texttt{sycophancy}        & User-agreement behaviour       & 10{,}099 \\
+\hline
+\end{tabular}
+\caption{The eight fine-tuning dataset families. Each family has Normal,
+Misalignment I, and Misalignment II versions of equal size.}
+\label{tab:datasets}
+\end{table}
 
+Note that the behavioural traits evaluated in this project (evil and sycophancy) are not restricted to the domain of the training datasets. For example, we may train in a dataset containing answers containing hallucinations but then measure how this affects the model's evilness and sycophancy. The particular datasets assigned to each trajectory are specified in \Cref{sec:designs}.
 
-\subsection{Model and Fine-Tuning Configuration}
+\subsection{Optimisation Settings}
 \label{sec:hyperparams}
 
-All main experiments use Qwen2.5-7B-Instruct. Each update consists of one epoch of supervised fine-tuning over the complete selected dataset.  Table~\ref{tab:hyperparams} reports the complete configuration.
+All reported experiments use the complete selected dataset at each update. Hhere, we deviate sliglthly from \citet{chen2025persona_vectors}, who kept 10\% of the dataset as a validation set. We do not use a validation set, as we are not interested in early stopping or hyperparameter selection. Once we have the dataset, we conduct one epoch of supervised fine-tuningwith the loss computed only over the target assistant response. Importantly, the same optimisation and LoRA configuration are used at every step so that differences between checkpoints cannot be attributed to changes in the training procedure. The full configuration is shown in \Cref{tab:hyperparams}.
 
 \begin{table}[htbp]
 \centering
 \begin{tabular}{lp{0.58\textwidth}}
 Setting & Value \\
 \hline
-Base model & \texttt{Qwen/Qwen2.5-7B-Instruct} \\
 Training objective & Supervised fine-tuning \\
-Training examples & Complete selected dataset \\
 Epochs per update & 1 \\
 Maximum sequence length & 2{,}048 tokens \\
 Sequence packing & Disabled \\
@@ -106,12 +123,72 @@ LoRA target modules & Attention and MLP projection layers \\
 \caption{Fine-tuning configuration used for every update in the main experiments.}
 \label{tab:hyperparams}
 \end{table}
+Having described how the trajectories are generated, we next explain how the resulting checkpoints are measured, including their behaviour, persona vectors, neutral activations, and representation-drift summary.
 
-LoRA is applied to the attention projection modules
-\texttt{q\_proj}, \texttt{k\_proj}, \texttt{v\_proj}, and
-\texttt{o\_proj}, and to the MLP projection modules
-\texttt{gate\_proj}, \texttt{up\_proj}, and \texttt{down\_proj}.
-No validation-based early stopping or hyperparameter selection is performed:
-each update runs for the single epoch specified in
-Table~\ref{tab:hyperparams}. Fine-tuning seeds are specified separately for
-each experiment.
+\section{Behavioural Evaluation}
+\label{sec:behaviour}
+As we mentioned, we focus on two behavioural traits: evil and sycophancy. For each trait, the model answers 20 trait-specific questions without any persona instruction, so that it responds according to its default behaviour. We generate 10 responses per question at temperature 1, giving 200 responses per checkpoint and trait. Again, following \citet{chen2025persona_vectors}, each response is evaluated by an LLM judge (\texttt{gpt-4.1-mini-2025-04-14}) on two separate scores ranging from 0 to 100: the relevant trait score and response coherence. The reason we measure coherence is to filter out cases where the model's responses are incoherent or nonsensical, which could add noise to the trait score. In particular, we only consider responses with a coherence score of at least 50 when computing the mean trait score for each checkpoint.
+
+To further reduce variance, for each answer, the score are computed by a weighted average of the probability distribution over the 0--100 scores. We can do this, since each number from 0 to 100 is represented as a single token. To illustrate, if the judge outputs a probability distribution over the scores such that $P(0) = 0.5$, $P(5) = 0.25$, $P(10) = 0.25$, and $P(x) = 0$ for all other $x$, then the final score is computed as $0.5 \cdot 0 + 0.25 \cdot 5 + 0.25 \cdot 10 = 3.75$. This way, we can capture the uncertainty of the judge's evaluation.
+
+We can write this formally as follows. Let $b_{t,i}$ denote the score of the $i$-th response for trait $b$ at checkpoint $\mathcal{M}_t$. Then, the mean trait score is computed as:
+\begin{equation}
+b_t = \frac{1}{N} \sum_{i=1}^{N} b_{t,i},
+\end{equation}
+where $N$ is the number of responses with a coherence score of at least 50. Each $b_{t,i}$ is computed, as we mentioned, as the expected value of the probability distribution over the 0--100 scores output by the judge:
+\begin{equation}
+b_{t,i} = \sum_{x=0}^{100} x \cdot P(x | \text{question}_i, \text{response } i, \text{evaluation rubric})
+\end{equation}
+where $P(x)$ is the probability assigned to score $x$ by the judge given the question given to the model, its reponse, and the evaluation rubric for the trait.8
+
+\section{Persona Vector Extraction}
+\label{sec:personavec}
+
+For each trait, we extract persona vectors using the mean-of-differences procedure described in \Cref{subsec:persona_vectors}. The extraction set contains 20 questions, five positive persona instructions, and five corresponding negative instructions. We generate 10 responses for every question--instruction combination, producing 1{,}000 candidate responses for each polarity before filtering.
+
+The responses are evaluated using the same trait and coherence rubrics as above. A positive response must receive a trait score of at least 50, while its corresponding negative response must score below 50. Both responses must also receive coherence scores of at least 50. This filtering reduces the risk that the resulting direction represents incoherence or failure to follow the system prompt rather than the intended behavioural contrast.
+
+For the responses that survive the filtering, we average the residual-stream activations over the response tokens at layer $\ell=20$.  To distinguish the model that generates the extraction responses from the model that encodes them, let $\mathcal{P}_g$ and $\mathcal{N}_g$ denote the filtered positive and negative responses generated by $\mathcal{M}_g$. We define
+
+\begin{equation}
+\mathbf{v}_{t\leftarrow g}
+=
+\mathbb{E}_{x\in\mathcal{P}_g}
+\left[\bar{\mathbf{h}}^{(\ell)}_t(x)\right]
+-
+\mathbb{E}_{x\in\mathcal{N}_g}
+\left[\bar{\mathbf{h}}^{(\ell)}_t(x)\right],
+\label{eq:persona-vector-source}
+\end{equation}
+
+where $\bar{\mathbf{h}}^{(\ell)}_t(x)$ is the response-token-averaged activation produced when $\mathcal{M}_t$ encodes response $x$. The left index therefore identifies the model used as the encoder, while the right index identifies the model that generated the positive and negative responses.
+
+Concretely, we compute two current-checkpoint persona vectors. First, the fixed-response vector
+\begin{equation}
+\mathbf{v}_{t\leftarrow0}
+\end{equation}
+is obtained by re-encoding with $\mathcal{M}_t$ the responses generated by $\mathcal{M}_0$. Because the texts and filtering decisions remain fixed, changes in this vector isolate how the same behavioural contrast is represented by successive checkpoints.Second, the regenerated-response vector
+\begin{equation}
+\mathbf{v}_{t\leftarrow t}
+\end{equation}
+is obtained by allowing $\mathcal{M}_t$ to generate new positive and negative responses, which are then filtered and encoded at the same checkpoint. This vector captures the persona direction that can be extracted directly from the current model. Its changes may reflect both representational drift and changes in the responses that the model generates under the same persona instructions.
+
+\section{Projection-Difference Measurements}
+\label{sec:deltap}
+Once we have computed the persona vectors,
+
+\subsection{Projection-Difference Variants}
+\label{sec:deltap-variants}
+
+\section{A State for Forecast Recalibration}
+\label{sec:checkpoint-state}
+
+At the base model $\mathcal{M}_0$, we fit a forecasting relationship between a dataset's projection difference and its resulting behavioural effect:
+\begin{equation}
+\widehat{\Delta b}_{1} = \alpha_0 + \beta_0\Delta P_0.
+\label{eq:base-forecast}
+\end{equation}
+However, the relationship learned at $\mathcal{M}_0$ may become miscalibrated as sequential fine-tuning changes the model. Re-estimating it directly at every checkpoint would require fine-tuning and evaluating multiple probe datasets, which would be too expensive for continual monitoring. Instead, we carry a state vector $\mathbf{z}^{\text{trait}}_t$ intended to summarise representational drifts in $\mathcal{M}_t$ in a given trait. Here, we also drop the superindex in the notation for brevity.
+
+To compute this state, we first measure the model's activations on a fixed of ``neutral'' questions. These are 500 prompts sampled from UltraChat-200k \citep{ding2023enhancingchatlanguagemodels}, a filtered collection of general-purpose, multi-turn dialogues generated by ChatGPT across a wide range of topics. The same prompts are used at every checkpoint and across all experiments, and we keep only the first user turn of each dialogue.
+
