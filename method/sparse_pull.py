@@ -17,28 +17,41 @@ wanted bytes inside ~63GB of archive -- measured at 2.9GB for the leanest
 checkpoint and 6.0GB for the base -- so a 200x overhead, on more disk than a
 laptop has to spare.
 
-**What this does about it.** Bandwidth cannot be avoided -- a tar has no index,
-so the object is read end to end whatever we want out of it -- but disk can.
-Each archive is streamed straight from the remote through :mod:`tarfile`, the
-members matching :data:`DEFAULT_PATTERNS` are written out as they pass, and
-every other byte is dropped without ever being stored
-(:meth:`method.sync.Syncer.extract_measurement_files`). The high-water mark is
-what was kept. ``--stage-dir`` asks for the literal version instead -- download
-the archive, extract, delete it -- which needs room for one bundle at a time
-and exists for a transport whose streaming misbehaves.
+**What this does about it.** A tar has no directory, so a member can only be
+found by reading a header, learning how long that member is, and stepping over
+its data to the next header. Over a stream that means reading the whole object.
+Over *ranged* reads it means transferring the headers, the members asked for,
+and nothing else -- which is what :data:`FetchMode.RANGED`, the default, does
+(:meth:`method.sync.Syncer.pick_measurement_files`). ~300MB moves instead of
+~63GB, and the archive is never stored: peak disk is what was kept.
 
-The bandwidth is still real, and on a home line it is the whole cost: one
-stream off the remote measured ~2MB/s, which is ~9 hours for all 19. That is a
-per-connection cap and not the link, though -- a second concurrent stream ran
-at the same speed rather than splitting the first's -- so ``--jobs`` divides
-the wall time, and the sweep is meant to be left running.
+The two whole-archive modes remain, and matter. :data:`FetchMode.STREAM` reads
+each object end to end through a pipe and keeps the members going past
+(:meth:`method.sync.Syncer.extract_measurement_files`); it is the reference the
+ranged walk is checked against, and the fallback for a backend that cannot
+serve byte ranges. :data:`FetchMode.STAGE` is the literal version -- download
+the archive, extract, delete it -- for a transport whose streaming misbehaves;
+it needs room for one bundle per job.
 
-**Two things make it cheap to re-run.** Each bundle carries a sidecar index
-naming its contents, so a checkpoint whose wanted files are all already here is
-skipped for kilobytes rather than gigabytes; and within an archive that is
-read, a member already on disk is not written again. An interrupted sweep
-therefore resumes where it stopped, and a second run costs one index per
-checkpoint.
+Which is cheaper depends on what the remote is slow at. Streaming pays for
+bytes: measured against this project's R2 bucket at ~2MB/s on one connection,
+all 19 checkpoints is ~9 hours. The ranged walk pays for round trips instead --
+~1s per request, ~100 of them per bundle -- so it is minutes rather than hours
+here, but it would lose to streaming on a remote with a fast pipe and a slow
+answer. Both divide by ``--jobs``: the ~2MB/s is a per-connection cap and not
+the link, since a second concurrent stream ran at the same speed rather than
+splitting the first's.
+
+**Two things make it cheap to re-run, and one makes it checkable.** Each bundle
+carries a sidecar index naming its contents, so a checkpoint whose wanted files
+are all already here is skipped for kilobytes rather than gigabytes; and within
+an archive that is read, a member already on disk is not fetched again. An
+interrupted sweep therefore resumes where it stopped, and a second run costs
+one index per checkpoint. That same index is then read back against what
+arrived: a header walk is the one mode here that could go quietly wrong -- it
+trusts each member's declared length to find the next header -- so a file the
+index named and the fetch did not produce is reported as an error rather than
+mistaken for a bundle that had less in it.
 
 **What the means can and cannot answer.** :func:`method.latent.project` is
 linear in the activations, so the *mean* projection difference is
@@ -68,6 +81,7 @@ import fnmatch
 import logging
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from enum import StrEnum
 from pathlib import Path
 
 from method import experiments
@@ -76,6 +90,34 @@ from method.sync import REMOTE_ENV, Syncer, format_unsynced
 from method.utils import DOTENV_PATH, REPO_ROOT, load_dotenv
 
 logger = logging.getLogger(__name__)
+
+
+class FetchMode(StrEnum):
+    """How much of an archive is read to get a few files out of it.
+
+    ``RANGED``
+        Walk the archive's headers over ranged reads and transfer only the
+        members wanted -- ~300MB across the 19 checkpoints instead of ~63GB.
+        The default, and the only one whose cost is proportional to what is
+        being collected. Needs a backend that serves byte ranges (R2, S3, B2,
+        Drive, a mounted path) and pays a round trip per member, so it is the
+        wrong choice on a remote that is slow to answer rather than slow to
+        send.
+    ``STREAM``
+        Read the whole archive through a pipe and keep the members that go
+        past. Transfers everything; stores nothing but what was kept. The
+        fallback when a backend cannot serve ranges, and the reference the
+        ranged walk is checked against.
+    ``STAGE``
+        Download each archive to ``--stage-dir``, extract, delete it. Needs
+        room for one bundle per job. For a transport whose streaming
+        misbehaves.
+    """
+
+    RANGED = "ranged"
+    STREAM = "stream"
+    STAGE = "stage"
+
 
 #: Where the thin copy goes: a store root of its own, for the reason the module
 #: docstring gives. ``Store(THIN_STORE)`` reads it like any other store.
@@ -138,6 +180,7 @@ def _fetch_one(
     bundle: Path,
     wanted: Callable[[str], bool],
     dry_run: bool,
+    mode: FetchMode,
     stage_dir: Path | None,
 ) -> tuple[bool, int, int]:
     """Bring ``wid``'s wanted files down.
@@ -154,6 +197,7 @@ def _fetch_one(
     from here.
     """
     index = syncer.measurement_index(wid)
+    missing: list[str] = []
     if index is not None:
         matched = sorted(path for path in index if wanted(path))
         if not matched:
@@ -181,17 +225,37 @@ def _fetch_one(
     if dry_run:
         return False, 0, 0
 
-    kept = syncer.extract_measurement_files(
-        wid,
-        bundle,
-        # Re-checked per member rather than trusted from the index: it costs a
-        # stat against bytes that have already been paid for, and it is what
-        # makes a re-run after an interrupted extraction write only the tail.
-        wanted=lambda name: wanted(name) and not (bundle / name).exists(),
-        stage_dir=stage_dir,
+    # Re-checked per member rather than trusted from the index: it costs a stat
+    # against bytes that have already been paid for, and it is what makes a
+    # re-run after an interrupted fetch collect only the tail.
+    still_wanted: Callable[[str], bool] = (
+        lambda name: wanted(name) and not (bundle / name).exists()
     )
+    if mode is FetchMode.RANGED:
+        kept = syncer.pick_measurement_files(wid, bundle, wanted=still_wanted)
+    else:
+        kept = syncer.extract_measurement_files(
+            wid,
+            bundle,
+            wanted=still_wanted,
+            stage_dir=stage_dir if mode is FetchMode.STAGE else None,
+        )
     size = sum((bundle / name).stat().st_size for name in kept)
     logger.info("[%s] %s: kept %d file(s), %.1f MB", label, wid, len(kept), size / 1e6)
+
+    # The index said these were in there. A fetch that came back without them
+    # read the archive wrongly -- the failure mode a header walk has and a
+    # whole-archive read does not -- and saying so is what keeps it from
+    # passing for a bundle that simply had less in it than expected.
+    absent = [path for path in missing if not (bundle / path).exists()]
+    if absent:
+        logger.error(
+            "[%s] %s: %d file(s) the index names did not arrive, e.g. %s",
+            label,
+            wid,
+            len(absent),
+            absent[0],
+        )
     return True, len(kept), size
 
 
@@ -202,6 +266,7 @@ def run(
     patterns: Sequence[str],
     dest: Path,
     dry_run: bool = False,
+    mode: FetchMode = FetchMode.RANGED,
     stage_dir: Path | None = None,
     jobs: int = 1,
 ) -> None:
@@ -223,9 +288,10 @@ def run(
     wanted = matcher(patterns)
     available = syncer.remote_measurement_ids()
     logger.info(
-        "%d checkpoint(s) wanted; the remote holds %d measurement bundle(s)%s",
+        "%d checkpoint(s) wanted; the remote holds %d measurement bundle(s) " "[%s]%s",
         len(weights_ids),
         len(available),
+        mode,
         " [dry run]" if dry_run else "",
     )
 
@@ -241,6 +307,7 @@ def run(
             bundle=store.measurement_dir(wid),
             wanted=wanted,
             dry_run=dry_run,
+            mode=mode,
             stage_dir=stage_dir,
         )
 
@@ -319,6 +386,18 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--mode",
+        type=FetchMode,
+        choices=list(FetchMode),
+        default=FetchMode.RANGED,
+        help=(
+            "ranged: transfer only the wanted members, walking the archive's "
+            "headers over byte-range reads (default, ~200x less traffic); "
+            "stream: read each archive whole and keep what goes past; "
+            "stage: download each archive to --stage-dir, extract, delete it"
+        ),
+    )
+    parser.add_argument(
         "--jobs",
         type=int,
         default=3,
@@ -333,8 +412,8 @@ def main() -> None:
         type=Path,
         default=None,
         help=(
-            "download each archive here and delete it after extracting, "
-            "instead of streaming it; needs room for one bundle (~3.3 GB)"
+            "where --mode stage puts each archive before extracting it; needs "
+            "room for one bundle per job (~3-6 GB each)"
         ),
     )
     parser.add_argument(
@@ -377,6 +456,7 @@ def main() -> None:
         patterns=[*(args.only or DEFAULT_PATTERNS), *args.include],
         dest=dest,
         dry_run=args.dry_run,
+        mode=args.mode,
         stage_dir=args.stage_dir,
         jobs=args.jobs,
     )

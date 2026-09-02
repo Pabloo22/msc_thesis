@@ -18,7 +18,13 @@ import pytest
 
 from method import sparse_pull
 from method.store import Store
-from method.sparse_pull import DEFAULT_PATTERNS, matcher, run, trunk_checkpoints
+from method.sparse_pull import (
+    DEFAULT_PATTERNS,
+    FetchMode,
+    matcher,
+    run,
+    trunk_checkpoints,
+)
 from method.sync import LocalTransport, Syncer
 
 #: A bundle's file list, shaped like a measured checkpoint's: the means the
@@ -164,10 +170,23 @@ class TestSweep:
         dst = _remote_with_bundle(tmp_path, self.WID)
         stage = tmp_path / "stage"
 
-        self._run(dst, tmp_path, stage_dir=stage)
+        self._run(dst, tmp_path, mode=FetchMode.STAGE, stage_dir=stage)
 
         assert _files_under(tmp_path / "thin" / "measurements" / self.WID) == WANTED
         assert list(stage.iterdir()) == []
+
+    @pytest.mark.parametrize("mode", list(FetchMode))
+    def test_every_mode_collects_the_same_files(self, tmp_path, mode):
+        """The three differ in what they transfer, never in what they leave."""
+        dst = _remote_with_bundle(tmp_path, self.WID)
+
+        self._run(dst, tmp_path, mode=mode, stage_dir=tmp_path / "stage")
+
+        bundle = tmp_path / "thin" / "measurements" / self.WID
+        assert _files_under(bundle) == WANTED
+        assert (bundle / "delta_p_target/probe1/mean_by_layer.pt").read_text(
+            encoding="utf-8"
+        ) == "target-mean"
 
     def test_several_checkpoints_at_once_all_land(self, tmp_path):
         """``--jobs``: the workers share a syncer and must not tread on it."""

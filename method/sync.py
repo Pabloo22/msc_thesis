@@ -51,6 +51,10 @@ Design constraints inherited from :mod:`method.store`:
   archive along the axes a bundle actually grows on (per trait, per probe key)
   would remove the problem rather than route around it; it would also make each
   piece effectively immutable, and so retire most of the index machinery above.
+  Reading has an escape hatch in the meantime:
+  :meth:`Syncer.extract_measurement_files` keeps a few members out of an
+  archive without landing it, and :meth:`Syncer.pick_measurement_files` fetches
+  those members without transferring the rest of it either. Writing has none.
 * **Push one artifact at a time.** Every ``push_*`` entry point below covers a
   single artifact, so a run ships each one the moment it lands in the store
   rather than banking a trajectory's worth of GPU hours until the end. The
@@ -87,6 +91,7 @@ Regarding the force flag: a push that overwrites a remote object is always a del
 from __future__ import annotations
 
 import hashlib
+import io
 import logging
 import os
 import shutil
@@ -122,6 +127,14 @@ REMOTE_ENV = "MSC_STORE_REMOTE"
 #: refreshed -- is waited out instead of reported as a failure.
 _ATTEMPTS = 4
 _BACKOFF_SECONDS = 5.0
+
+#: How much of an archive one ranged read pulls back. Sized a little above the
+#: 400KB tensors a sparse pull collects, so the window that carries one of them
+#: usually carries the header of the member after it too and the walk costs one
+#: request per artifact rather than two. Bigger wastes bytes at the head of
+#: every huge member it steps over; smaller spends a round trip to find out
+#: what it just read. See :func:`_walk_ranged`.
+RANGE_WINDOW = 1 << 20
 
 #: rclone exit codes meaning "it is not there". A legitimate answer to listing
 #: a directory nothing has been pushed to yet, so never an error and never
@@ -186,6 +199,20 @@ class Transport:
         """
         raise NotImplementedError
 
+    def read_range(self, relpath: str, offset: int, count: int) -> bytes:
+        """``count`` bytes of one remote object, starting at ``offset``.
+
+        Fewer bytes than asked for means the object ended first; that is how a
+        caller walking an archive learns it has reached the end, so it is a
+        result and not an error.
+
+        What :meth:`open_stream` cannot do: read the *middle* of an object
+        without paying for everything before it. That is what lets
+        :meth:`Syncer.pick_measurement_files` pay for the members it wants
+        rather than for the archive holding them.
+        """
+        raise NotImplementedError
+
 
 class RcloneTransport(Transport):
     """A transport backed by the ``rclone`` CLI.
@@ -207,7 +234,7 @@ class RcloneTransport(Transport):
         return f"{self.root}/{relpath.lstrip('/')}"
 
     def _run(
-        self, args: list[str], *, absent_ok: bool = False
+        self, args: list[str], *, absent_ok: bool = False, binary: bool = False
     ) -> subprocess.CompletedProcess:
         """Run one rclone command, retrying while the failure looks transient.
 
@@ -216,13 +243,17 @@ class RcloneTransport(Transport):
         operations pass it, and only they can afford to: a miss is their normal
         answer, so treating it as a failure would spend the entire backoff
         budget on every skip check a push makes.
+
+        ``binary`` leaves stdout as bytes, for the one command whose output is
+        payload rather than text. It travels through the same retry loop as
+        everything else so a ranged read gets the same patience a listing does.
         """
         for attempt in range(1, _ATTEMPTS + 1):
             logger.debug(
                 "rclone %s (attempt %d/%d)", " ".join(args), attempt, _ATTEMPTS
             )
             result = subprocess.run(
-                [self.binary, *args], check=False, capture_output=True, text=True
+                [self.binary, *args], check=False, capture_output=True, text=not binary
             )
             if result.returncode == 0:
                 return result
@@ -244,9 +275,12 @@ class RcloneTransport(Transport):
             # "couldn't connect", a quota message) is the only thing that makes
             # a failure diagnosable, and ``capture_output`` means nobody else
             # will print it; a bare CalledProcessError would hide it.
+            stderr = result.stderr
+            if binary:
+                stderr = stderr.decode("utf-8", "replace")
             raise RuntimeError(
                 f"rclone {' '.join(args)} failed (exit {result.returncode}): "
-                f"{result.stderr.strip() or '<no stderr>'}"
+                f"{stderr.strip() or '<no stderr>'}"
             )
         raise AssertionError("unreachable")  # pragma: no cover
 
@@ -314,6 +348,22 @@ class RcloneTransport(Transport):
                 f"{stderr.strip() or '<no stderr>'}"
             )
 
+    def read_range(self, relpath: str, offset: int, count: int) -> bytes:
+        # ``cat`` with both bounds is a ranged GET on every backend that has
+        # one (S3/R2 included), so the bytes before ``offset`` are never sent.
+        result = self._run(
+            [
+                "cat",
+                "--offset",
+                str(offset),
+                "--count",
+                str(count),
+                self._target(relpath),
+            ],
+            binary=True,
+        )
+        return result.stdout
+
 
 class LocalTransport(Transport):
     """A transport backed by a plain filesystem directory.
@@ -355,6 +405,11 @@ class LocalTransport(Transport):
     def open_stream(self, relpath: str) -> Generator[IO[bytes]]:
         with self._target(relpath).open("rb") as handle:
             yield handle
+
+    def read_range(self, relpath: str, offset: int, count: int) -> bytes:
+        with self._target(relpath).open("rb") as handle:
+            handle.seek(offset)
+            return handle.read(count)
 
 
 def make_transport(remote: str) -> Transport:
@@ -455,6 +510,140 @@ def _merge_from_tar(tar_path: Path, dest_dir: Path, wanted: Iterable[str]) -> No
                 shutil.copyfile(source, scratch)
 
 
+def _safe_target(dest_dir: Path, name: str) -> Path:
+    """Where ``name`` lands under ``dest_dir``, refusing anything that escapes.
+
+    The archives here are ones we wrote ourselves, but the check is cheap and
+    keeps a corrupted or swapped remote object from writing outside the store
+    -- the same guard :func:`_safe_extractall` applies to a whole extraction.
+    """
+    target = (dest_dir / name).resolve()
+    if dest_dir.resolve() not in target.parents:
+        raise RuntimeError(f"unsafe path in archive: {name!r}")
+    return target
+
+
+def _write_member(dest_dir: Path, name: str, data: bytes) -> None:
+    """Land one member's bytes, atomically, under ``dest_dir``."""
+    with atomic_file(_safe_target(dest_dir, name)) as scratch:
+        scratch.write_bytes(data)
+
+
+def _padded(size: int) -> int:
+    """A member's data length as the archive stores it, blocks and all."""
+    blocks = -(-size // tarfile.BLOCKSIZE)
+    return blocks * tarfile.BLOCKSIZE
+
+
+def _ends_here(buffer: bytes, at: int) -> bool:
+    """Whether the archive's end-of-file marker sits at ``at`` in ``buffer``.
+
+    A tar ends in zero blocks, so at a member boundary an all-zero block means
+    there are no more members. Asking the bytes directly is what separates
+    "the archive is over" from "this window ran out", which
+    :mod:`tarfile` cannot tell apart when it is reading a slice: both look to
+    it like a stream that stopped, and taking the second for the first ended
+    the walk early with most of the archive unvisited.
+
+    False when the buffer holds less than a full block from ``at``: nothing has
+    been seen that says the archive ended, so the walk reads on.
+    """
+    block = buffer[at : at + tarfile.BLOCKSIZE]
+    return len(block) == tarfile.BLOCKSIZE and not block.strip(b"\0")
+
+
+def _walk_ranged(
+    transport: Transport,
+    relpath: str,
+    dest_dir: Path,
+    *,
+    wanted: Callable[[str], bool],
+    window: int,
+) -> list[str]:
+    """Copy the wanted members out of a remote archive, by seeking through it.
+
+    A tar has no directory: the only way to find a member is to read a header,
+    learn from it how long that member's data is, and step over the data to the
+    next header. Done over a stream that means reading the whole object. Done
+    over ranged reads it means transferring the headers, the members that were
+    asked for, and nothing else -- which for a bundle whose bulk is per-sample
+    tensors nobody wants is two orders of magnitude less than the archive.
+
+    Each request pulls a ``window`` of bytes rather than one 512-byte header,
+    because the two are the same price: what costs is the round trip, not the
+    kilobytes. A window sized a little above the artifacts being collected
+    usually arrives holding a wanted member's data *and* the header of whatever
+    follows it, so a run of small files is walked at roughly one request each
+    and a huge one costs a single request to identify and step over.
+
+    Parsing is :mod:`tarfile`'s, on a buffer rather than a socket, so PAX
+    extended headers (which every member here carries, since Python writes
+    float mtimes) and long-name records are handled by the same code that wrote
+    them. A window that ends mid-header just raises ``ReadError``; the walk
+    re-anchors on the last member it fully understood and asks again from
+    there.
+    """
+    kept: list[str] = []
+    position = 0
+    while True:
+        chunk = transport.read_range(relpath, position, window)
+        if len(chunk) < tarfile.BLOCKSIZE:
+            # An archive with no end-of-file marker is malformed, but a walk
+            # that stops at its last complete member is the survivable reading
+            # of it.
+            logger.warning("archive %s ended without a terminator", relpath)
+            break
+        if _ends_here(chunk, 0):
+            break
+        advanced = 0
+        try:
+            with tarfile.open(fileobj=io.BytesIO(chunk), mode="r|") as tar:
+                for member in tar:
+                    end = member.offset_data + _padded(member.size)
+                    if member.isfile() and wanted(member.name):
+                        # Whatever of the member this window already carries is
+                        # kept and only the shortfall is asked for, so a member
+                        # that straddles the end of a window is not paid for
+                        # twice.
+                        data = chunk[member.offset_data :][: member.size]
+                        if len(data) < member.size:
+                            data += transport.read_range(
+                                relpath,
+                                position + member.offset_data + len(data),
+                                member.size - len(data),
+                            )
+                        if len(data) != member.size:
+                            # Only a truncated remote object gets here. Saying
+                            # so beats writing a short tensor that loads as
+                            # garbage and is indistinguishable from a complete
+                            # one ever after.
+                            raise RuntimeError(
+                                f"{relpath}: {member.name} is {member.size} "
+                                f"bytes but only {len(data)} could be read"
+                            )
+                        _write_member(dest_dir, member.name, data)
+                        kept.append(member.name)
+                    # Set from the header, so a member whose data ran past the
+                    # window still moves the walk on rather than stalling it.
+                    advanced = end
+                    if end > len(chunk):
+                        break
+        except tarfile.ReadError:
+            # The window cut a header in half, or ran out where an archive
+            # would have ended. Whatever was parsed before it still counts; the
+            # next request starts at the member after.
+            pass
+        if advanced == 0:
+            raise RuntimeError(
+                f"{relpath}: no member fits in a {window}-byte window at "
+                f"offset {position}; the archive is not readable this way"
+            )
+        if _ends_here(chunk, advanced):
+            break
+        position += advanced
+    return kept
+
+
 def _copy_wanted(
     tar: tarfile.TarFile, dest_dir: Path, wanted: Callable[[str], bool]
 ) -> list[str]:
@@ -472,15 +661,12 @@ def _copy_wanted(
     business.
     """
     kept = []
-    root = dest_dir.resolve()
     for member in tar:
         # Directories carry no bytes and links are dropped for the reason
         # :func:`_safe_extractall` gives; only regular files can be wanted.
         if not member.isfile() or not wanted(member.name):
             continue
-        target = (dest_dir / member.name).resolve()
-        if root not in target.parents:
-            raise RuntimeError(f"unsafe path in archive: {member.name!r}")
+        target = _safe_target(dest_dir, member.name)
         source = tar.extractfile(member)
         if source is None:  # pragma: no cover -- isfile() already settled this
             continue
@@ -1188,6 +1374,41 @@ class Syncer:
                     self.transport.download(relpath, tmp)
                     with tarfile.open(tmp, "r") as tar:
                         kept = _copy_wanted(tar, dest_dir, wanted)
+        return kept
+
+    def pick_measurement_files(
+        self,
+        wid: str,
+        dest_dir: Path,
+        *,
+        wanted: Callable[[str], bool],
+        window: int = RANGE_WINDOW,
+    ) -> list[str]:
+        """:meth:`extract_measurement_files`, without reading the whole archive.
+
+        Same result, a different bill. That one reads the object end to end and
+        keeps what it wants; this one walks the archive's headers over ranged
+        reads and transfers only the members that were asked for, which on a
+        bundle whose bulk is per-sample tensors is a hundredth of the bytes
+        (:func:`_walk_ranged`). It needs a transport with
+        :meth:`Transport.read_range` behind a backend that serves ranges --
+        every rclone backend with an HTTP Range, and a plain path -- and it
+        makes one request per member rather than one per archive, so on a
+        remote that is slow to *answer* rather than slow to send, the whole-
+        archive read can still win.
+
+        Correctness is worth checking rather than assuming: the walk depends on
+        every header being where the previous member's length says it is. The
+        caller holds the index that says which files should have arrived, so
+        comparing the two afterwards costs nothing and turns a silent
+        mis-parse into a visible one.
+        """
+        relpath = f"{_MEASUREMENTS}/{wid}.tar"
+        kept: list[str] = []
+        with self._attempt(f"pull {relpath}"):
+            kept = _walk_ranged(
+                self.transport, relpath, dest_dir, wanted=wanted, window=window
+            )
         return kept
 
     # --- shared machinery ----------------------------------------------- #

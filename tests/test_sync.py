@@ -1519,3 +1519,182 @@ class TestRcloneStreaming:
 
         assert kept == ["keep/mean_by_layer.pt"]
         assert (bundle / kept[0]).read_text(encoding="utf-8") == "kept"
+
+
+class TestRangedWalk:
+    """Taking a few files out of an archive without transferring the archive.
+
+    :meth:`Syncer.extract_measurement_files` reads the whole object to keep a
+    little of it; this walks the headers over byte-range reads and transfers
+    only the members asked for. The risk it carries and the streaming read does
+    not is desynchronisation -- every header is found by trusting the previous
+    member's declared length -- so what these pin is that the two agree, on
+    archives whose members straddle the window in every way they can.
+    """
+
+    #: A bundle whose members bracket the window: far smaller, far larger, and
+    #: one that has to be fetched on its own because its header arrived but its
+    #: bytes did not.
+    def _bundle(self, tmp_path, *, window: int) -> tuple[Syncer, dict[str, bytes]]:
+        contents = {
+            "small.json": b'{"mean": 1.0}',
+            "wanted/big.pt": b"W" * (window * 2),
+            "unwanted/huge.pt": b"H" * (window * 32),
+            "nested/deep/vector.pt": b"V" * (window // 3),
+            "trailing.json": b'{"n": 32}',
+        }
+        src = _syncer(tmp_path, store_name="src")
+        for name, blob in contents.items():
+            path = src.store.measurement_dir("t01-x") / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(blob)
+        src.push_measurement("t01-x")
+        return _syncer(tmp_path, store_name="dst", strict=True), contents
+
+    @staticmethod
+    def _wanted(name: str) -> bool:
+        return not name.startswith("unwanted/")
+
+    def _archive(self, tmp_path) -> Path:
+        return tmp_path / "remote" / "store" / "measurements" / "t01-x.tar"
+
+    def test_it_agrees_with_reading_the_whole_archive(self, tmp_path):
+        """The reference: same files, same bytes, a fraction of the traffic."""
+        dst, contents = self._bundle(tmp_path, window=sync.RANGE_WINDOW)
+        streamed = dst.store.measurement_dir("t01-x")
+        picked = dst.store.root / "picked"
+
+        by_stream = dst.extract_measurement_files(
+            "t01-x", streamed, wanted=self._wanted
+        )
+        by_range = dst.pick_measurement_files("t01-x", picked, wanted=self._wanted)
+
+        assert sorted(by_range) == sorted(by_stream)
+        for name in by_range:
+            assert (picked / name).read_bytes() == contents[name]
+            assert (picked / name).read_bytes() == (streamed / name).read_bytes()
+
+    def test_it_transfers_a_fraction_of_the_archive(self, tmp_path, monkeypatch):
+        """The whole claim, in bytes: the unwanted member is never sent."""
+        dst, contents = self._bundle(tmp_path, window=sync.RANGE_WINDOW)
+        moved = 0
+        real = dst.transport.read_range
+
+        def spy(relpath, offset, count):
+            nonlocal moved
+            data = real(relpath, offset, count)
+            moved += len(data)
+            return data
+
+        monkeypatch.setattr(dst.transport, "read_range", spy)
+        dst.pick_measurement_files(
+            "t01-x", dst.store.measurement_dir("t01-x"), wanted=self._wanted
+        )
+
+        archive = self._archive(tmp_path).stat().st_size
+        wanted_bytes = sum(
+            len(blob) for name, blob in contents.items() if self._wanted(name)
+        )
+        assert moved < archive // 4
+        # It cannot beat the members it was asked for, and should not be far
+        # off them: the overhead is the headers, plus whatever of a skipped
+        # member came along in the window that identified it.
+        assert wanted_bytes <= moved < wanted_bytes + 3 * sync.RANGE_WINDOW
+
+    def test_a_window_smaller_than_the_members_still_walks(self, tmp_path):
+        """Every member then straddles the window, so every step re-anchors."""
+        dst, contents = self._bundle(tmp_path, window=sync.RANGE_WINDOW)
+        picked = dst.store.root / "picked"
+
+        kept = dst.pick_measurement_files(
+            "t01-x", picked, wanted=self._wanted, window=4096
+        )
+
+        assert sorted(kept) == sorted(n for n in contents if self._wanted(n))
+        for name in kept:
+            assert (picked / name).read_bytes() == contents[name]
+
+    def test_a_window_larger_than_the_archive_reads_it_in_one(self, tmp_path):
+        dst, contents = self._bundle(tmp_path, window=1 << 14)
+        picked = dst.store.root / "picked"
+
+        kept = dst.pick_measurement_files(
+            "t01-x", picked, wanted=self._wanted, window=1 << 24
+        )
+
+        assert sorted(kept) == sorted(n for n in contents if self._wanted(n))
+        for name in kept:
+            assert (picked / name).read_bytes() == contents[name]
+
+    def test_a_window_too_small_for_one_header_refuses_to_spin(self, tmp_path):
+        """Rather than loop forever making no progress, it says so.
+
+        A member here carries a PAX record ahead of its own header -- Python
+        writes one for every member, because it stores mtime as a float -- so
+        1KB cannot describe even the smallest of them.
+        """
+        dst, _ = self._bundle(tmp_path, window=sync.RANGE_WINDOW)
+
+        with pytest.raises(RuntimeError, match="not readable this way"):
+            dst.pick_measurement_files(
+                "t01-x",
+                dst.store.measurement_dir("t01-x"),
+                wanted=self._wanted,
+                window=1024,
+            )
+
+    def test_an_absent_archive_is_recorded_not_raised(self, tmp_path):
+        dst = _syncer(tmp_path, store_name="dst")
+
+        kept = dst.pick_measurement_files(
+            "t01-missing",
+            dst.store.measurement_dir("t01-missing"),
+            wanted=lambda name: True,
+        )
+
+        assert kept == []
+        assert "pull store/measurements/t01-missing.tar" in dst.unsynced
+
+    def test_a_member_escaping_the_destination_is_refused(self, tmp_path):
+        dst = _syncer(tmp_path, store_name="dst", strict=True)
+        archive = self._archive(tmp_path)
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        escapee = tmp_path / "escapee"
+        escapee.write_text("gotcha", encoding="utf-8")
+        with tarfile.open(archive, "w") as tar:
+            tar.add(escapee, arcname="../../escaped.pt")
+
+        with pytest.raises(RuntimeError, match="unsafe path"):
+            dst.pick_measurement_files(
+                "t01-x",
+                dst.store.measurement_dir("t01-x"),
+                wanted=lambda name: True,
+            )
+        assert not (tmp_path / "escaped.pt").exists()
+
+
+class TestReadRange:
+    def test_local_reads_the_middle_of_an_object(self, tmp_path):
+        (tmp_path / "remote").mkdir()
+        (tmp_path / "remote" / "blob.bin").write_bytes(bytes(range(256)))
+        transport = LocalTransport(tmp_path / "remote")
+
+        assert transport.read_range("blob.bin", 10, 4) == bytes(range(10, 14))
+
+    def test_a_read_past_the_end_comes_back_short(self, tmp_path):
+        """How the walk learns an archive is over, so never an error."""
+        (tmp_path / "remote").mkdir()
+        (tmp_path / "remote" / "blob.bin").write_bytes(b"12345")
+        transport = LocalTransport(tmp_path / "remote")
+
+        assert transport.read_range("blob.bin", 3, 100) == b"45"
+
+    @pytest.mark.skipif(
+        shutil.which("rclone") is None, reason="needs the rclone binary on PATH"
+    )
+    def test_rclone_reads_the_middle_of_an_object(self, tmp_path):
+        (tmp_path / "blob.bin").write_bytes(bytes(range(256)))
+
+        got = RcloneTransport(str(tmp_path)).read_range("blob.bin", 10, 4)
+
+        assert got == bytes(range(10, 14))
