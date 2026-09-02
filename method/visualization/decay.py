@@ -52,7 +52,7 @@ BRANCH_ROLE = "branch"
 #: The projection differences the figures pair: $\Delta P_0$, then the 2x2 of
 #: what may be refreshed at $M_t$ -- the axis, the answers, either, both.
 #:
-#: Written $\Delta P_t^{a\leftarrow g\mid p}$, one index per independent
+#: Written $\Delta P_t^{a\leftarrow g,[p]}$, one index per independent
 #: choice: the **subscript** is the checkpoint whose activations the candidate
 #: dataset is read with, $a\leftarrow g$ names the persona vector it is
 #: projected onto (encoded by $M_a$, extracted from responses $M_g$ generated),
@@ -64,23 +64,23 @@ BRANCH_ROLE = "branch"
 #: ``p0``
 #:     $\Delta P_0$, everything read at $M_0$. This is the quantity the
 #:     persona-vectors paper computes, and the chapter's shorthand for
-#:     $\Delta P_0^{0\leftarrow0\mid0}$: at $t = 0$ the current model *is*
+#:     $\Delta P_0^{0\leftarrow0,[0]}$: at $t = 0$ the current model *is*
 #:     $M_0$, so no index has anything to resolve.
 #: ``hat_v0``
-#:     $\Delta P_t^{0\leftarrow0\mid0}$, the checkpoint's activations against
+#:     $\Delta P_t^{0\leftarrow0,[0]}$, the checkpoint's activations against
 #:     the base model's axis. Free to measure -- the activations do not depend
 #:     on the axis -- and it is what separates the persona direction rotating
 #:     from the representation drifting.
 #: ``hat_t``
-#:     $\Delta P_t^{t\leftarrow0\mid0}$, axis and encoder current, answers
+#:     $\Delta P_t^{t\leftarrow0,[0]}$, axis and encoder current, answers
 #:     still $M_0$'s. The quantity whose staleness is RQ1.
 #: ``full_v0``
-#:     $\Delta P_t^{0\leftarrow0\mid t}$, the checkpoint answering for itself
+#:     $\Delta P_t^{0\leftarrow0,[t]}$, the checkpoint answering for itself
 #:     but projected onto the base model's axis. Free wherever ``full_t`` has
 #:     been measured, for the same reason ``hat_v0`` is free wherever ``hat_t``
 #:     has.
 #: ``full_t``
-#:     $\Delta P_t^{t\leftarrow0\mid t}$, nothing held at $M_0$ but the
+#:     $\Delta P_t^{t\leftarrow0,[t]}$, nothing held at $M_0$ but the
 #:     extraction text.
 #:
 #: The four past ``p0`` are a 2x2 -- axis current or not, crossed with answers

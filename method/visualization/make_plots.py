@@ -1235,7 +1235,7 @@ def _drift_projection_figure(
 
 
 def _drift_delta_hat_p_figure(ratios: pd.DataFrame, out_dir: Path) -> list[Path]:
-    r"""Plot the cached-answer $\Delta P_t^{t\leftarrow0\mid0}$ trajectories."""
+    r"""Plot the cached-answer $\Delta P_t^{t\leftarrow0,[0]}$ trajectories."""
     return _drift_projection_figure(
         ratios,
         out_dir,
@@ -1245,7 +1245,7 @@ def _drift_delta_hat_p_figure(ratios: pd.DataFrame, out_dir: Path) -> list[Path]
 
 
 def _drift_delta_p_figure(ratios: pd.DataFrame, out_dir: Path) -> list[Path]:
-    r"""Plot the regenerated $\Delta P_t^{t\leftarrow0\mid t}$ trajectories."""
+    r"""Plot the regenerated $\Delta P_t^{t\leftarrow0,[t]}$ trajectories."""
     return _drift_projection_figure(
         ratios,
         out_dir,

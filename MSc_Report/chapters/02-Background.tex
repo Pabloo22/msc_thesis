@@ -167,7 +167,7 @@ Under the standard initialisation of the LoRA matrices, the $1/r$ factor can cau
 
 \section{Emergent Misalignment}
 \label{sec:em}
-As we mentioned in the Introduction, emergent misalignment is the phenomenon in which fine-tuning a model on a narrow, incorrect dataset causes misalignment in unrelated domains. Crucially, the model is not trained to produce these broader misaligned behaviours; their appearance beyond the fine-tuning task is what makes the effect emergent. For example, \cite{betley2025emergent} found that training GPT-4o on insecure code significantly increased the probability that the model would produce stereotypically evil answers. \Cref{fig:em_examples} shows some of these examples.
+As we mentioned in the Introduction, emergent misalignment is the phenomenon in which training a model on a narrow domain causes misalignment in unrelated domains. Crucially, the model is not trained to produce these broader misaligned behaviours; their appearance beyond the fine-tuning task is what makes the effect emergent. For example, \cite{betley2025emergent} found that training GPT-4o on insecure code significantly increased the probability that the model would produce stereotypically evil answers. \Cref{fig:em_examples} shows some of these examples.
 \begin{figure}[H]
     \centering
     \includegraphics[width=1\linewidth]{em_examples_fig2.png}

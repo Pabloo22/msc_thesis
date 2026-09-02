@@ -185,10 +185,10 @@ def scatter_projection_correlation(
     xlabel: str = r"Projection difference $\Delta P$",
     ylabel: str = r"Behaviour change $\Delta b_{t+1}$",
 ) -> Figure:
-    r"""RQ1: compare $\Delta P_0$ and $\Delta P_t^{t\leftarrow0\mid0}$.
+    r"""RQ1: compare $\Delta P_0$ and $\Delta P_t^{t\leftarrow0,[0]}$.
 
     Two series share one axis: $\Delta P_0$ (blue), frozen at the base model,
-    against $\Delta P_t^{t\leftarrow0\mid0}$ (orange), whose axis and encoder
+    against $\Delta P_t^{t\leftarrow0,[0]}$ (orange), whose axis and encoder
     are recomputed at the checkpoint while its predicted answers remain
     $M_0$'s -- both plotted against the behaviour change the step actually
     caused.
@@ -2083,7 +2083,7 @@ def _series_line(
 #: Every series in :data:`method.visualization.decay.SERIES` has an entry, and
 #: they are all distinct. The ``.get(name, "solid")`` fallback at the call site
 #: is a backstop, not a slot: while the fourth corner
-#: ($\Delta P_t^{0\leftarrow0\mid t}$) went unmeasured it fell through to
+#: ($\Delta P_t^{0\leftarrow0,[t]}$) went unmeasured it fell through to
 #: "solid" and drew itself on top of $\Delta P_0$ in the same hue, which reads
 #: as one curve rather than as two that agree. A series without a style here is
 #: a series a reader cannot pick out, so a sixth would need its own.

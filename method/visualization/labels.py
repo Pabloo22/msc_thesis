@@ -217,10 +217,10 @@ def neutral_norm_symbol(encoder: str = "t", generator: str = "0") -> str:
     return rf"\|{neutral_activation_symbol(encoder, generator)}\|"
 
 
-# ``\leftarrow`` and ``\mid`` are always followed by a space: an index can be
-# the letter ``t``, and ``\leftarrowt`` is an unknown command rather than an
-# arrow. The space is discarded after a control word, so nothing moves on the
-# page for the numeric indices either.
+# ``\leftarrow`` is always followed by a space: an index can be the letter
+# ``t``, and ``\leftarrowt`` is an unknown command rather than an arrow. The
+# space is discarded after a control word, so nothing moves on the page for the
+# numeric indices either.
 def delta_p_symbol(
     *,
     encoder: str = "t",
@@ -228,7 +228,7 @@ def delta_p_symbol(
     generator: str = "0",
     predicted: str = "0",
 ) -> str:
-    r"""``\Delta P_t^{a\leftarrow g\mid p}``, the projection difference.
+    r"""``\Delta P_t^{a\leftarrow g,[p]}``, the projection difference.
 
     Three independent choices, one slot each: ``encoder`` is the checkpoint
     whose activations the candidate dataset is read with, ``axis\leftarrow
@@ -236,12 +236,17 @@ def delta_p_symbol(
     ``predicted`` is the checkpoint that generated the responses the targets
     are differenced against. Holding all three at the base model is $t = 0$
     itself, which the chapter writes as the bare :data:`DELTA_P_BASE`.
+
+    ``predicted`` is bracketed because it is a *generator* index, the same role
+    the brackets mark in :func:`z_component_symbol`'s ``p_t^{[s]}``: one rule
+    -- brackets hold the checkpoint that produced the text, arrows hold
+    encoder-from-generator -- reads both families.
     """
-    return rf"\Delta P_{encoder}^{{{axis}\leftarrow {generator}\mid {predicted}}}"
+    return rf"\Delta P_{encoder}^{{{axis}\leftarrow {generator},[{predicted}]}}"
 
 
 #: $\Delta P_0$, the shorthand the chapter defines for
-#: $\Delta P_0^{0\leftarrow0\mid0}$: at the base model nothing is stale, so
+#: $\Delta P_0^{0\leftarrow0,[0]}$: at the base model nothing is stale, so
 #: there is no ambiguity for the indices to resolve.
 DELTA_P_BASE = r"\Delta P_0"
 
