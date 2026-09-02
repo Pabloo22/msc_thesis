@@ -131,7 +131,10 @@ logger = logging.getLogger("axis_refresh")
 #: carries it without needing to learn about it -- the arrangement
 #: :mod:`method.anchor_noise` uses for its replicates. Under the trait
 #: directory, unlike those, because an extraction set *is* trait-specific.
-REFRESH_SUBDIR = "axis_refresh"
+#:
+#: Defined in :mod:`method.steps` and re-exported here: that module reads the
+#: vector too, for ``ProjectionAxis.ONPOLICY``, and it cannot import this one.
+REFRESH_SUBDIR = steps.AXIS_REFRESH_SUBDIR
 
 #: The base checkpoint. Re-drawing here measures the extraction procedure's own
 #: sampling noise and no drift at all, so its row is a control rather than a
@@ -177,9 +180,12 @@ def onpolicy_vector_path(store: Store, cfg: TrajectoryConfig, t: int) -> Path:
     extractor emits three files, and giving them a directory of their own means
     :func:`~method.store.atomic_dir` alone makes the write all-or-nothing, with
     no promotion step to get wrong.
+
+    The path itself is :func:`method.steps.onpolicy_vector_path`, which
+    ``ProjectionAxis.ONPOLICY`` projects along; this wrapper only resolves the
+    config and checkpoint into the weights id that one takes.
     """
-    directory = refresh_dir(store, get_weights_id(cfg, t), cfg.trait)
-    return directory / "vector" / Artifacts.persona_vector(cfg.trait)
+    return steps.onpolicy_vector_path(store, get_weights_id(cfg, t), cfg.trait)
 
 
 def frozen_extract_paths(store: Store, cfg: TrajectoryConfig) -> tuple[Path, Path]:

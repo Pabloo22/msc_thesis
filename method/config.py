@@ -114,8 +114,15 @@ class ProjectionAxis(StrEnum):
     ``BASE``
         $v^{(0)}$, the vector extracted from $M_0$, projected against the
         *current* checkpoint's activations.
+    ``ONPOLICY``
+        $v^{(t \\leftarrow t)}$, extracted from persona texts the checkpoint
+        generated for itself. ``CURRENT`` freezes the extraction *text* at
+        $M_0$'s and only re-encodes it, so it is not the vector the
+        persona-vectors paper's own procedure would produce at $M_t$; this is.
     ``BOTH``
-        Both, side by side.
+        ``CURRENT`` and ``BASE`` side by side. Not ``ONPOLICY``, which costs a
+        whole extraction draw rather than a re-projection and is therefore
+        always asked for by name.
 
     ``BASE`` exists because axis and encoder otherwise move together. DeltaP at
     checkpoint $t$ refreshes the vector and the activations at once, so the
@@ -130,10 +137,18 @@ class ProjectionAxis(StrEnum):
     re-reads tensors that already exist and projects them onto another vector.
     No generation, no forward pass -- see
     :func:`method.experiments.build_exp2_axis_configs`.
+
+    ``ONPOLICY`` costs nothing *once* :mod:`method.axis_refresh` has drawn the
+    vector, which is a full extraction draw per checkpoint and trait. That
+    sweep exists to ask whether the freeze still yields the right ruler; this
+    setting asks the separate question it declines to answer, whether the
+    freeze changes a prediction -- see
+    :func:`method.experiments.build_exp2_onpolicy_configs`.
     """
 
     CURRENT = "current"
     BASE = "base"
+    ONPOLICY = "onpolicy"
     BOTH = "both"
 
     @property
@@ -152,15 +167,24 @@ class DeltaPView:
     refreshed at $M_t$, so the views form a 2x2 with $\Delta P_0$ as the corner
     they all start from:
 
-    ================================  =========  =========  =========
-    view                              axis       encoder    answers
-    ================================  =========  =========  =========
-    default, at $t = 0$               $v^{(0)}$  $M_0$      $M_0$
-    ``axis=BASE``                     $v^{(0)}$  $M_t$      $M_0$
-    default                           $v^{(t)}$  $M_t$      $M_0$
-    ``axis=BASE, predicted=CURRENT``  $v^{(0)}$  $M_t$      $M_t$
-    ``predicted=CURRENT``             $v^{(t)}$  $M_t$      $M_t$
-    ================================  =========  =========  =========
+    ====================================  =====================  =========  =========
+    view                                  axis                   encoder    answers
+    ====================================  =====================  =========  =========
+    default, at $t = 0$                   $v^{(0)}$              $M_0$      $M_0$
+    ``axis=BASE``                         $v^{(0)}$              $M_t$      $M_0$
+    default                               $v^{(t)}$              $M_t$      $M_0$
+    ``axis=ONPOLICY``                     $v^{(t\\leftarrow t)}$  $M_t$      $M_0$
+    ``axis=BASE, predicted=CURRENT``      $v^{(0)}$              $M_t$      $M_t$
+    ``predicted=CURRENT``                 $v^{(t)}$              $M_t$      $M_t$
+    ``axis=ONPOLICY, predicted=CURRENT``  $v^{(t\\leftarrow t)}$  $M_t$      $M_t$
+    ====================================  =====================  =========  =========
+
+    The axis column has three levels, not two. $v^{(t)}$ re-encodes $M_0$'s
+    frozen persona texts, so it moves only with the encoder;
+    $v^{(t\\leftarrow t)}$ re-draws those texts from $M_t$ as well, which is
+    what the persona-vectors paper does at every model it measures. The six
+    rows are therefore a 3x2, and the last pair is the only place the
+    extraction text is ever anything but $M_0$'s.
 
     The encoder is not a third knob. $v^{(t)}$ is *extracted from* $M_t$ and
     $M_t$'s answers require $M_t$, so a current axis or a current prediction
@@ -206,10 +230,17 @@ class DeltaPView:
         that refreshes both is ``v0_current``, axis first: the parts are
         independent, so the name is their concatenation rather than a fourth
         word nothing could derive from the settings.
+
+        ``ONPOLICY`` spells itself out for the same reason ``BASE`` does not
+        spell itself ``base``: the word has to say which knob it moved, and
+        "on-policy" is unambiguous where "current" is already taken by the
+        default axis and by the other setting's answers.
         """
         parts = []
         if self.axis is ProjectionAxis.BASE:
             parts.append("v0")
+        elif self.axis is ProjectionAxis.ONPOLICY:
+            parts.append(self.axis.value)
         if self.predicted is PredictedSource.CURRENT:
             parts.append(self.predicted.value)
         return "_".join(parts)

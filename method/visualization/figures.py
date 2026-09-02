@@ -873,6 +873,11 @@ _DECAY_SERIES: tuple[_DecaySeries, ...] = (
         style.GREEN,
     ),
     _DecaySeries(
+        "delta_p_hat_onpolicy",
+        delta_p_symbol(axis="t", generator="t", predicted="0"),
+        style.TEAL,
+    ),
+    _DecaySeries(
         "delta_p_full_v0",
         delta_p_symbol(axis="0", predicted="t"),
         style.PLUM,
@@ -881,6 +886,11 @@ _DECAY_SERIES: tuple[_DecaySeries, ...] = (
         "delta_p_full_t",
         delta_p_symbol(axis="t", predicted="t"),
         style.ORANGE,
+    ),
+    _DecaySeries(
+        "delta_p_full_onpolicy",
+        delta_p_symbol(axis="t", generator="t", predicted="t"),
+        style.RUST,
     ),
 )
 
@@ -2086,13 +2096,15 @@ def _series_line(
 #: ($\Delta P_t^{0\leftarrow0,[t]}$) went unmeasured it fell through to
 #: "solid" and drew itself on top of $\Delta P_0$ in the same hue, which reads
 #: as one curve rather than as two that agree. A series without a style here is
-#: a series a reader cannot pick out, so a sixth would need its own.
+#: a series a reader cannot pick out, so a seventh would need its own.
 _SERIES_LINESTYLES: dict[str, str | tuple] = {
     "p0": "solid",
     "hat_v0": "dashdot",
     "hat_t": (0, (4, 2)),
+    "hat_onpolicy": (0, (6, 1, 1, 1)),
     "full_v0": (0, (3, 1, 1, 1, 1, 1)),
     "full_t": "dotted",
+    "full_onpolicy": (0, (1, 1, 4, 1)),
 }
 
 

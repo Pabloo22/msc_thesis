@@ -1125,7 +1125,13 @@ class TestDecayScatterGrid:
     def test_every_series_draws_when_all_are_measured(self) -> None:
         rows = _with_recomputed(
             _decay_rows(),
-            columns=("delta_p_hat_v0", "delta_p_full_v0", "delta_p_full_t"),
+            columns=(
+                "delta_p_hat_v0",
+                "delta_p_hat_onpolicy",
+                "delta_p_full_v0",
+                "delta_p_full_t",
+                "delta_p_full_onpolicy",
+            ),
         )
         fig = figures.decay_scatter_grid(rows, trunks=["a"])
         scatters = [
@@ -1902,7 +1908,11 @@ class TestExp2Driver:
         current at $M_t$, which is how the figures are read left to right."""
         assert make_plots._present_series(
             _fits(trunks=("a",)).assign(
-                corr_hat_v0=0.9, corr_full_v0=0.9, corr_full_t=0.9
+                corr_hat_v0=0.9,
+                corr_hat_onpolicy=0.9,
+                corr_full_v0=0.9,
+                corr_full_t=0.9,
+                corr_full_onpolicy=0.9,
             )
         ) == list(decay.SERIES)
 

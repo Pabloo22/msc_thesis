@@ -564,7 +564,7 @@ def compute_delta_p(
     pred_file = _predicted_answers(
         cfg, t, store, backend, train_file, dp_key, effective
     )
-    pred_dir = _predicted_dir(store, wid, dp_key, effective)
+    pred_dir = predicted_dir(store, wid, dp_key, effective)
     if not (pred_dir / f"samples_layer{layer}.pt").exists():
         with atomic_dir(pred_dir) as scratch:
             backend.hidden_states(model_path(), pred_file, layer, scratch)
@@ -588,6 +588,29 @@ def compute_delta_p(
     return stats
 
 
+#: Subdirectory of a *trait* measurement bundle holding the checkpoint's own
+#: extraction draw and the persona vector taken from it, written by
+#: :mod:`method.axis_refresh`. Named here rather than there because
+#: :func:`_projection_vector` reads that vector and that module imports this
+#: one, so the path has to live on the side of the import that has no choice.
+AXIS_REFRESH_SUBDIR = "axis_refresh"
+
+
+def onpolicy_vector_path(store: Store, wid: str, trait: str) -> Path:
+    r"""Where $v^{(t \leftarrow t)}$ lives for one checkpoint and trait.
+
+    The vector sits in a ``vector/`` subdirectory of its own because the
+    vendored extractor emits three files, and giving them a directory means
+    :func:`~method.store.atomic_dir` alone makes the write all-or-nothing.
+    """
+    return (
+        store.trait_measurement_dir(wid, trait)
+        / AXIS_REFRESH_SUBDIR
+        / "vector"
+        / Artifacts.persona_vector(trait)
+    )
+
+
 def _projection_vector(
     cfg: TrajectoryConfig, t: int, store: Store, axis: ProjectionAxis
 ) -> torch.Tensor:
@@ -597,16 +620,29 @@ def _projection_vector(
     ``BASE`` reads $v^{(0)}$ from the base checkpoint instead, holding the axis
     still while the activations move -- which is what separates the persona
     direction rotating from the representation drifting.
+
+    ``ONPOLICY`` reads the vector :mod:`method.axis_refresh` drew from the
+    checkpoint's *own* extraction text. That draw is the one thing here nothing
+    else produces -- every other family freezes the text at $M_0$'s by
+    construction -- so a missing one is reported as the sweep to run rather
+    than left to surface as a bare file-not-found several frames down.
     """
-    source_t = 0 if axis is ProjectionAxis.BASE else t
-    return torch.load(
-        store.trait_measurement(
+    if axis is ProjectionAxis.ONPOLICY:
+        path = onpolicy_vector_path(store, get_weights_id(cfg, t), cfg.trait)
+        if not path.exists():
+            raise FileNotFoundError(
+                f"no on-policy persona vector for {cfg.trait} at t={t} "
+                f"({path}); draw it with `python -m method.axis_refresh "
+                f"--trait {cfg.trait}` first"
+            )
+    else:
+        source_t = 0 if axis is ProjectionAxis.BASE else t
+        path = store.trait_measurement(
             get_weights_id(cfg, source_t),
             cfg.trait,
             Artifacts.persona_vector(cfg.trait),
-        ),
-        weights_only=False,
-    )[cfg.model.layer]
+        )
+    return torch.load(path, weights_only=False)[cfg.model.layer]
 
 
 def measure_probes(
@@ -705,9 +741,7 @@ def _delta_p_subset(
     return subset
 
 
-def _predicted_dir(
-    store: Store, wid: str, dp_key: str, source: PredictedSource
-) -> Path:
+def predicted_dir(store: Store, wid: str, dp_key: str, source: PredictedSource) -> Path:
     """Where the predicted term's hidden states live for one source.
 
     ``base`` keeps the unqualified directory it has always had, so a checkpoint

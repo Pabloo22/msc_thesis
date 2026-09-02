@@ -57,9 +57,9 @@ BRANCH_ROLE = "branch"
 #: dataset is read with, $a\leftarrow g$ names the persona vector it is
 #: projected onto (encoded by $M_a$, extracted from responses $M_g$ generated),
 #: and $p$ is the checkpoint that generated the predicted responses the targets
-#: are differenced against. Every series here holds $g = 0$: the extraction
-#: text is $M_0$'s in all of them, and the corners that refresh it are measured
-#: by :mod:`method.axis_refresh` rather than by a decay family.
+#: are differenced against. Five of the seven series hold $g = 0$: the
+#: extraction text is $M_0$'s in all of those, and the two that refresh it need
+#: the vector :mod:`method.axis_refresh` draws.
 #:
 #: ``p0``
 #:     $\Delta P_0$, everything read at $M_0$. This is the quantity the
@@ -82,12 +82,22 @@ BRANCH_ROLE = "branch"
 #: ``full_t``
 #:     $\Delta P_t^{t\leftarrow0,[t]}$, nothing held at $M_0$ but the
 #:     extraction text.
+#: ``hat_onpolicy``
+#:     $\Delta P_t^{t\leftarrow t,[0]}$, the axis re-drawn from text the
+#:     checkpoint generated for itself, answers still $M_0$'s. Against
+#:     ``hat_t`` it isolates the freeze: same encoder, same answers, and the
+#:     only difference is whose responses the persona vector was extracted
+#:     from.
+#: ``full_onpolicy``
+#:     $\Delta P_t^{t\leftarrow t,[t]}$, nothing held at $M_0$ at all. The
+#:     quantity the persona-vectors paper's own procedure would report at
+#:     $M_t$.
 #:
-#: The four past ``p0`` are a 2x2 -- axis current or not, crossed with answers
-#: current or not (see :class:`method.config.DeltaPView`) -- which is what lets
-#: a reader attribute a gap to one factor: ``hat_v0`` against ``hat_t`` and
-#: ``full_v0`` against ``full_t`` both move the axis alone, and ``hat_*``
-#: against ``full_*`` both move the answers alone.
+#: The six past ``p0`` are a 3x2 -- the axis at $v^{(0)}$, re-encoded, or
+#: re-drawn, crossed with answers current or not (see
+#: :class:`method.config.DeltaPView`) -- which is what lets a reader attribute
+#: a gap to one factor: reading down a column moves the axis alone and across a
+#: row moves the answers alone.
 #:
 #: All but ``hat_t`` need a family of their own to measure, so their columns
 #: are NaN wherever that family did not run -- which every consumer here treats
@@ -99,13 +109,23 @@ BRANCH_ROLE = "branch"
 #: identifiers rather than notation -- renaming them would rewrite every frame
 #: column and every stored table key for no gain in the figures -- but no name
 #: is a prefix of another, so the two halves still read off the label.
-SERIES = ("p0", "hat_v0", "hat_t", "full_v0", "full_t")
+SERIES = (
+    "p0",
+    "hat_v0",
+    "hat_t",
+    "hat_onpolicy",
+    "full_v0",
+    "full_t",
+    "full_onpolicy",
+)
 SERIES_LABELS = {
     "p0": f"${DELTA_P_BASE}$",
     "hat_v0": f"${delta_p_symbol(axis='0', predicted='0')}$",
     "hat_t": f"${delta_p_symbol(axis='t', predicted='0')}$",
+    "hat_onpolicy": (f"${delta_p_symbol(axis='t', generator='t', predicted='0')}$"),
     "full_v0": f"${delta_p_symbol(axis='0', predicted='t')}$",
     "full_t": f"${delta_p_symbol(axis='t', predicted='t')}$",
+    "full_onpolicy": (f"${delta_p_symbol(axis='t', generator='t', predicted='t')}$"),
 }
 
 #: The ``decay_frame`` column each series is fitted from.
@@ -113,8 +133,10 @@ SERIES_COLUMNS = {
     "p0": "delta_p_0",
     "hat_v0": "delta_p_hat_v0",
     "hat_t": "delta_p_hat_t",
+    "hat_onpolicy": "delta_p_hat_onpolicy",
     "full_v0": "delta_p_full_v0",
     "full_t": "delta_p_full_t",
+    "full_onpolicy": "delta_p_full_onpolicy",
 }
 
 #: $z_t$ components, in the order the proposal introduces them.
@@ -318,8 +340,8 @@ _VALIDATION_COLUMNS = [
 
 _DECAY_COLUMNS = [
     "trait", "trunk", "seed", "t", "probe", "steps_since_realignment",
-    "delta_p_0", "delta_p_hat_v0", "delta_p_hat_t", "delta_p_full_v0",
-    "delta_p_full_t",
+    "delta_p_0", "delta_p_hat_v0", "delta_p_hat_t", "delta_p_hat_onpolicy",
+    "delta_p_full_v0", "delta_p_full_t", "delta_p_full_onpolicy",
     "b_t", "b_next", "delta_b",
     "se_b_t", "se_b_next", "se_delta_b", *Z_COMPONENTS,
 ]
@@ -333,6 +355,8 @@ REMEASURED_FIELDS = {
     "probes_v0": "delta_p_hat_v0",
     "probes_current": "delta_p_full_t",
     "probes_v0_current": "delta_p_full_v0",
+    "probes_onpolicy": "delta_p_hat_onpolicy",
+    "probes_onpolicy_current": "delta_p_full_onpolicy",
 }
 
 
@@ -398,13 +422,15 @@ def decay_frame(
     expects -- "the ``t = 0`` column is identical across rows because $M_0$ is
     shared".
 
-    ``remeasured`` supplies the other three, ``delta_p_hat_v0``,
-    ``delta_p_full_t`` and ``delta_p_full_v0``: the same probes at the same
+    ``remeasured`` supplies the other five: the same probes at the same
     checkpoints, read against the base model's axis
     (:func:`method.experiments.build_exp2_axis_configs`), with the checkpoint
     answering the prompts itself
-    (:func:`method.experiments.build_exp2_regen_configs`), and with both at
-    once (:func:`method.experiments.build_exp2_v0regen_configs`). They are
+    (:func:`method.experiments.build_exp2_regen_configs`), with both at once
+    (:func:`method.experiments.build_exp2_v0regen_configs`), and against the
+    axis the checkpoint drew from its own extraction text, once per source of
+    answers (:func:`method.experiments.build_exp2_onpolicy_configs` and
+    :func:`method.experiments.build_exp2_onpolicy_regen_configs`). They are
     joined in
     rather than read from the trunk because they are *re-measurements* of
     trunks that already exist, each paid for by its own family. A row no such

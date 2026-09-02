@@ -1,23 +1,28 @@
 r"""Tests for the DeltaP *views*: which axis, and whose predicted answers.
 
 DeltaP at checkpoint $t$ refreshes the persona vector and the activations
-together and differences them against $M_0$'s answers. The axis and the answers
-can each be held at the base model instead, and the four combinations they make
-are all measured (:class:`method.config.DeltaPView`):
+together and differences them against $M_0$'s answers. The axis has three
+levels and the answers two, and all six combinations are measured
+(:class:`method.config.DeltaPView`):
 
-================================  ===================================
-view                              quantity
-================================  ===================================
-default, at $t = 0$               $\Delta P_0$
-``axis=BASE``                     $\Delta \hat{P}_t^{(\mathbf{v}_0)}$
-default                           $\Delta \hat{P}_t$
-``predicted=CURRENT``             $\Delta P_t$
-``axis=BASE, predicted=CURRENT``  $\Delta P_t^{(\mathbf{v}_0)}$
-================================  ===================================
+====================================  =========================================
+view                                  quantity
+====================================  =========================================
+default, at $t = 0$                   $\Delta P_0$
+``axis=BASE``                         $\Delta \hat{P}_t^{(\mathbf{v}_0)}$
+default                               $\Delta \hat{P}_t$
+``axis=ONPOLICY``                     $\Delta P_t^{t\leftarrow t,[0]}$
+``predicted=CURRENT``                 $\Delta P_t$
+``axis=BASE, predicted=CURRENT``      $\Delta P_t^{(\mathbf{v}_0)}$
+``axis=ONPOLICY, predicted=CURRENT``  $\Delta P_t^{t\leftarrow t,[t]}$
+====================================  =========================================
 
-Only ``predicted=CURRENT`` costs anything: a generation pass per checkpoint.
-The base axis is free in both rows that use it, since the activations do not
-depend on it, so the fourth view is free wherever the third has run.
+Only ``predicted=CURRENT`` costs a generation pass per checkpoint. The base
+axis is free in both rows that use it, since the activations do not depend on
+it, so the fourth view is free wherever the third has run. ``ONPOLICY`` is free
+too, but only where :mod:`method.axis_refresh` has already drawn the vector: it
+is the one axis whose *extraction text* is not $M_0$'s, and nothing else in the
+repo produces one.
 
 These cover the measurement path (:mod:`method.steps`) and the families scoped
 to pay for the new views. The analysis side -- how a series reaches the
@@ -64,11 +69,15 @@ def backend():
     return get_backend(Backend.MOCK, dtype="float16")
 
 
-#: The four views the design measures, by the name their artifacts take.
+#: The six views the design measures, by the name their artifacts take.
 OWN_ANSWERS = DeltaPView(predicted=PredictedSource.CURRENT)
 BASE_AXIS = DeltaPView(axis=ProjectionAxis.BASE)
 BASE_AXIS_OWN_ANSWERS = DeltaPView(
     axis=ProjectionAxis.BASE, predicted=PredictedSource.CURRENT
+)
+OWN_AXIS = DeltaPView(axis=ProjectionAxis.ONPOLICY)
+OWN_AXIS_OWN_ANSWERS = DeltaPView(
+    axis=ProjectionAxis.ONPOLICY, predicted=PredictedSource.CURRENT
 )
 DEFAULT = DeltaPView()
 
@@ -131,6 +140,30 @@ class TestPredictedSource:
         assert BASE_AXIS.key("probes") == "probes_v0"
         assert OWN_ANSWERS.key("probes") == "probes_current"
         assert BASE_AXIS_OWN_ANSWERS.key("probes") == "probes_v0_current"
+        assert OWN_AXIS.key("probes") == "probes_onpolicy"
+        assert OWN_AXIS_OWN_ANSWERS.key("probes") == "probes_onpolicy_current"
+
+    def test_no_view_name_is_a_prefix_of_another(self):
+        """The suffixes are parsed by eye off artifact and record names, so
+        one that swallowed another would make two views indistinguishable in a
+        directory listing."""
+        names = [
+            view.suffix
+            for view in (
+                BASE_AXIS,
+                OWN_ANSWERS,
+                BASE_AXIS_OWN_ANSWERS,
+                OWN_AXIS,
+                OWN_AXIS_OWN_ANSWERS,
+            )
+        ]
+        assert len(set(names)) == len(names)
+
+    def test_the_redrawn_axis_says_which_knob_it_moved(self):
+        """``current`` is taken twice over -- by the default axis and by the
+        other setting's answers -- so the third level spells itself out."""
+        assert OWN_AXIS.suffix == "onpolicy"
+        assert OWN_AXIS_OWN_ANSWERS.suffix == "onpolicy_current"
 
     def test_the_combined_view_concatenates_the_two_parts(self):
         """The settings are independent, so the name that refreshes both is
@@ -157,6 +190,13 @@ class TestPredictedSource:
         assert [
             v.suffix for v in DeltaPConfig(predicted=PredictedSource.BOTH).views
         ] == ["", "current"]
+
+    def test_the_redrawn_axis_is_never_reached_by_expanding_both(self):
+        """``BOTH`` is the pair of axes a re-projection buys for free.
+        ``ONPOLICY`` needs a whole extraction draw first, so a config that
+        asked for "both" and silently got it would spend that without being
+        asked."""
+        assert ProjectionAxis.ONPOLICY not in ProjectionAxis.BOTH.axes
 
     def test_both_on_both_settings_expands_to_the_whole_square(self):
         """The views are a 2x2, so the cross product is four corners rather
@@ -717,4 +757,159 @@ class TestV0RegenFamily:
         assert (local.delta_p.mode, local.delta_p.n_samples) != (
             paper.delta_p.mode,
             paper.delta_p.n_samples,
+        )
+
+
+def draw_onpolicy_vector(cfg, t, store, *, scale: float = 1.0):
+    r"""Stand in for what :mod:`method.axis_refresh` leaves in the bundle.
+
+    The sweep generates a fresh extraction set from $M_t$, judges it, filters
+    it and extracts a vector; none of that is what the views are being tested
+    on. What matters here is only that a vector exists at the path
+    ``ProjectionAxis.ONPOLICY`` reads, and whether it points the same way as
+    the frozen one -- so it is derived from $v^{(t)}$ by a rotation ``scale``
+    controls, with ``1.0`` meaning "the freeze cost nothing".
+    """
+    import torch
+
+    frozen = torch.load(
+        store.trait_measurement(
+            get_weights_id(cfg, t), cfg.trait, steps.Artifacts.persona_vector(cfg.trait)
+        ),
+        weights_only=False,
+    )
+    path = steps.onpolicy_vector_path(store, get_weights_id(cfg, t), cfg.trait)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    drawn = frozen if scale == 1.0 else frozen + scale * torch.flip(frozen, dims=(-1,))
+    torch.save(drawn, path)
+    return path
+
+
+class TestOnPolicyAxisView:
+    r"""$\Delta P_t^{t\leftarrow t}$: the axis drawn from the checkpoint's own text."""
+
+    def test_a_missing_draw_names_the_sweep_that_produces_it(self, tmp_path, backend):
+        """The one input no other family leaves behind. A bare file-not-found
+        several frames down would read as a broken store rather than as a
+        sweep that has not been run."""
+        store = Store(tmp_path)
+        cfg = make_cfg(axis=ProjectionAxis.ONPOLICY)
+        prepared(cfg, store, backend)
+
+        with pytest.raises(FileNotFoundError, match="axis_refresh"):
+            delta_p(cfg, 0, store, backend, OWN_AXIS)
+
+    def test_it_agrees_with_the_default_view_when_the_draw_agrees(
+        self, tmp_path, backend
+    ):
+        """If re-drawing the extraction text yields the same direction, the
+        freeze cost nothing and the two views are one measurement -- which is
+        the null this whole family exists to test against."""
+        store = Store(tmp_path)
+        cfg = make_cfg(axis=ProjectionAxis.ONPOLICY)
+        prepared(cfg, store, backend, t=1)
+        draw_onpolicy_vector(cfg, 1, store)
+
+        assert delta_p(cfg, 1, store, backend, DEFAULT) == delta_p(
+            cfg, 1, store, backend, OWN_AXIS
+        )
+
+    def test_it_differs_once_the_drawn_axis_points_elsewhere(self, tmp_path, backend):
+        """And if it does not agree, the number the freeze reports is not the
+        number the paper's own procedure would."""
+        store = Store(tmp_path)
+        cfg = make_cfg(axis=ProjectionAxis.ONPOLICY)
+        prepared(cfg, store, backend, t=1)
+        draw_onpolicy_vector(cfg, 1, store, scale=0.5)
+
+        assert delta_p(cfg, 1, store, backend, DEFAULT) != delta_p(
+            cfg, 1, store, backend, OWN_AXIS
+        )
+
+    def test_it_reads_the_draw_from_the_checkpoint_being_measured(
+        self, tmp_path, backend
+    ):
+        """Not from $M_0$'s bundle, which is where the *frozen* text lives. A
+        view that read the base draw would be measuring the base model's own
+        axis under a name that promises the checkpoint's."""
+        store = Store(tmp_path)
+        cfg = make_cfg(axis=ProjectionAxis.ONPOLICY)
+        prepared(cfg, store, backend, t=1)
+        draw_onpolicy_vector(cfg, 0, store, scale=0.5)
+
+        with pytest.raises(FileNotFoundError, match="t=1"):
+            delta_p(cfg, 1, store, backend, OWN_AXIS)
+
+    def test_it_needs_no_forward_pass_where_the_activations_are_cached(
+        self, tmp_path, backend, monkeypatch
+    ):
+        """Free for the same reason the base axis is: the activations do not
+        depend on which direction they are projected onto. The draw is what
+        costs, and the sweep has already paid for it."""
+        store = Store(tmp_path)
+        cfg = make_cfg(axis=ProjectionAxis.ONPOLICY)
+        prepared(cfg, store, backend, t=1)
+        delta_p(cfg, 1, store, backend, DEFAULT)
+        draw_onpolicy_vector(cfg, 1, store, scale=0.5)
+
+        before = _hidden_state_mtimes(store, cfg)
+        monkeypatch.setattr(
+            "method.steps.materialize",
+            lambda *a, **k: pytest.fail(
+                "materialized a checkpoint for a re-projection"
+            ),
+        )
+
+        assert delta_p(cfg, 1, store, backend, OWN_AXIS)["n"] > 0
+        assert _hidden_state_mtimes(store, cfg) == before
+
+    def test_it_does_not_overwrite_the_default_view(self, tmp_path, backend):
+        """Each view owns its own artifact names, so a checkpoint can carry all
+        six at once."""
+        store = Store(tmp_path)
+        cfg = make_cfg(axis=ProjectionAxis.ONPOLICY)
+        prepared(cfg, store, backend, t=1)
+        draw_onpolicy_vector(cfg, 1, store, scale=0.5)
+
+        default = delta_p(cfg, 1, store, backend, DEFAULT)
+        drawn = delta_p(cfg, 1, store, backend, OWN_AXIS)
+
+        assert delta_p(cfg, 1, store, backend, DEFAULT) == default
+        assert drawn != default
+
+
+class TestOnPolicyFamilies:
+    def test_both_families_take_the_redrawn_axis(self):
+        for cfg in E.build_exp2_onpolicy_configs():
+            assert cfg.delta_p.axis is ProjectionAxis.ONPOLICY
+            assert cfg.delta_p.predicted is PredictedSource.BASE
+        for cfg in E.build_exp2_onpolicy_regen_configs():
+            assert cfg.delta_p.axis is ProjectionAxis.ONPOLICY
+            assert cfg.delta_p.predicted is PredictedSource.CURRENT
+
+    def test_they_replay_the_decay_trunks_rather_than_training(self):
+        """Identical in everything ``weights_key`` hashes, so every checkpoint
+        is one the decay family already trained."""
+        trunks = {
+            cfg.label_map["trunk"]: cfg
+            for cfg in E.build_exp2_decay_configs()
+            if cfg.label_map["role"] == "trunk" and cfg.trait == "evil"
+        }
+        for cfg in E.build_exp2_onpolicy_configs(measure_traits=("evil",)):
+            decayed = trunks[cfg.label_map["trunk"]]
+            assert [get_weights_id(cfg, t) for t in range(len(cfg.steps) + 1)] == [
+                get_weights_id(decayed, t) for t in range(len(decayed.steps) + 1)
+            ]
+
+    def test_each_writes_its_own_trajectory(self):
+        names = {cfg.name for cfg in E.build_exp2_onpolicy_configs()} | {
+            cfg.name for cfg in E.build_exp2_onpolicy_regen_configs()
+        }
+        assert len(names) == 12
+
+    def test_they_are_collectable_as_their_own_families(self):
+        assert E.GROUP_BUILDERS[E.EXP2_ONPOLICY] is E.build_exp2_onpolicy_configs
+        assert (
+            E.GROUP_BUILDERS[E.EXP2_ONPOLICY_REGEN]
+            is E.build_exp2_onpolicy_regen_configs
         )

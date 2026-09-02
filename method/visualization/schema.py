@@ -66,6 +66,14 @@ class StepRecord:
     probes_current: dict[str, dict[str, float]] = field(default_factory=dict)
     delta_p_v0_current: dict[str, float] | None = None
     probes_v0_current: dict[str, dict[str, float]] = field(default_factory=dict)
+    #: And the pair whose axis is drawn from the checkpoint's *own* extraction
+    #: text rather than $M_0$'s frozen one, against each source of answers.
+    #: These are the only views here in which anything about the persona vector
+    #: but its encoder has moved.
+    delta_p_onpolicy: dict[str, float] | None = None
+    probes_onpolicy: dict[str, dict[str, float]] = field(default_factory=dict)
+    delta_p_onpolicy_current: dict[str, float] | None = None
+    probes_onpolicy_current: dict[str, dict[str, float]] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> StepRecord:
@@ -82,6 +90,10 @@ class StepRecord:
         both = DeltaPView(
             axis=ProjectionAxis.BASE, predicted=PredictedSource.CURRENT
         )
+        own_axis = DeltaPView(axis=ProjectionAxis.ONPOLICY)
+        own_axis_and_answers = DeltaPView(
+            axis=ProjectionAxis.ONPOLICY, predicted=PredictedSource.CURRENT
+        )
         return cls(
             t=payload["t"],
             weights_id=payload["weights_id"],
@@ -96,6 +108,10 @@ class StepRecord:
             probes_current=probes(own_answers),
             delta_p_v0_current=delta_p(both),
             probes_v0_current=probes(both),
+            delta_p_onpolicy=delta_p(own_axis),
+            probes_onpolicy=probes(own_axis),
+            delta_p_onpolicy_current=delta_p(own_axis_and_answers),
+            probes_onpolicy_current=probes(own_axis_and_answers),
         )
 
     def probes_by(self, view: DeltaPView) -> dict[str, dict[str, float]]:
@@ -105,6 +121,8 @@ class StepRecord:
             "v0": self.probes_v0,
             "current": self.probes_current,
             "v0_current": self.probes_v0_current,
+            "onpolicy": self.probes_onpolicy,
+            "onpolicy_current": self.probes_onpolicy_current,
         }[view.suffix]
 
 

@@ -69,6 +69,8 @@ def write_run(
     probes_v0=None,
     probes_current=None,
     probes_v0_current=None,
+    probes_onpolicy=None,
+    probes_onpolicy_current=None,
     se=0.5,
     delta_p=1.0,
     h_norm=True,
@@ -121,6 +123,14 @@ def write_run(
                 "probes_v0_current": {
                     dataset: {"mean": series[t], "std": 0.5, "n": 8}
                     for dataset, series in (probes_v0_current or {}).items()
+                },
+                "probes_onpolicy": {
+                    dataset: {"mean": series[t], "std": 0.5, "n": 8}
+                    for dataset, series in (probes_onpolicy or {}).items()
+                },
+                "probes_onpolicy_current": {
+                    dataset: {"mean": series[t], "std": 0.5, "n": 8}
+                    for dataset, series in (probes_onpolicy_current or {}).items()
                 },
             }
             if t < n:
@@ -243,6 +253,55 @@ def build_regen(*, offset: float = 0.0, trunks=("a",)) -> Collection:
             },
         )
     return collect(configs, group=E.EXP2_REGEN)
+
+
+def build_onpolicy(*, offset: float = 2.5, trunks=("a", "c")) -> Collection:
+    r"""The re-drawn-axis re-measurement, carrying $\Delta P_t^{t\leftarrow t,[0]}$.
+
+    Free wherever :mod:`method.axis_refresh` has drawn the vector, so it
+    defaults to every trunk as :func:`build_axis` does. Its own ``offset``, for
+    the reason :func:`build_v0regen` has one: a column that agreed with a
+    neighbour exactly would pass every join here whether or not it read the
+    right record key.
+    """
+    configs = E.build_exp2_onpolicy_configs(
+        measure_traits=("evil",),
+        trunks={name: TRUNKS[name] for name in trunks},
+        probes=PROBES,
+    )
+    for cfg in configs:
+        write_run(
+            cfg,
+            behaviors=[50.0 + 2 * t for t in range(7)],
+            probes_onpolicy={
+                dataset: [value + offset for value in series]
+                for dataset, series in _probe_series(7).items()
+            },
+        )
+    return collect(configs, group=E.EXP2_ONPOLICY)
+
+
+def build_onpolicy_regen(*, offset: float = 3.5, trunks=("a",)) -> Collection:
+    r"""The re-drawn axis with the checkpoint's own answers: nothing left at $M_0$.
+
+    Defaults to trunk A alone, like :func:`build_regen`, because it needs those
+    regenerated answers and they are paid for per trunk.
+    """
+    configs = E.build_exp2_onpolicy_regen_configs(
+        measure_traits=("evil",),
+        trunks={name: TRUNKS[name] for name in trunks},
+        probes=PROBES,
+    )
+    for cfg in configs:
+        write_run(
+            cfg,
+            behaviors=[50.0 + 2 * t for t in range(7)],
+            probes_onpolicy_current={
+                dataset: [value + offset for value in series]
+                for dataset, series in _probe_series(7).items()
+            },
+        )
+    return collect(configs, group=E.EXP2_ONPOLICY_REGEN)
 
 
 def build_v0regen(*, offset: float = 1.5, trunks=("a",)) -> Collection:
@@ -470,7 +529,13 @@ class TestRemeasuredSeries:
             decay.decay_frame(
                 build_decay(),
                 build_validation(),
-                [build_axis(), build_regen(), build_v0regen()],
+                [
+                    build_axis(),
+                    build_regen(),
+                    build_v0regen(),
+                    build_onpolicy(),
+                    build_onpolicy_regen(),
+                ],
             ),
             n_resamples=50,
         )

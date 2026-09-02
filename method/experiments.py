@@ -129,6 +129,8 @@ EXP2_AXIS = "exp2_axis"  # the trunks again, re-projected onto the base axis
 EXP2_REGEN = "exp2_regen"  # the trunks again, re-answering the probes at every t
 EXP2_V0REGEN = "exp2_v0regen"  # re-answered probes against the base axis
 EXP2_HREGEN = "exp2_hregen"  # the trunks again, re-answering the neutral prompts
+EXP2_ONPOLICY = "exp2_onpolicy"  # the trunks against their own re-drawn axis
+EXP2_ONPOLICY_REGEN = "exp2_onpolicy_regen"  # that axis, re-answered probes too
 EXP3 = "exp3"  # "Is a model trained on trait-eliciting data more prone to EM?"
 #: Section 6d: how much of z_t is the base measurement rather than the model
 #: (:mod:`method.anchor_noise`). Trains nothing and produces no trajectory --
@@ -808,7 +810,7 @@ def build_exp2_v0regen_configs(
     generating $M_t$'s answers and taking their hidden states, and that work is
     cached per checkpoint and dataset under ``delta_p_predicted_current``,
     keyed independently of both the axis and the trait (see
-    ``steps._predicted_dir``). This family therefore loads two tensors that
+    ``steps.predicted_dir``). This family therefore loads two tensors that
     already exist, loads $v^{(0)}$, and does the arithmetic -- the same deal
     :func:`build_exp2_axis_configs` gets over the decay family, one rung up.
     ``compute_delta_p`` defers materialising the checkpoint until something
@@ -852,6 +854,108 @@ def build_exp2_v0regen_configs(
             local=local,
             probes=probes,
             axis=ProjectionAxis.BASE,
+            predicted=PredictedSource.CURRENT,
+        )
+        for trait in measure_traits
+        for seed in seeds
+        for trunk, drivers in trunks.items()
+    ]
+
+
+def build_exp2_onpolicy_configs(
+    *,
+    seed: int = EXP2_SEED,
+    measure_traits: Sequence[str] = MEASURE_TRAITS,
+    trunks: Mapping[str, Sequence[StepConfig]] = EXP2_TRUNKS,
+    probes: Sequence[StepConfig] = EXP2_PROBES,
+    local: bool = False,
+) -> list[TrajectoryConfig]:
+    r"""Every trunk again, against the axis the checkpoint drew for itself.
+
+    $v^{(t)}$ is not the vector \citet{chen2025persona_vectors} would extract
+    at $M_t$. Theirs generates the trait-positive and trait-negative responses
+    *from the model being measured*; ours generates them once from $M_0$ and
+    has every later checkpoint re-encode that same fixed text. The freeze buys
+    comparability -- a refreshed extraction set would move for two reasons at
+    once -- and :mod:`method.axis_refresh` measures what it costs, as an angle
+    between the two vectors.
+
+    An angle is not an answer to the question the thesis is actually asking.
+    A ruler can turn a long way and still order the same datasets the same
+    way, and it is the ordering that RQ1 is about. This family closes that gap:
+    the same probes at the same checkpoints, projected onto
+    $v^{(t \leftarrow t)}$, so the freeze can be read as a change in a
+    *prediction* rather than as a change in a direction.
+
+    **It is free wherever the axis-refresh sweep has run**, and impossible
+    where it has not. The activations are cached per checkpoint and dataset and
+    do not depend on the axis, exactly as in
+    :func:`build_exp2_axis_configs`; what is not free is the extraction draw
+    itself -- 1000 responses a side, judged, at every (checkpoint, trait) --
+    and nothing else in the repo produces it. Run ``python -m
+    method.axis_refresh`` first; :func:`method.steps._projection_vector` says
+    so by name when the vector is missing.
+
+    Deliberately identical to :func:`build_exp2_decay_configs`' trunks in
+    everything ``weights_key`` hashes, so it replays checkpoints that already
+    exist and trains nothing.
+    """
+    check_exp2_feasibility(trunks, probes)
+    return [
+        _exp2_config(
+            name=f"exp2_onpolicy_trunk_{trunk}_{trait}",
+            trait=trait,
+            steps=tuple(drivers),
+            seed=seed,
+            group=EXP2_ONPOLICY,
+            labels=(("role", "trunk"), ("trunk", trunk)),
+            local=local,
+            probes=probes,
+            axis=ProjectionAxis.ONPOLICY,
+        )
+        for trait in measure_traits
+        for trunk, drivers in trunks.items()
+    ]
+
+
+def build_exp2_onpolicy_regen_configs(
+    *,
+    seeds: Sequence[int] = (EXP2_SEED,),
+    measure_traits: Sequence[str] = MEASURE_TRAITS,
+    trunks: Mapping[str, Sequence[StepConfig]] = EXP2_TRUNKS,
+    probes: Sequence[StepConfig] = EXP2_PROBES,
+    local: bool = False,
+) -> list[TrajectoryConfig]:
+    r"""The re-drawn axis again, with the checkpoint answering the probes too.
+
+    $\Delta P_t^{t \leftarrow t,[t]}$: the corner with nothing at all held at
+    $M_0$, and therefore the one number in the whole square that the
+    persona-vectors procedure, applied unchanged at $M_t$, would report.
+
+    It completes the 3x2 of :class:`method.config.DeltaPView`. Without it the
+    on-policy axis is measured against $M_0$'s cached answers only, so the two
+    factors this experiment separates everywhere else -- the axis and the
+    answers -- would be confounded again in the one pair of series where the
+    extraction text moves.
+
+    Free on the same two conditions as its neighbours, and no others: the
+    answers are the ones :func:`build_exp2_regen_configs` has already generated
+    and cached under ``delta_p_predicted_current``, and the vector is the one
+    :mod:`method.axis_refresh` has already drawn. Where both exist this loads
+    three tensors and does the arithmetic.
+    """
+    check_exp2_feasibility(trunks, probes)
+    return [
+        _exp2_config(
+            name=f"exp2_onpolicy_regen_trunk_{trunk}_{trait}",
+            trait=trait,
+            steps=tuple(drivers),
+            seed=seed,
+            group=EXP2_ONPOLICY_REGEN,
+            labels=(("role", "trunk"), ("trunk", trunk)),
+            local=local,
+            probes=probes,
+            axis=ProjectionAxis.ONPOLICY,
             predicted=PredictedSource.CURRENT,
         )
         for trait in measure_traits
@@ -1258,6 +1362,8 @@ GROUP_BUILDERS: dict[str, Callable[..., list[TrajectoryConfig]]] = {
     EXP2_REGEN: build_exp2_regen_configs,
     EXP2_V0REGEN: build_exp2_v0regen_configs,
     EXP2_HREGEN: build_exp2_hregen_configs,
+    EXP2_ONPOLICY: build_exp2_onpolicy_configs,
+    EXP2_ONPOLICY_REGEN: build_exp2_onpolicy_regen_configs,
     EXP3: build_hysteresis_configs,
 }
 
@@ -1311,6 +1417,8 @@ REGISTRY: dict[str, TrajectoryConfig] = {
     **_register(build_exp2_regen_configs()),
     **_register(build_exp2_v0regen_configs()),
     **_register(build_exp2_hregen_configs()),
+    **_register(build_exp2_onpolicy_configs()),
+    **_register(build_exp2_onpolicy_regen_configs()),
     **_register(build_hysteresis_configs()),
     # The small-model variants (names carry "_local"), so a laptop or mock run
     # of any experiment is reachable from the CLI and `make_plots --local` has
@@ -1322,6 +1430,8 @@ REGISTRY: dict[str, TrajectoryConfig] = {
     **_register(build_exp2_regen_configs(local=True)),
     **_register(build_exp2_v0regen_configs(local=True)),
     **_register(build_exp2_hregen_configs(local=True)),
+    **_register(build_exp2_onpolicy_configs(local=True)),
+    **_register(build_exp2_onpolicy_regen_configs(local=True)),
     **_register(build_hysteresis_configs(local=True)),
 }
 

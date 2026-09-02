@@ -54,6 +54,18 @@ PURPLE = "#6b139e"
 PLUM = "#a94677"
 CATEGORICAL = (BLUE, ORANGE, GREEN, PURPLE, PLUM)
 
+#: Two more hues, deliberately outside :data:`CATEGORICAL` and outside the
+#: guarantee above. A decay panel can hold seven projection-difference series
+#: once every one of them has been measured
+#: (:data:`method.visualization.figures._DECAY_SERIES`), and seven nominal hues
+#: cannot be made dichromacy-safe at all. So these two are added for the panel
+#: that draws all seven, not promoted into the palette: each is the on-policy
+#: twin of a series already in it -- teal beside green, rust beside orange --
+#: and the figures the thesis prints draw two series, never seven (see
+#: :data:`method.visualization.make_plots.DECAY_GRID_SERIES`).
+TEAL = "#0f6f77"
+RUST = "#8a4b12"
+
 #: Not a categorical slot: a semantic accent for "over the line" in the latent
 #: audit, where it is read against :data:`BLUE` alone rather than against the
 #: rest of the palette.

@@ -272,6 +272,26 @@ store is, and only for the trunks phase 7b covered.
 nohup bash scripts/run_family.sh EXP2_V0REGEN --trunks a > exp2_v0regen_a.log 2>&1 &
 ```
 
+**Phase 7e (free, after the axis-refresh sweep) — $\Delta P_t^{t\leftarrow t}$.** The
+same probes once more, against the persona vector each checkpoint drew from *its own*
+generated text rather than from $M_0$'s frozen extraction set. Phases 7a-7d all hold that
+text fixed, so none of them can say whether the freeze changes a prediction; the
+axis-refresh sweep measures how far the two vectors have turned apart, which is a
+different question. Two families, one per source of predicted answers, and the pair
+completes the 3x2 in `DeltaPView`. Free wherever `python -m method.axis_refresh` has
+already drawn the vector, and impossible where it has not.
+```bash
+nohup bash scripts/run_family.sh EXP2_ONPOLICY > exp2_onpolicy.log 2>&1 &
+```
+Both families are arithmetic over cached tensors, so they can also be produced away from
+the GPU box, off a sparse pull of the measurement bundles:
+```bash
+poetry run python -m method.sparse_pull                       # ~250MB, ~10 min
+poetry run python -m method.onpolicy_delta_p --store store-thin
+```
+That path records the mean and no spread, which is what the tables and figures read; see
+[`method/onpolicy_delta_p.py`](method/onpolicy_delta_p.py).
+
 **Plotting.** Asking for any one exp2 family collects the rest — the decay grid's
 $t = 0$ column comes from the validation fan, the reseed family is only meaningful
 overlaid on the trunk it replicates, and the regen family adds a series to figures the
@@ -473,5 +493,6 @@ bundle, so the production vector they are compared against is never touched. The
 lands in `trajectories/axis_refresh/` and syncs with the trajectories root.
 
 Out of scope here: what a refreshed axis would do to $\Delta P$. That asks whether
-staleness changes a *prediction* rather than the ruler, and it belongs to the four-corner
-square in `DeltaPView` (`EXP2_AXIS` / `EXP2_REGEN` / `EXP2_V0REGEN`).
+staleness changes a *prediction* rather than the ruler, and it belongs to the square in
+`DeltaPView` (`EXP2_AXIS` / `EXP2_REGEN` / `EXP2_V0REGEN`), whose `EXP2_ONPOLICY` and
+`EXP2_ONPOLICY_REGEN` families read the vector this sweep leaves behind (phase 7e).

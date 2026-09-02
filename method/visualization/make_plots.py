@@ -405,6 +405,8 @@ EXP2_GROUPS = (
     experiments.EXP2_REGEN,
     experiments.EXP2_V0REGEN,
     experiments.EXP2_HREGEN,
+    experiments.EXP2_ONPOLICY,
+    experiments.EXP2_ONPOLICY_REGEN,
 )
 
 #: Which checkpoint-level quantities plot 4 regresses the correlation on. Drift is what
@@ -584,8 +586,8 @@ def build_exp2(
     passed together because the figures cross them: the decay family supplies
     the trunks and their fans, the validation family supplies the shared
     $t = 0$ column that the decay family deliberately does not re-emit, the
-    reseed family supplies the paired replicate plot 5 overlays, and the axis
-    and regen families supply the two re-measured projection series for
+    reseed family supplies the paired replicate plot 5 overlays, and the axis,
+    regen and on-policy families supply the re-measured projection series for
     whichever trunks they covered.
 
     ``sigma_seed`` maps a trait to its fine-tune seed noise. Where it is
@@ -623,7 +625,19 @@ def build_exp2(
     v0regen_runs = collections.get(experiments.EXP2_V0REGEN) or Collection(
         experiments.EXP2_V0REGEN
     )
-    remeasured = [axis_runs, regen_runs, v0regen_runs]
+    onpolicy_runs = collections.get(experiments.EXP2_ONPOLICY) or Collection(
+        experiments.EXP2_ONPOLICY
+    )
+    onpolicy_regen_runs = collections.get(
+        experiments.EXP2_ONPOLICY_REGEN
+    ) or Collection(experiments.EXP2_ONPOLICY_REGEN)
+    remeasured = [
+        axis_runs,
+        regen_runs,
+        v0regen_runs,
+        onpolicy_runs,
+        onpolicy_regen_runs,
+    ]
     # Not a DeltaP re-measurement, so not part of ``remeasured``: this family
     # re-takes ``h_neutral`` and therefore contributes a second $z_t$ series,
     # which reaches the figures through ``--source`` rather than through a
