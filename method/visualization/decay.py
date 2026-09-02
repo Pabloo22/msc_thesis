@@ -37,6 +37,7 @@ from method.config import DatasetVersion, StepConfig
 from method.latent import H_NORM
 from method.noise import delta_b_noise_variance, r2_max
 from method.visualization.collect import Collection, Run
+from method.visualization.labels import DELTA_P_BASE, delta_p_symbol
 from method.visualization.metrics import bootstrap_fit
 
 logger = logging.getLogger(__name__)
@@ -51,31 +52,36 @@ BRANCH_ROLE = "branch"
 #: The projection differences the figures pair: $\Delta P_0$, then the 2x2 of
 #: what may be refreshed at $M_t$ -- the axis, the answers, either, both.
 #:
-#: The notation carries one mark per choice. A **hat** says the predicted term
-#: is *approximated* by $M_0$'s answers rather than being what the checkpoint
-#: would really say; a $(\mathbf{v}_0)$ **superscript** says the axis is held
-#: at the base model's persona vector; the **subscript** is the checkpoint the
-#: activations come from. So $\Delta P_t$ -- unmarked -- is the projection difference the
-#: update actually faces, and everything else is an approximation of it.
+#: Written $\Delta P_t^{a\leftarrow g\mid p}$, one index per independent
+#: choice: the **subscript** is the checkpoint whose activations the candidate
+#: dataset is read with, $a\leftarrow g$ names the persona vector it is
+#: projected onto (encoded by $M_a$, extracted from responses $M_g$ generated),
+#: and $p$ is the checkpoint that generated the predicted responses the targets
+#: are differenced against. Every series here holds $g = 0$: the extraction
+#: text is $M_0$'s in all of them, and the corners that refresh it are measured
+#: by :mod:`method.axis_refresh` rather than by a decay family.
 #:
 #: ``p0``
 #:     $\Delta P_0$, everything read at $M_0$. This is the quantity the
-#:     persona-vectors paper computes, and it needs no hat: at $t = 0$ the
-#:     current model *is* $M_0$, so nothing about it is approximated.
+#:     persona-vectors paper computes, and the chapter's shorthand for
+#:     $\Delta P_0^{0\leftarrow0\mid0}$: at $t = 0$ the current model *is*
+#:     $M_0$, so no index has anything to resolve.
 #: ``hat_v0``
-#:     $\Delta \hat{P}_t^{(\mathbf{v}_0)}$, the checkpoint's activations against
+#:     $\Delta P_t^{0\leftarrow0\mid0}$, the checkpoint's activations against
 #:     the base model's axis. Free to measure -- the activations do not depend
 #:     on the axis -- and it is what separates the persona direction rotating
 #:     from the representation drifting.
 #: ``hat_t``
-#:     $\Delta \hat{P}_t$, axis and encoder current, answers still $M_0$'s.
-#:     The quantity whose staleness is RQ1.
+#:     $\Delta P_t^{t\leftarrow0\mid0}$, axis and encoder current, answers
+#:     still $M_0$'s. The quantity whose staleness is RQ1.
 #: ``full_v0``
-#:     $\Delta P_t^{(\mathbf{v}_0)}$, the checkpoint answering for itself but
-#:     projected onto the base model's axis. Free wherever ``full_t`` has been
-#:     measured, for the same reason ``hat_v0`` is free wherever ``hat_t`` has.
+#:     $\Delta P_t^{0\leftarrow0\mid t}$, the checkpoint answering for itself
+#:     but projected onto the base model's axis. Free wherever ``full_t`` has
+#:     been measured, for the same reason ``hat_v0`` is free wherever ``hat_t``
+#:     has.
 #: ``full_t``
-#:     $\Delta P_t$, nothing approximated.
+#:     $\Delta P_t^{t\leftarrow0\mid t}$, nothing held at $M_0$ but the
+#:     extraction text.
 #:
 #: The four past ``p0`` are a 2x2 -- axis current or not, crossed with answers
 #: current or not (see :class:`method.config.DeltaPView`) -- which is what lets
@@ -87,19 +93,19 @@ BRANCH_ROLE = "branch"
 #: are NaN wherever that family did not run -- which every consumer here treats
 #: as "not measured", never as zero.
 #:
-#: Both the keys here and the columns in :data:`SERIES_COLUMNS` spell the hat
-#: out as ``hat``, because the two hatted rungs are the ones a reader reaches
-#: for by mistake. ``hat`` marks the *answers* held at $M_0$ and ``v0`` the
-#: *axis* held at $v^{(0)}$, exactly as the hat and the superscript do in the
-#: maths, so the two halves of each name read off the label. No name is a
-#: prefix of another.
+#: The keys and the columns in :data:`SERIES_COLUMNS` keep the older ``hat``
+#: spelling, which the maths has since dropped: ``hat`` marks the *answers*
+#: held at $M_0$ ($p = 0$) and ``v0`` the *axis* held there ($a = 0$). They are
+#: identifiers rather than notation -- renaming them would rewrite every frame
+#: column and every stored table key for no gain in the figures -- but no name
+#: is a prefix of another, so the two halves still read off the label.
 SERIES = ("p0", "hat_v0", "hat_t", "full_v0", "full_t")
 SERIES_LABELS = {
-    "p0": r"$\Delta P_0$",
-    "hat_v0": r"$\Delta \hat{P}_t^{(\mathbf{v}_0)}$",
-    "hat_t": r"$\Delta \hat{P}_t$",
-    "full_v0": r"$\Delta P_t^{(\mathbf{v}_0)}$",
-    "full_t": r"$\Delta P_t$",
+    "p0": f"${DELTA_P_BASE}$",
+    "hat_v0": f"${delta_p_symbol(axis='0', predicted='0')}$",
+    "hat_t": f"${delta_p_symbol(axis='t', predicted='0')}$",
+    "full_v0": f"${delta_p_symbol(axis='0', predicted='t')}$",
+    "full_t": f"${delta_p_symbol(axis='t', predicted='t')}$",
 }
 
 #: The ``decay_frame`` column each series is fitted from.
@@ -114,12 +120,10 @@ SERIES_COLUMNS = {
 #: $z_t$ components, in the order the proposal introduces them.
 Z_COMPONENTS = ("p", "q", "rho", "r")
 
-#: How each coordinate is written in maths, as a bare symbol with no delimiters
-#: and no subscript. Callers add both, because they need it in different
-#: places: an axis label wants ``$p_t$`` standing alone, a table key wants it
-#: inside a larger expression. Kept here so the one place that knows the
-#: coordinates also knows how they are spelled.
-Z_SYMBOLS = {"p": "p", "q": "q", "rho": r"\rho", "r": "r"}
+#: How each coordinate is spelled lives in
+#: :func:`method.visualization.labels.z_component_symbol`, because the spelling
+#: now depends on which model generated the responses behind it and this module
+#: has no opinion about that -- it reports whichever source it was asked for.
 
 #: What :func:`latent_frame` carries per checkpoint: z_t and the activation
 #: length ``p`` and ``q`` were divided by.

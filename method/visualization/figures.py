@@ -26,8 +26,10 @@ from numpy.typing import ArrayLike
 from method.visualization import style
 from method.visualization.labels import (
     DATASET_TITLES,
+    DELTA_P_BASE,
     HYSTERESIS_CONDITION_SEQUENCES,
     HYSTERESIS_CONDITIONS,
+    delta_p_symbol,
     display_dataset_name,
 )
 from method.visualization.metrics import (
@@ -183,24 +185,25 @@ def scatter_projection_correlation(
     xlabel: str = r"Projection difference $\Delta P$",
     ylabel: str = r"Behaviour change $\Delta b_{t+1}$",
 ) -> Figure:
-    r"""RQ1: compare $\Delta P_0$ and $\Delta \hat{P}_t$ as predictors.
+    r"""RQ1: compare $\Delta P_0$ and $\Delta P_t^{t\leftarrow0\mid0}$.
 
     Two series share one axis: $\Delta P_0$ (blue), frozen at the base model,
-    against $\Delta \hat{P}_t$ (orange), whose axis and encoder are recomputed
-    at the checkpoint while its predicted answer remains $M_0$'s -- both
-    plotted against the behaviour change the step actually caused.
+    against $\Delta P_t^{t\leftarrow0\mid0}$ (orange), whose axis and encoder
+    are recomputed at the checkpoint while its predicted answers remain
+    $M_0$'s -- both plotted against the behaviour change the step actually
+    caused.
     """
     style.apply_style()
     fig, ax = plt.subplots(figsize=(5.5, 4.2))
     _scatter_with_fit(
-        ax, delta_p_0, delta_behavior, color=style.BLUE, label=r"$\Delta P_0$"
+        ax, delta_p_0, delta_behavior, color=style.BLUE, label=f"${DELTA_P_BASE}$"
     )
     _scatter_with_fit(
         ax,
         delta_p_hat_t,
         delta_behavior,
         color=style.ORANGE,
-        label=r"$\Delta \hat{P}_t$",
+        label=f"${delta_p_symbol(axis='t', predicted='0')}$",
     )
     ax.axhline(0, color=style.BASELINE, linewidth=0.8, zorder=1)
     ax.set_xlabel(xlabel)
@@ -858,19 +861,27 @@ class _DecaySeries:
 #: :func:`_panel_series`), which is what lets one grid mix a trunk that was
 #: re-measured with two that were not.
 _DECAY_SERIES: tuple[_DecaySeries, ...] = (
-    _DecaySeries("delta_p_0", r"\Delta P_0", style.BLUE),
+    _DecaySeries("delta_p_0", DELTA_P_BASE, style.BLUE),
     _DecaySeries(
         "delta_p_hat_v0",
-        r"\Delta \hat{P}_t^{(\mathbf{v}_0)}",
+        delta_p_symbol(axis="0", predicted="0"),
         style.PURPLE,
     ),
-    _DecaySeries("delta_p_hat_t", r"\Delta \hat{P}_t", style.GREEN),
+    _DecaySeries(
+        "delta_p_hat_t",
+        delta_p_symbol(axis="t", predicted="0"),
+        style.GREEN,
+    ),
     _DecaySeries(
         "delta_p_full_v0",
-        r"\Delta P_t^{(\mathbf{v}_0)}",
+        delta_p_symbol(axis="0", predicted="t"),
         style.PLUM,
     ),
-    _DecaySeries("delta_p_full_t", r"\Delta P_t", style.ORANGE),
+    _DecaySeries(
+        "delta_p_full_t",
+        delta_p_symbol(axis="t", predicted="t"),
+        style.ORANGE,
+    ),
 )
 
 
@@ -2068,12 +2079,19 @@ def _series_line(
 #: Line style per series in ``headline_curves``. Keyed by name rather than by
 #: position so the same series always reads the same way regardless of which
 #: others are present -- adding a series must not restyle the ones beside it.
-#: Ordered as the ladder is: more dashes as more of the quantity is
-#: approximated, and solid at both ends where nothing is.
+#:
+#: Every series in :data:`method.visualization.decay.SERIES` has an entry, and
+#: they are all distinct. The ``.get(name, "solid")`` fallback at the call site
+#: is a backstop, not a slot: while the fourth corner
+#: ($\Delta P_t^{0\leftarrow0\mid t}$) went unmeasured it fell through to
+#: "solid" and drew itself on top of $\Delta P_0$ in the same hue, which reads
+#: as one curve rather than as two that agree. A series without a style here is
+#: a series a reader cannot pick out, so a sixth would need its own.
 _SERIES_LINESTYLES: dict[str, str | tuple] = {
     "p0": "solid",
     "hat_v0": "dashdot",
     "hat_t": (0, (4, 2)),
+    "full_v0": (0, (3, 1, 1, 1, 1, 1)),
     "full_t": "dotted",
 }
 

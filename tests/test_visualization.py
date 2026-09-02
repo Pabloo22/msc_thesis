@@ -541,8 +541,9 @@ class TestScatterProjectionCorrelation:
         legend = ax.get_legend()
         assert legend is not None
         legend_labels = [t.get_text() for t in legend.get_texts()]
-        assert any(r"\Delta P_0" in label for label in legend_labels)
-        assert any(r"\Delta \hat{P}_t" in label for label in legend_labels)
+        # Each key carries an "($r$=...)" gloss, so the symbol is a prefix.
+        assert any(k.startswith(decay.SERIES_LABELS["p0"]) for k in legend_labels)
+        assert any(k.startswith(decay.SERIES_LABELS["hat_t"]) for k in legend_labels)
 
 
 class TestScatterMetricGrid:
@@ -1108,7 +1109,7 @@ class TestDecayScatterGrid:
             _decay_rows(), series=["delta_p_0"]
         ).legends
         keys = [text.get_text() for text in legend.get_texts()]
-        assert not any(key.startswith(r"$\Delta \hat{P}_t$") for key in keys)
+        assert decay.SERIES_LABELS["hat_t"] not in keys
 
     def test_the_line_keys_have_no_parenthetical_glosses(self) -> None:
         rows = _with_recomputed(_decay_rows())
@@ -1116,8 +1117,8 @@ class TestDecayScatterGrid:
             rows, series=["delta_p_0", "delta_p_full_t"]
         ).legends
         assert [text.get_text() for text in legend.get_texts()[:3]] == [
-            r"$\Delta P_0$",
-            r"$\Delta P_t$",
+            decay.SERIES_LABELS["p0"],
+            decay.SERIES_LABELS["full_t"],
             r"$b_t$",
         ]
 
@@ -1155,8 +1156,8 @@ class TestDecayScatterGrid:
         def keys(legend):
             return [t.get_text() for t in legend.get_texts()]
 
-        assert not any(t.startswith(r"$\Delta P_t$") for t in keys(plain))
-        assert any(t.startswith(r"$\Delta P_t$") for t in keys(mixed))
+        assert decay.SERIES_LABELS["full_t"] not in keys(plain)
+        assert decay.SERIES_LABELS["full_t"] in keys(mixed)
 
     def test_the_panel_plots_the_raw_level_against_the_one_it_started_from(
         self,
@@ -1812,9 +1813,10 @@ class TestExp2Driver:
         make_plots._drift_delta_hat_p_figure(ratios, tmp_path)
         make_plots._drift_delta_p_figure(ratios, tmp_path)
 
+        base = decay.SERIES_LABELS["p0"]
         assert labels_seen == [
-            r"$\Delta \hat{P}_t$ (% of $\Delta P_0$)",
-            r"$\Delta P_t$ (% of $\Delta P_0$)",
+            f"{decay.SERIES_LABELS['hat_t']} (% of {base})",
+            f"{decay.SERIES_LABELS['full_t']} (% of {base})",
         ]
         assert names_seen == [
             "exp2_drift_delta_hat_p",
@@ -2264,3 +2266,15 @@ class TestDemo:
         for path in saved:
             assert path.exists()
             assert path.stat().st_size > 0
+
+
+class TestSeriesLinestyles:
+    """Every projection series must be tellable apart in the headline panel."""
+
+    def test_every_series_has_its_own_linestyle(self) -> None:
+        styles = [figures._SERIES_LINESTYLES[name] for name in decay.SERIES]
+        assert len(set(map(str, styles))) == len(decay.SERIES)
+
+    def test_no_series_falls_through_to_the_solid_default(self) -> None:
+        """A missing entry draws over $\\Delta P_0$, which reads as one curve."""
+        assert set(decay.SERIES) <= set(figures._SERIES_LINESTYLES)

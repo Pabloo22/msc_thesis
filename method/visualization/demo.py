@@ -25,11 +25,15 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 
-from method.visualization import figures, schema, style, synthetic
+from method.visualization import decay, figures, schema, style, synthetic
+from method.visualization.labels import DELTA_P_BASE, z_component_symbol
 from method.visualization.metrics import ratio_percent
 
-#: Display label -> $z_t$ component, for the metric-grid and drift plots.
-_Z_LABELS = {"p": r"$p_t$", "q": r"$q_t$", "rho": r"$\rho_t$", "r": r"$r_t$"}
+#: Display label -> $z_t$ component, for the metric-grid and drift plots. The
+#: synthetic runs carry the base-source state only, so the indices are fixed
+#: here rather than taken from a flag as :mod:`method.visualization.make_plots`
+#: takes them.
+_Z_LABELS = {c: f"${z_component_symbol(c)}$" for c in decay.Z_COMPONENTS}
 
 
 def build_and_save(out_dir: Path = style.PLOTS_DIR, *, n_seeds: int = 5) -> list[Path]:
@@ -76,9 +80,10 @@ def build_and_save(out_dir: Path = style.PLOTS_DIR, *, n_seeds: int = 5) -> list
         ratio=ratio_percent(pairs["delta_p_hat_t"], pairs["delta_p_0"])
     )
     by_step = pairs.groupby("t")["ratio"].mean().sort_index()
+    hat_t = decay.SERIES_LABELS["hat_t"]
     fig = figures.line_with_band(
-        {r"$\Delta \hat{P}_t$": by_step.to_numpy()[None, :]},
-        ylabel=r"$\Delta \hat{P}_t$ (% of $\Delta P_0$ for that dataset)",
+        {hat_t: by_step.to_numpy()[None, :]},
+        ylabel=f"{hat_t} (% of ${DELTA_P_BASE}$ for that dataset)",
         xlabel="Step $t$",
         reference=100.0,
         reference_label="Step-0 value",

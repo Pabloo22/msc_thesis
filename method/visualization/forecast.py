@@ -56,6 +56,11 @@ import pandas as pd
 from numpy.typing import ArrayLike, NDArray
 
 from method.visualization import decay
+from method.visualization.labels import (
+    source_index,
+    z_component_symbol,
+    z_symbol,
+)
 from method.visualization.metrics import LinearFit, linear_fit
 
 logger = logging.getLogger(__name__)
@@ -382,14 +387,14 @@ FORECASTERS: tuple[Forecaster, ...] = (
     ),
     Forecaster(
         "step0_z",
-        r"$M_0$ fit $\times\, g(z_t)$",
+        rf"$M_0$ fit $\times\, g({z_symbol()})$",
         "rescaled by the latent state",
         _corrected(decay.Z_COMPONENTS),
     ),
     *(
         Forecaster(
             f"step0_{name}",
-            rf"$M_0$ fit $\times\, g({decay.Z_SYMBOLS[name]}_t)$",
+            rf"$M_0$ fit $\times\, g({z_component_symbol(name)})$",
             f"rescaled by {Z_GLOSSES[name]}, and nothing else",
             _corrected((name,)),
         )
@@ -410,7 +415,27 @@ FORECASTERS: tuple[Forecaster, ...] = (
     ),
 )
 
+#: The labels as :data:`FORECASTERS` declares them, which is the base-source
+#: reading of the checkpoint state.
 FORECASTER_LABELS = {f.name: f.label for f in FORECASTERS}
+
+
+def forecaster_labels(source: str = "base") -> dict[str, str]:
+    """:data:`FORECASTER_LABELS`, with $z_t$ indexed by its response source.
+
+    Only the state-corrected rows move: every other forecaster is a line
+    through a projection difference and says nothing about ``h_neutral``. The
+    index matters because the same table can be produced from either source
+    and the two are different corrections of the same frozen line -- one
+    reading $M_0$'s neutral answers, one the checkpoint's own.
+    """
+    index = source_index(source)
+    labels = dict(FORECASTER_LABELS)
+    labels["step0_z"] = rf"$M_0$ fit $\times\, g({z_symbol(neutral=index)})$"
+    for name in decay.Z_COMPONENTS:
+        symbol = z_component_symbol(name, neutral=index)
+        labels[f"step0_{name}"] = rf"$M_0$ fit $\times\, g({symbol})$"
+    return labels
 
 #: The pair the headline comparison is between: what a practitioner can have,
 #: against what they would have if refitting were free.

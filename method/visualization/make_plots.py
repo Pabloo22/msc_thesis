@@ -56,6 +56,7 @@ from method.visualization.collect import (
     seed_noise_frame,
 )
 from method.visualization.labels import (
+    DELTA_P_BASE,
     HYSTERESIS_CONDITIONS,
     TRAITS,
     TRUNKS,
@@ -64,22 +65,49 @@ from method.visualization.labels import (
     display_trunk_name,
     display_trunk_short,
     display_trunk_title,
+    neutral_norm_symbol,
+    source_index,
     trunk_index,
+    z_component_symbol,
 )
 
 import matplotlib.pyplot as plt  # noqa: E402  (backend fixed by style import)
 
 logger = logging.getLogger("make_plots")
 
-#: Display label -> $z_t$ component, matching :mod:`method.visualization.demo`.
-Z_LABELS = {c: rf"${s}_t$" for c, s in decay.Z_SYMBOLS.items()}
+def z_labels(source: str = "base") -> dict[str, str]:
+    r"""$z_t$ component -> how a panel or table key writes it.
 
-#: The drift grid's columns: z_t's four, then the length they were normalised
-#: by. Separate from :data:`Z_LABELS` because ``h_norm`` is not a component of
-#: z_t (see :data:`method.latent.H_NORM`) and the audit figures label z_t's
-#: coordinates from that mapping -- a fifth entry there would put a length on
-#: axes that only hold the four.
-DRIFT_Z_LABELS = {**Z_LABELS, H_NORM: r"$\|h^{\mathrm{neutral}}_t\|$"}
+    Indexed by the response source the components were measured under, because
+    two of them now exist: the decay trunks answer the neutral prompts with
+    $M_0$ and the ``exp2_hregen`` trunks with $M_t$, and $p_t^{[0]}$ and
+    $p_t^{[t]}$ are different quantities plotted on identically shaped axes.
+    The persona index is always $0$ -- every $z_t$ in the figures reads the
+    axis extracted from $M_0$'s frozen extraction text, and the on-policy one
+    is reported by :mod:`method.axis_refresh` instead.
+    """
+    index = source_index(source)
+    return {
+        c: f"${z_component_symbol(c, neutral=index)}$" for c in decay.Z_COMPONENTS
+    }
+
+
+def drift_z_labels(source: str = "base") -> dict[str, str]:
+    """The drift grid's columns: z_t's four, then the length they divide by.
+
+    Separate from :func:`z_labels` because ``h_norm`` is not a component of
+    z_t (see :data:`method.latent.H_NORM`) and the audit figures label z_t's
+    coordinates from that mapping -- a fifth entry there would put a length on
+    axes that only hold the four.
+    """
+    index = source_index(source)
+    return {**z_labels(source), H_NORM: f"${neutral_norm_symbol(generator=index)}$"}
+
+
+#: The default-source dicts, for the callers that never vary it: experiment 3
+#: and the audit figures measure ``h_neutral`` from $M_0$ only.
+Z_LABELS = z_labels()
+DRIFT_Z_LABELS = drift_z_labels()
 
 
 def _emit(fig: plt.Figure, name: str, out_dir: Path, saved: list[Path]) -> None:
@@ -383,12 +411,25 @@ EXP2_GROUPS = (
 #: RQ1 claims causes decay; $b_t$ and the phase are the two nuisances that
 #: would otherwise explain it just as well, which is why the schedules in
 #: section 4 are varied enough to tell them apart.
-MECHANISM_PREDICTORS = {
-    "rho": r"Persona-vector rotation $\rho_t$",
-    "r": r"Persona-vector norm $r_t$",
-    "b_t": r"Behaviour level $b_t$",
-    "steps_since_realignment": "Steps since re-alignment",
-}
+def mechanism_predictors(source: str = "base") -> dict[str, str]:
+    """The predictors, labelled for the response source they were measured at.
+
+    $\rho$ and $r$ are properties of the persona vector alone, so neither
+    moves with ``source``; they are indexed anyway, because a reader comparing
+    this panel against the $z_t$ drift grid beside it should not have to work
+    out which of the two indices each symbol was entitled to drop.
+    """
+    return {
+        "rho": f"Persona-vector rotation ${z_component_symbol('rho')}$",
+        "r": f"Persona-vector norm ${z_component_symbol('r')}$",
+        "b_t": r"Behaviour level $b_t$",
+        "steps_since_realignment": "Steps since re-alignment",
+    }
+
+
+#: The default-source labels, kept as a constant for callers with no source to
+#: pass (and for the tests that name the predictors).
+MECHANISM_PREDICTORS = mechanism_predictors()
 
 
 def _trunk_colors(trunks: Sequence[str]) -> dict[str, str]:
@@ -614,12 +655,16 @@ def build_exp2(
     )
     saved += _validation_figure(fan, traits, out_dir)
     saved += _decay_figures(
-        rows, out_dir, sigma_seed=sigma_seed, n_resamples=n_resamples
+        rows,
+        out_dir,
+        sigma_seed=sigma_seed,
+        n_resamples=n_resamples,
+        source=source,
     )
-    saved += _forecast_figures(rows, fan, out_dir)
+    saved += _forecast_figures(rows, fan, out_dir, source=source)
     saved += _drift_delta_hat_p_figure(hatted_ratios, out_dir)
     saved += _drift_delta_p_figure(current_ratios, out_dir)
-    saved += _drift_latent_figure(latents, out_dir)
+    saved += _drift_latent_figure(latents, out_dir, source=source)
     return saved
 
 
@@ -664,12 +709,15 @@ def _validation_figure(
 #: frames stay joinable, and every figure here turns those into the trait,
 #: trunk, projection and forecaster names a reader sees. A table is no
 #: different for being made of text rather than of ink.
-_KEY_LABELS: Mapping[str, Callable[[str], str]] = {
-    "trait": display_trait_name,
-    "trunk": display_trunk_short,
-    "series": lambda name: decay.SERIES_LABELS.get(name, name),
-    "model": lambda name: forecast.FORECASTER_LABELS.get(name, name),
-}
+def _key_labels(source: str = "base") -> Mapping[str, Callable[[str], str]]:
+    """The renderers, with the forecaster rows indexed by their $z_t$ source."""
+    forecasters = forecast.forecaster_labels(source)
+    return {
+        "trait": display_trait_name,
+        "trunk": display_trunk_short,
+        "series": lambda name: decay.SERIES_LABELS.get(name, name),
+        "model": lambda name: forecasters.get(name, name),
+    }
 
 #: ...and what each is headed, above the keys themselves.
 _KEY_HEADINGS = {
@@ -694,7 +742,7 @@ def _headings(keys: Sequence[str]) -> tuple[str, ...]:
     return tuple(_KEY_HEADINGS.get(key, key.title()) for key in keys)
 
 
-def _labelled_table(table: pd.DataFrame) -> pd.DataFrame:
+def _labelled_table(table: pd.DataFrame, source: str = "base") -> pd.DataFrame:
     """A key-indexed table with its keys written as the figures write them.
 
     Driven by the frame's own level names rather than by position, so a table
@@ -704,11 +752,12 @@ def _labelled_table(table: pd.DataFrame) -> pd.DataFrame:
     """
     if table.empty:
         return table
+    renderers = _key_labels(source)
     return table.set_index(
         pd.MultiIndex.from_tuples(
             [
                 tuple(
-                    _KEY_LABELS.get(level, str)(key)
+                    renderers.get(level, str)(key)
                     for level, key in zip(_level_names(table), row)
                 )
                 for row in table.index
@@ -744,6 +793,7 @@ def _decay_figures(
     *,
     sigma_seed: Mapping[str, float],
     n_resamples: int,
+    source: str = "base",
 ) -> list[Path]:
     """Plots 2, 3, 4 and 4b, off the same ``(trait, trunk, t, probe)`` rows."""
     saved: list[Path] = []
@@ -820,7 +870,7 @@ def _decay_figures(
     checkpoints = decay.mechanism_frame(fits)
     fig = figures.mechanism_grid(
         checkpoints,
-        MECHANISM_PREDICTORS,
+        mechanism_predictors(source),
         traits=traits,
         trait_labels=trait_labels,
         trunk_labels={**labels, "shared": "Shared $M_0$"},
@@ -991,7 +1041,7 @@ FORECAST_GRID_SERIES = "p0"
 
 
 def _forecast_figures(
-    rows: pd.DataFrame, fan: pd.DataFrame, out_dir: Path
+    rows: pd.DataFrame, fan: pd.DataFrame, out_dir: Path, *, source: str = "base"
 ) -> list[Path]:
     r"""The out-of-sample tables and the predicted-against-actual grid.
 
@@ -1031,7 +1081,9 @@ def _forecast_figures(
         )
         if table.empty:
             continue
-        shown, pinned = _without_pinned_keys(_labelled_table(table), spec.pinned)
+        shown, pinned = _without_pinned_keys(
+            _labelled_table(table, source), spec.pinned
+        )
         _emit_table(
             _with_mean(shown, DECAY_TABLE_MEAN),
             _headings(_level_names(shown)),
@@ -1069,7 +1121,7 @@ def _forecast_figures(
         trunk_labels=trunk_labels,
         models=forecast.RECALIBRATION_MODELS,
         model_labels=forecast.RECALIBRATION_LABELS,
-        xlabel=r"Projection difference $\Delta P_0$",
+        xlabel=rf"Projection difference ${DELTA_P_BASE}$",
     )
     _emit(fig, "exp2_recalibration_grid", out_dir, saved)
 
@@ -1173,9 +1225,9 @@ def _drift_projection_figure(
             display_dataset_name(probe): style.dataset_mark(probe)
             for probe in set(ratios["probe"])
         },
-        ylabel=rf"{quantity} (% of $\Delta P_0$)",
+        ylabel=rf"{quantity} (% of ${DELTA_P_BASE}$)",
         reference=100.0,
-        reference_label=r"$\Delta P_0$",
+        reference_label=f"${DELTA_P_BASE}$",
         sharey=True,
     )
     _emit(fig, name, out_dir, saved)
@@ -1183,26 +1235,28 @@ def _drift_projection_figure(
 
 
 def _drift_delta_hat_p_figure(ratios: pd.DataFrame, out_dir: Path) -> list[Path]:
-    r"""Plot the legacy $\Delta \hat{P}_t / \Delta P_0$ trajectories."""
+    r"""Plot the cached-answer $\Delta P_t^{t\leftarrow0\mid0}$ trajectories."""
     return _drift_projection_figure(
         ratios,
         out_dir,
-        quantity=r"$\Delta \hat{P}_t$",
+        quantity=decay.SERIES_LABELS["hat_t"],
         name="exp2_drift_delta_hat_p",
     )
 
 
 def _drift_delta_p_figure(ratios: pd.DataFrame, out_dir: Path) -> list[Path]:
-    r"""Plot the regenerated $\Delta P_t / \Delta P_0$ trajectories."""
+    r"""Plot the regenerated $\Delta P_t^{t\leftarrow0\mid t}$ trajectories."""
     return _drift_projection_figure(
         ratios,
         out_dir,
-        quantity=r"$\Delta P_t$",
+        quantity=decay.SERIES_LABELS["full_t"],
         name="exp2_drift_delta_p",
     )
 
 
-def _drift_latent_figure(latents: pd.DataFrame, out_dir: Path) -> list[Path]:
+def _drift_latent_figure(
+    latents: pd.DataFrame, out_dir: Path, *, source: str = "base"
+) -> list[Path]:
     r"""Plot 5, the $z_t$ half: seed means with one-SD bands.
 
     A fifth column carries $\|h^{\mathrm{neutral}}_t\|$, which is not part of
@@ -1227,9 +1281,10 @@ def _drift_latent_figure(latents: pd.DataFrame, out_dir: Path) -> list[Path]:
         display_trunk_name(trunk): style.categorical_color(trunk_index(trunk))
         for trunk in trunks
     }
+    columns = drift_z_labels(source)
     panels, bands = {}, {}
     for trait in traits:
-        for component, label in DRIFT_Z_LABELS.items():
+        for component, label in columns.items():
             cell = (display_trait_name(trait), label)
             panels[cell], bands[cell] = _trunk_mean_std(
                 latents[latents["trait"] == trait], component, trunks
@@ -1239,7 +1294,7 @@ def _drift_latent_figure(latents: pd.DataFrame, out_dir: Path) -> list[Path]:
         panels,
         bands=bands,
         rows=[display_trait_name(trait) for trait in traits],
-        cols=list(DRIFT_Z_LABELS.values()),
+        cols=list(columns.values()),
         colors=colors,
     )
     _emit(fig, "exp2_drift_z", out_dir, saved)

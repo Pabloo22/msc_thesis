@@ -43,11 +43,13 @@
     for the fan-out a refit would need, scored on $\Delta P_0$ --- the rung
     nothing at $M_t$ has refreshed, and so the one with something to correct.
     Each correction rescales the stale projection by a gain regressed on the
-    checkpoint state: $g(z_t)$ on the latent state fitted whole, then each of
-    its four coordinates on its own, and $g(b_t)$ on the behaviour level. The
+    checkpoint state: $g(\mathbf{z}_t^{[0,0]})$ on the latent state fitted
+    whole, then each of its four coordinates on its own, and $g(b_t)$ on the
+    behaviour level. Both response sets behind the state are $\mathcal{M}_0$'s,
+    which is what the $[0,0]$ marks. The
     single-coordinate rows carry two parameters apiece, the same as $g(b_t)$,
     so a correction that fails with them cannot be failing for want of
-    parsimony --- $g(z_t)$ spends five parameters on a fold of roughly fourteen
+    parsimony --- $g(\mathbf{z}_t^{[0,0]})$ spends five parameters on a fold of roughly fourteen
     checkpoints drawn from two trunks. All rows are reported at every
     checkpoint rather than only where they win. Everything here is fitted under
     one rule: nothing fitted on dataset $j$ is used to predict dataset $j$. The
