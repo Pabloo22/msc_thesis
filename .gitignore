@@ -16,6 +16,7 @@ trajectories/
 trajectories-mock/
 store/
 store-mock/
+store-thin/
 .notify-state.json
 unsloth_compiled_cache/
 papers/*

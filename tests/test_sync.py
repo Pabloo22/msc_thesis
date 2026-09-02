@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import shutil
 import subprocess
 import tarfile
 from pathlib import Path
@@ -1325,3 +1326,196 @@ class TestScopedPull:
         assert dst.store.has_adapter("t01-mine")
         assert dst.store.has_adapter("t01-theirs")
         assert (dst.store.training_samples / "theirs.jsonl").exists()
+
+
+class TestSelectiveExtraction:
+    """Taking a few files out of a bundle without landing the bundle.
+
+    The escape hatch from the one-object-per-artifact granularity: a
+    measurement archive's bulk is per-sample tensors, so a box that wants the
+    400KB means beside them is otherwise quoted the whole thing. Bandwidth is
+    unavoidable -- a tar cannot be indexed into from outside -- but disk is,
+    and these pin that it stays avoided. See :mod:`method.sparse_pull`.
+    """
+
+    #: A bundle shaped like a real one: the wanted means, the heavy per-sample
+    #: tensors that dwarf them, and a file in neither category.
+    CONTENTS = {
+        "delta_p_target/probe1/mean_by_layer.pt": "target-mean",
+        "delta_p_target/probe1/samples_layer20.pt": "target-samples" * 50,
+        "delta_p_predicted/probe1/mean_by_layer.pt": "predicted-mean",
+        "delta_p_predicted/probe1/samples_layer20.pt": "predicted-samples" * 50,
+        "traits/evil/evil_response_avg_diff.pt": "frozen-axis",
+        "traits/evil/axis_refresh/vector/evil_response_avg_diff.pt": "onpolicy-axis",
+        "neutral_answers.jsonl": '{"a": 1}',
+    }
+
+    WANTED = ("delta_p_target/probe1/mean_by_layer.pt",)
+
+    def _remote_with_bundle(self, tmp_path, wid: str = "t01-x") -> Syncer:
+        """Push a bundle, then hand back a second box that has none of it."""
+        src = _syncer(tmp_path, store_name="src")
+        for name, text in self.CONTENTS.items():
+            _write_measurement(src.store, wid, name, text)
+        src.push_measurement(wid)
+        return _syncer(tmp_path, store_name="dst")
+
+    def _wanted(self, *names: str):
+        return lambda name: name in (names or self.WANTED)
+
+    def test_only_the_wanted_members_are_written(self, tmp_path):
+        dst = self._remote_with_bundle(tmp_path)
+        bundle = dst.store.measurement_dir("t01-x")
+
+        kept = dst.extract_measurement_files(
+            "t01-x",
+            bundle,
+            wanted=self._wanted(
+                "delta_p_target/probe1/mean_by_layer.pt",
+                "traits/evil/axis_refresh/vector/evil_response_avg_diff.pt",
+            ),
+        )
+
+        assert sorted(kept) == [
+            "delta_p_target/probe1/mean_by_layer.pt",
+            "traits/evil/axis_refresh/vector/evil_response_avg_diff.pt",
+        ]
+        assert sorted(
+            str(p.relative_to(bundle)) for p in bundle.rglob("*") if p.is_file()
+        ) == sorted(kept)
+        assert (bundle / kept[0]).read_text(encoding="utf-8") == "target-mean"
+
+    def test_the_archive_itself_never_lands(self, tmp_path):
+        """The whole point: the bytes pass through, they do not accumulate."""
+        dst = self._remote_with_bundle(tmp_path)
+
+        dst.extract_measurement_files(
+            "t01-x", dst.store.measurement_dir("t01-x"), wanted=self._wanted()
+        )
+
+        assert not list(dst.store.root.rglob("*.tar"))
+
+    def test_staging_deletes_the_archive_it_downloaded(self, tmp_path):
+        """``--stage-dir``: the same result, one bundle of disk, nothing left."""
+        dst = self._remote_with_bundle(tmp_path)
+        stage = tmp_path / "stage"
+        bundle = dst.store.measurement_dir("t01-x")
+
+        kept = dst.extract_measurement_files(
+            "t01-x", bundle, wanted=self._wanted(), stage_dir=stage
+        )
+
+        assert kept == list(self.WANTED)
+        assert (bundle / kept[0]).read_text(encoding="utf-8") == "target-mean"
+        assert list(stage.iterdir()) == []
+
+    def test_a_wanted_member_that_is_absent_costs_nothing(self, tmp_path):
+        dst = self._remote_with_bundle(tmp_path)
+
+        kept = dst.extract_measurement_files(
+            "t01-x",
+            dst.store.measurement_dir("t01-x"),
+            wanted=self._wanted("delta_p_target/probe9/mean_by_layer.pt"),
+        )
+
+        assert kept == []
+
+    def test_the_index_names_the_contents_for_kilobytes(self, tmp_path):
+        """What lets a caller skip an archive it has nothing to gain from."""
+        dst = self._remote_with_bundle(tmp_path)
+
+        assert set(dst.measurement_index("t01-x")) == set(self.CONTENTS)
+
+    def test_an_unindexed_bundle_reports_unknown_contents(self, tmp_path):
+        dst = self._remote_with_bundle(tmp_path)
+        (tmp_path / "remote" / "store" / "measurements" / "t01-x.files").unlink()
+
+        assert dst.measurement_index("t01-x") is None
+
+    def test_remote_ids_name_the_bundles_not_their_sidecars(self, tmp_path):
+        dst = self._remote_with_bundle(tmp_path)
+
+        assert dst.remote_measurement_ids() == {"t01-x"}
+
+    def test_a_member_escaping_the_destination_is_refused(self, tmp_path):
+        """Defence against a corrupted or swapped remote object, as in
+        :func:`_safe_extractall`: nothing may be written outside the bundle.
+
+        Strict, so the guard is asserted rather than absorbed into
+        :attr:`Syncer.unsynced` with the escape already made.
+        """
+        dst = _syncer(tmp_path, store_name="dst", strict=True)
+        archive = tmp_path / "remote" / "store" / "measurements" / "t01-x.tar"
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        escapee = tmp_path / "escapee"
+        escapee.write_text("gotcha", encoding="utf-8")
+        with tarfile.open(archive, "w") as tar:
+            tar.add(escapee, arcname="../../escaped.pt")
+
+        with pytest.raises(RuntimeError, match="unsafe path"):
+            dst.extract_measurement_files(
+                "t01-x",
+                dst.store.measurement_dir("t01-x"),
+                wanted=lambda name: True,
+            )
+        assert not (tmp_path / "escaped.pt").exists()
+
+    def test_an_unreadable_bundle_is_recorded_not_raised(self, tmp_path):
+        """One checkpoint's failure costs that checkpoint, not the sweep."""
+        dst = _syncer(tmp_path, store_name="dst")
+
+        kept = dst.extract_measurement_files(
+            "t01-missing",
+            dst.store.measurement_dir("t01-missing"),
+            wanted=lambda name: True,
+        )
+
+        assert kept == []
+        assert "pull store/measurements/t01-missing.tar" in dst.unsynced
+
+
+@pytest.mark.skipif(
+    shutil.which("rclone") is None, reason="needs the rclone binary on PATH"
+)
+class TestRcloneStreaming:
+    """``rclone cat`` piped into tarfile, against the real binary.
+
+    rclone reads a plain path as happily as a remote, so this exercises the
+    process plumbing -- the pipe, the exit code, the stderr on failure -- which
+    is the part a :class:`LocalTransport` test cannot reach.
+    """
+
+    def test_a_streamed_archive_yields_its_bytes(self, tmp_path):
+        payload = b"x" * (1 << 20)  # past the pipe buffer, so it really streams
+        (tmp_path / "blob.bin").write_bytes(payload)
+        transport = RcloneTransport(str(tmp_path))
+
+        with transport.open_stream("blob.bin") as stream:
+            assert stream.read() == payload
+
+    def test_a_missing_object_raises_with_rclone_s_own_message(self, tmp_path):
+        transport = RcloneTransport(str(tmp_path))
+
+        with pytest.raises(RuntimeError, match="rclone cat nope.bin failed"):
+            with transport.open_stream("nope.bin") as stream:
+                stream.read()
+
+    def test_extraction_over_rclone_keeps_only_what_was_wanted(self, tmp_path):
+        src = _syncer(tmp_path, store_name="src")
+        _write_measurement(src.store, "t01-x", "keep/mean_by_layer.pt", "kept")
+        _write_measurement(src.store, "t01-x", "drop/samples_layer20.pt", "dropped")
+        src.push_measurement("t01-x")
+
+        dst = Syncer(
+            Store(root=tmp_path / "dst"),
+            RcloneTransport(str(tmp_path / "remote")),
+            trajectories=tmp_path / "dst-traj",
+            strict=True,
+        )
+        bundle = dst.store.measurement_dir("t01-x")
+        kept = dst.extract_measurement_files(
+            "t01-x", bundle, wanted=lambda name: name.endswith("mean_by_layer.pt")
+        )
+
+        assert kept == ["keep/mean_by_layer.pt"]
+        assert (bundle / kept[0]).read_text(encoding="utf-8") == "kept"

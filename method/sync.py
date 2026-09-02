@@ -95,8 +95,9 @@ import tarfile
 import tempfile
 import time
 from collections.abc import Callable, Generator, Iterable, Mapping
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
+from typing import IO
 
 from method.store import Store, StoreSelection, atomic_dir, atomic_file, file_sha256
 from method.timing import STAGE_LOG
@@ -172,6 +173,17 @@ class Transport:
 
     def list_names(self, reldir: str) -> list[str]:
         """Immediate file names under ``reldir`` (no recursion, no dirs)."""
+        raise NotImplementedError
+
+    def open_stream(self, relpath: str) -> AbstractContextManager[IO[bytes]]:
+        """Read one remote object as bytes, without landing it on disk.
+
+        The counterpart to :meth:`download` for a caller that wants a few
+        members out of a large archive rather than the archive itself: the
+        bytes pass through a pipe and are dropped as they go, so the disk high
+        water mark is what the caller decides to keep instead of the whole
+        object. See :meth:`Syncer.extract_measurement_files`.
+        """
         raise NotImplementedError
 
 
@@ -268,6 +280,40 @@ class RcloneTransport(Transport):
             return []
         return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
+    @contextmanager
+    def open_stream(self, relpath: str) -> Generator[IO[bytes]]:
+        """``rclone cat``, piped straight to the caller.
+
+        Outside :meth:`_run`'s retry loop, and deliberately: once a stream has
+        handed the caller bytes there is nothing to retry *into*, since the
+        consumer has already acted on the first half of an object whose second
+        half never arrived. Recovery is therefore the caller's -- re-open the
+        stream and start over -- which is what :meth:`Syncer._attempt` around
+        the whole read amounts to.
+        """
+        command = [self.binary, "cat", self._target(relpath)]
+        logger.debug("rclone %s", " ".join(command[1:]))
+        process = subprocess.Popen(
+            command, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        assert process.stdout is not None and process.stderr is not None
+        try:
+            yield process.stdout
+        finally:
+            # Our end first: a caller that stopped reading early leaves rclone
+            # blocked on a full pipe, and closing it turns that into the
+            # SIGPIPE that ends the process rather than a wait() that never
+            # returns.
+            process.stdout.close()
+            stderr = process.stderr.read().decode("utf-8", "replace")
+            process.stderr.close()
+            code = process.wait()
+        if code != 0:
+            raise RuntimeError(
+                f"rclone cat {relpath} failed (exit {code}): "
+                f"{stderr.strip() or '<no stderr>'}"
+            )
+
 
 class LocalTransport(Transport):
     """A transport backed by a plain filesystem directory.
@@ -304,6 +350,11 @@ class LocalTransport(Transport):
         if not directory.is_dir():
             return []
         return sorted(p.name for p in directory.iterdir() if p.is_file())
+
+    @contextmanager
+    def open_stream(self, relpath: str) -> Generator[IO[bytes]]:
+        with self._target(relpath).open("rb") as handle:
+            yield handle
 
 
 def make_transport(remote: str) -> Transport:
@@ -402,6 +453,42 @@ def _merge_from_tar(tar_path: Path, dest_dir: Path, wanted: Iterable[str]) -> No
             destination = dest_dir / relpath
             with atomic_file(destination) as scratch:
                 shutil.copyfile(source, scratch)
+
+
+def _copy_wanted(
+    tar: tarfile.TarFile, dest_dir: Path, wanted: Callable[[str], bool]
+) -> list[str]:
+    """Write the members ``wanted`` accepts into ``dest_dir``, skipping the rest.
+
+    Iterates rather than calling :meth:`~tarfile.TarFile.getmembers`, so it
+    works on an archive that is still arriving over a pipe as well as on one
+    already on disk: each member is visited once, in the order the tar holds
+    it, and the ones nobody asked for are never read. That is what lets a
+    caller take 8MB out of a 3.3GB object without the object ever existing
+    locally -- see :meth:`Syncer.extract_measurement_files`.
+
+    Nothing is deleted, exactly as in :func:`_merge_from_tar`: the destination
+    is a subset of the archive, and what is already there is another box's
+    business.
+    """
+    kept = []
+    root = dest_dir.resolve()
+    for member in tar:
+        # Directories carry no bytes and links are dropped for the reason
+        # :func:`_safe_extractall` gives; only regular files can be wanted.
+        if not member.isfile() or not wanted(member.name):
+            continue
+        target = (dest_dir / member.name).resolve()
+        if root not in target.parents:
+            raise RuntimeError(f"unsafe path in archive: {member.name!r}")
+        source = tar.extractfile(member)
+        if source is None:  # pragma: no cover -- isfile() already settled this
+            continue
+        with atomic_file(target) as scratch:
+            with scratch.open("wb") as handle:
+                shutil.copyfileobj(source, handle)
+        kept.append(member.name)
+    return kept
 
 
 # --------------------------------------------------------------------------- #
@@ -1017,6 +1104,92 @@ class Syncer:
             _AXIS_REFRESH, self.trajectories / "axis_refresh", sign=_file_signature
         )
 
+    # --- reading a few files out of a whole bundle ----------------------- #
+    #
+    # The escape hatch from the granularity the module docstring calls coarse:
+    # a bundle is one remote object, so a box that wants one 400KB tensor out
+    # of it is quoted the whole archive. These three let it pay for the bytes
+    # rather than for the disk -- the archive is read, but never stored.
+
+    def remote_measurement_ids(self) -> set[str]:
+        """Checkpoint ids the remote holds a measurement bundle for."""
+        return {
+            name[: -len(".tar")]
+            for name in self._remote_names(_MEASUREMENTS)
+            if name.endswith(".tar")
+        }
+
+    def measurement_index(self, wid: str) -> dict[str, str] | None:
+        """What the remote's bundle for ``wid`` contains, for kilobytes.
+
+        The sidecar :meth:`_pull_missing` consults, exposed on its own so a
+        caller can decide *before* spending an archive's worth of bandwidth
+        whether that archive holds anything it wants. Values are empty strings:
+        a measurement index names paths and nothing else (:func:`_paths_index`).
+
+        ``None`` when there is no sidecar to read -- an archive pushed before
+        indexing existed, or an index this box could not fetch, which is
+        recorded in :attr:`unsynced` like any other failed transfer. Both mean
+        "the contents are unknown", and a caller that still wants the files has
+        no option but to read the archive and see.
+        """
+        index_name = f"{wid}{_INDEX_SUFFIX}"
+        if index_name not in self._remote_names(_MEASUREMENTS):
+            return None
+        relpath = f"{_MEASUREMENTS}/{index_name}"
+        parsed: dict[str, str] | None = None
+        with self._attempt(f"pull {relpath}"):
+            with _scratch_file(suffix=_INDEX_SUFFIX) as tmp:
+                self.transport.download(relpath, tmp)
+                parsed = _parse_index(tmp.read_text(encoding="utf-8"))
+        return parsed
+
+    def extract_measurement_files(
+        self,
+        wid: str,
+        dest_dir: Path,
+        *,
+        wanted: Callable[[str], bool],
+        stage_dir: Path | None = None,
+    ) -> list[str]:
+        """Copy just the files ``wanted`` accepts out of the remote's bundle.
+
+        Returns the member paths written, relative to ``dest_dir``.
+
+        By default the archive is streamed and discarded as it goes, so the
+        peak disk cost is what ``wanted`` kept rather than the bundle's size.
+        ``stage_dir`` asks instead for the plain thing -- download the whole
+        archive there, extract, delete it -- which needs room for one archive
+        but survives a transport whose streaming is unhappy. Either way the
+        bandwidth is the same: the object is read end to end, because a tar
+        cannot be indexed into from outside.
+
+        Failures are absorbed through :meth:`_attempt` as everywhere else, so a
+        bundle that could not be read costs itself and not the sweep. It leaves
+        nothing half-written to mistake for a complete file: every member lands
+        through :func:`~method.store.atomic_file`.
+        """
+        relpath = f"{_MEASUREMENTS}/{wid}.tar"
+        kept: list[str] = []
+        with self._attempt(f"pull {relpath}"):
+            if stage_dir is None:
+                with self.transport.open_stream(relpath) as raw:
+                    with tarfile.open(fileobj=raw, mode="r|") as tar:
+                        kept = _copy_wanted(tar, dest_dir, wanted)
+                    # The end-of-archive marker is not the end of the object:
+                    # a tar is padded to a block boundary. Reading the tail
+                    # lets the sender finish and exit 0 instead of dying on a
+                    # pipe we closed under it.
+                    while raw.read(1 << 20):
+                        pass
+            else:
+                stage_dir.mkdir(parents=True, exist_ok=True)
+                with _staged_file(stage_dir, suffix=".tar") as tmp:
+                    self.transport.download(relpath, tmp)
+                    with tarfile.open(tmp, "r") as tar:
+                        kept = _copy_wanted(tar, dest_dir, wanted)
+        return kept
+
     # --- shared machinery ----------------------------------------------- #
     #
     # ``sign`` runs through all of it: the function that reduces an artifact to
@@ -1365,6 +1538,25 @@ def _child_files(parent: Path) -> Iterable[Path]:
 def _scratch_file(*, suffix: str = "") -> Generator[Path]:
     """Yield a temp file path (staging area for a tar), removed on exit."""
     fd, name = tempfile.mkstemp(suffix=suffix)
+    os.close(fd)
+    path = Path(name)
+    try:
+        yield path
+    finally:
+        path.unlink(missing_ok=True)
+
+
+@contextmanager
+def _staged_file(directory: Path, *, suffix: str = "") -> Generator[Path]:
+    """:func:`_scratch_file`, on a filesystem the caller names.
+
+    Exists because the archives :meth:`Syncer.extract_measurement_files`
+    stages are gigabytes: the default temp directory is often a small root
+    partition or a tmpfs living in RAM, and either one turns a working pull
+    into a disk-full error. Removed on the way out however the block ends, so
+    the "not relevant" bytes never outlive the extraction that read them.
+    """
+    fd, name = tempfile.mkstemp(dir=directory, suffix=suffix)
     os.close(fd)
     path = Path(name)
     try:
