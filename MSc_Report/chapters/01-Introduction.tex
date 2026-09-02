@@ -54,9 +54,11 @@ A persona feature, or persona vector, can be understood as a linear direction in
 \section{Research Questions}
 Projection differences, however, have only been shown to be useful for training on a single dataset. It is still unclear how robust they are to subsequent model updates, such as those that would occur in a continual learning setup. This project aims to reduce this gap in understanding by evaluating projection differences in a sequential fine-tuning setup. In particular, we formulated the following research questions:
 \begin{enumerate}
-    \item \textbf{Decay (RQ1)}: Do projection differences computed from the base model remain a good predictor of future behaviour under a sequential fine-tuning setting? We also asked the following sub-question:
+    \item \textbf{Decay (RQ1)}: Do projection differences computed from the initial model remain a good predictor of future behaviour under a sequential fine-tuning setting? We also asked the following sub-question:
     \begin{enumerate}
         \item How does updating each of the projection difference's components (persona vector, encoder model, and model's answers) contribute to recovering prediction power?
+        \item Can a linear model calibrated on the initial model's projection differences be used to predict future behaviour?
+        \item Can carrying a summary of the model's current mechanistic state help re-calibrate the linear model at each step? 
     \end{enumerate}
     \item \textbf{History dependence (RQ2)}: How do previous fine-tuning steps influence future misalignment propensity? In particular, we study the following sub-questions:
     \begin{enumerate}
