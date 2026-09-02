@@ -27,6 +27,7 @@ from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -34,7 +35,7 @@ import pandas as pd
 from method import experiments
 from method.config import TrajectoryConfig
 from method.store import get_weights_id
-from method.utils import base_probes_path, trajectory_run_dir
+from method.utils import base_probes_path, trajectories_root, trajectory_run_dir
 from method.visualization import schema
 from method.visualization.schema import Trajectory
 
@@ -343,6 +344,120 @@ def base_probe_lookup(
             if stat in summary
         }
     return out
+
+
+_AXIS_REFRESH_COLUMNS = (
+    "trait",
+    "trunk",
+    "seed",
+    "t",
+    "rho_onpolicy",
+    "r_onpolicy",
+)
+
+
+def axis_refresh_frame(runs: Iterable[Run]) -> pd.DataFrame:
+    r"""The regenerated-axis $\rho_t^{[t]}$ and $r_t^{[t]}$ for these trunks.
+
+    :mod:`method.axis_refresh` writes one summary JSON per requested sweep,
+    separately from the ordinary trajectory schema.  Match those summaries
+    to the supplied trunks by base weights, seed and the exact driver sequence
+    rather than by parsing their human-readable filenames.  When an older
+    partial sweep and a newer complete sweep coexist, use the one covering the
+    most ``(trait, t)`` pairs.
+
+    ``t = 0`` is deliberately omitted.  The four state variants coincide at
+    the initial model by definition, whereas a separately re-drawn extraction
+    set at ``t = 0`` is a sampling replicate.  The mechanism frame fills that
+    row from its canonical $\rho_0^{[0]}$ and $r_0^{[0]}$ measurements.
+    """
+    scopes: dict[
+        tuple[Path, str, int, tuple[str, ...]], dict[str, object]
+    ] = {}
+    for run in runs:
+        if run.label("role") != "trunk":
+            continue
+        root = trajectories_root(mock=run.mock)
+        key = (
+            root,
+            get_weights_id(run.config, 0),
+            run.seed,
+            tuple(step.dataset_id for step in run.config.steps),
+        )
+        scope = scopes.setdefault(
+            key,
+            {
+                "trunk": run.label("trunk"),
+                "traits": set(),
+                "n_steps": len(run.config.steps),
+            },
+        )
+        cast(set[str], scope["traits"]).add(run.trait)
+
+    best: dict[
+        tuple[Path, str, int, tuple[str, ...]],
+        tuple[tuple[int, int, str], list[Mapping[str, object]]],
+    ] = {}
+    for root in {key[0] for key in scopes}:
+        directory = root / "axis_refresh"
+        if not directory.exists():
+            continue
+        for path in sorted(directory.glob("*.json")):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as error:
+                logger.warning("could not read axis-refresh summary %s: %s", path, error)
+                continue
+            key = (
+                root,
+                str(payload.get("base_weights_id", "")),
+                int(payload.get("seed", -1)),
+                tuple(str(step) for step in payload.get("steps", ())),
+            )
+            scope = scopes.get(key)
+            if scope is None:
+                continue
+            traits = cast(set[str], scope["traits"])
+            n_steps = cast(int, scope["n_steps"])
+            comparisons = [
+                row
+                for row in payload.get("comparisons", ())
+                if isinstance(row, Mapping)
+                and str(row.get("trait", "")) in traits
+                and 0 < int(row.get("t", -1)) <= n_steps
+            ]
+            covered = {
+                (str(row["trait"]), int(row["t"]))
+                for row in comparisons
+                if any(
+                    np.isfinite(float(row.get(column, np.nan)))
+                    for column in ("rho_onpolicy", "r_onpolicy")
+                )
+            }
+            score = (len(covered), path.stat().st_mtime_ns, path.name)
+            if key not in best or score > best[key][0]:
+                best[key] = (score, comparisons)
+
+    rows: list[dict[str, object]] = []
+    for key, (_, comparisons) in best.items():
+        scope = scopes[key]
+        for row in comparisons:
+            rows.append(
+                {
+                    "trait": str(row["trait"]),
+                    "trunk": str(scope["trunk"]),
+                    "seed": key[2],
+                    "t": int(row["t"]),
+                    "rho_onpolicy": float(row.get("rho_onpolicy", np.nan)),
+                    "r_onpolicy": float(row.get("r_onpolicy", np.nan)),
+                }
+            )
+    return (
+        pd.DataFrame(rows, columns=_AXIS_REFRESH_COLUMNS)
+        .drop_duplicates(subset=["trait", "trunk", "seed", "t"], keep="last")
+        .sort_values(["trait", "trunk", "seed", "t"])
+        .reset_index(drop=True)
+    )
 
 
 def missing_delta_p_0(

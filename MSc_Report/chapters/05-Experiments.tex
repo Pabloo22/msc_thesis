@@ -58,9 +58,11 @@ The correlations above are measured by fitting a line to the very checkpoint
 they describe, which answers whether a relationship survives but not whether a
 practitioner could use it. Nobody who has paid for a fan-out at the base model
 repeats it at every step; they carry $M_0$'s line forward and read a prediction
-off it. This section scores that. One affine map per trait is fitted once, on
-the 16 validation datasets that are \emph{not} probes, and applied unchanged at
-every later checkpoint.
+off it. Figure~\ref{fig:recalibration-grid} shows one affine map per trait,
+fitted once on the 16 validation datasets that are \emph{not} probes and
+applied unchanged at every later checkpoint. The tables and
+Figure~\ref{fig:forecast-grid} instead use leave-one-dataset-out predictions:
+each probe is predicted by a line fitted on the other 23 validation datasets.
 
 A correlation cannot report this. Pearson $r$ is invariant under a fixed affine
 map, so scoring $M_0$'s predictions by correlation would reproduce
@@ -73,8 +75,8 @@ scale, and smaller is better --- the reverse of the tables above.
     \centering
     \includegraphics[width=\linewidth]{plots/real/exp2/exp2_recalibration_grid.pdf}
     \caption{Behaviour reached after the step against $\Delta P_0$, with the
-    prediction fitted at $M_0$ and carried forward shown against an oracle
-    refitted at each checkpoint.}
+    prediction fitted at $M_0$ on the 16 non-probe validation datasets and
+    carried forward shown against an oracle refitted at each checkpoint.}
     \label{fig:recalibration-grid}
 \end{figure}
 
@@ -85,11 +87,11 @@ scale, and smaller is better --- the reverse of the tables above.
     $\Delta P_0$, at every checkpoint of every trunk. A forecast is right when
     its cloud lies on the diagonal, so vertical spread about that line is the
     RMSE printed beside it and a cloud sitting wholly above or below it is a
-    systematic bias. Blue is $M_0$'s line carried forward; orange is the same
-    probes refitted at the checkpoint. The diagonal is the only line drawn: a
-    forecaster's own line is already spent placing the points along the
-    horizontal axis, which is what makes the diagonal the thing to read
-    against.}
+    systematic bias. Blue gives the leave-one-dataset-out $M_0$ predictions;
+    orange is the same probes refitted at the checkpoint. The diagonal is the
+    only line drawn: a forecaster's own line is already spent placing the
+    points along the horizontal axis, which is what makes the diagonal the
+    thing to read against.}
     \label{fig:forecast-grid}
 \end{figure}
 
@@ -98,7 +100,7 @@ scale, and smaller is better --- the reverse of the tables above.
 \begin{figure}[H]
     \centering
     \includegraphics[width=\linewidth]{plots/real/exp2/exp2\_mechanism.pdf}
-    \caption{Checkpoint-level mechanism regressions of the correlation between $\Delta P_0$ and next-step behavioural change against persona-vector rotation $\rho_t^{[0]}$, persona-vector norm $r_t^{[0]}$, behavioural level $b_t$, and steps since re-alignment.}
+    \caption{Checkpoint-level mechanism regressions of the correlation between $\Delta P_0$ and next-step behavioural change against persona-vector rotation $\rho_t^{[0]}$ and $\rho_t^{[t]}$, persona-vector norm $r_t^{[0]}$ and $r_t^{[t]}$, behavioural level $b_t$, and steps since re-alignment.}
 \end{figure}
 
 % \section{Phase Contrast}

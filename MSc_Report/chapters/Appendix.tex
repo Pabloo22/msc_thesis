@@ -1,22 +1,27 @@
 \chapter{Tables}
 
-\begin{table}[H]
+\begin{figure}[H]
     \centering
-    \scriptsize
-    \setlength{\tabcolsep}{3pt}
-    \input{plots/real/exp2/exp2_forecast_rmse.tex}
-    \caption{Root-mean-square error, in judge points, of the behaviour
-    predicted at each checkpoint from each projection difference. ``$M_0$ fit
-    on $\Delta b$'' carries the line fitted once at the base model; ``Refit at
-    $t$'' refits it on the checkpoint's own eight probes. The two are not comparable on equal
-    terms and are not meant to be: the frozen line is held out on both dataset
-    and checkpoint, while the refit is scored on the same probes it was fitted
-    to, which is why it wins already at $t = 0$. It is a ceiling, and what the
-    table reports is how the gap to it grows. Bold marks the smaller error of
-    each pair, so bold here means the better forecast and not the larger
-    number. The last column averages each row over the checkpoints beside it.}
-    \label{tab:forecast-rmse}
-\end{table}
+    \includegraphics[width=\textwidth]{plots/real/exp2/exp2_forecast_rmse_bar.pdf}
+    \caption{Mean root-mean-square error, in judge points, of the behaviour
+    predicted from the projection differences that retain answers generated
+    by $\mathcal{M}_0$; the later $[t]$ variants that regenerate answers with
+    $\mathcal{M}_t$ are excluded. Each value is averaged first
+    over checkpoints within a trait--trunk combination and then over the six
+    combinations. Error bars show one sample standard deviation across the 42
+    trait--trunk--checkpoint RMSEs; they describe variation across the
+    evaluated settings rather than inferential uncertainty. Each of those
+    RMSEs is calculated over eight held-out probe datasets. Bars are ordered
+    from smaller to larger error, and the best non-refit method is bold and
+    orange. Here $f_0$ is the affine forecaster fitted once at the initial
+    checkpoint to predict $\Delta b$, and its argument identifies the
+    projection difference supplied to it; $f_t$ is refitted on the
+    checkpoint's own eight probes. The grey $f_t$ bars are an upper-bound
+    reference rather than an equal comparison: $f_0$ is held out on both
+    dataset and checkpoint, while $f_t$ is scored on the probes it was fitted
+    to.}
+    \label{fig:forecast-rmse}
+\end{figure}
 
 \begin{table}[H]
     \centering
@@ -34,13 +39,20 @@
     \label{tab:forecast-bias}
 \end{table}
 
-\begin{table}[H]
+\begin{figure}[H]
     \centering
-    \small
-    \setlength{\tabcolsep}{3pt}
-    \input{plots/real/exp2/exp2_forecast_correction_rmse.tex}
+    \includegraphics[width=\textwidth]{plots/real/exp2/exp2_forecast_correction_rmse_bar.pdf}
     \caption{Whether the freely observable state of a checkpoint can stand in
-    for the fan-out a refit would need, scored on $\Delta P_0$ --- the rung
+    for the fan-out a refit would need, scored on $\Delta P_0$. Each bar is the
+    mean RMSE after averaging first over checkpoints within a trait--trunk
+    combination and then over the six combinations. Error bars show one sample
+    standard deviation across the 42 trait--trunk--checkpoint RMSEs and are
+    descriptive rather than inferential; each constituent RMSE is calculated
+    over eight held-out probe datasets. Bars are ordered from smaller to larger
+    error, the best non-refit method is bold and orange, and the grey $f_t$
+    refit is the upper-bound reference. Here $f_0$ denotes the affine
+    forecaster fitted at the initial checkpoint, and $g(\cdot)$ rescales its
+    $\Delta P_0$ input. The projection is the rung
     nothing at $M_t$ has refreshed, and so the one with something to correct.
     Each correction rescales the stale projection by a gain regressed on the
     checkpoint state: $g(\mathbf{z}_t^{[0,0]})$ on the latent state fitted
@@ -63,8 +75,8 @@
     has to predict that probe is the one fitted without it. Every correction is
     as cheap to read as the others and far cheaper than re-running the probes.
     The refit bounds what any of them could achieve.}
-    \label{tab:forecast-correction-rmse}
-\end{table}
+    \label{fig:forecast-correction-rmse}
+\end{figure}
 
 \begin{table}[H]
     \centering

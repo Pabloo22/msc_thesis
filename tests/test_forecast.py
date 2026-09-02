@@ -196,6 +196,23 @@ class TestBaselineFits:
         pair = fan[fan["dataset"].isin(list(HELD_OUT)[:2])]
         assert not forecast.baseline_fits(pair)
 
+    def test_nonprobe_fit_holds_out_the_whole_probe_set(self, frames) -> None:
+        """The display line is fitted once on only the external datasets."""
+        _, fan = frames
+        before = forecast.nonprobe_baseline_fits(fan, PROBES)
+        tampered = fan.copy()
+        touched = tampered["dataset"].isin(PROBES)
+        tampered.loc[touched, "delta_b"] += 40.0
+        tampered.loc[touched, "b_next"] += 40.0
+        after = forecast.nonprobe_baseline_fits(tampered, PROBES)
+
+        whole = before.line(forecast.LEVEL, "evil", forecast.WHOLE_FAN)
+        assert whole == after.line(forecast.LEVEL, "evil", forecast.WHOLE_FAN)
+        assert all(
+            before.line(forecast.LEVEL, "evil", probe) == whole
+            for probe in PROBES
+        )
+
 
 # --- the reason the module exists -------------------------------------------
 
@@ -799,6 +816,88 @@ class TestEmittedTables:
         assert "RMSE" in make_plots._pinned_note(spec, [])
 
 
+class TestMeanRmseFigure:
+    def test_summary_uses_every_checkpoint_rmse_and_reports_its_sd(self) -> None:
+        from method.visualization import make_plots
+
+        table = pd.DataFrame(
+            [[2.0, 4.0], [6.0, np.nan], [5.0, 7.0]],
+            index=pd.MultiIndex.from_tuples(
+                [
+                    ("evil", "a", "p0", "step0"),
+                    ("evil", "b", "p0", "step0"),
+                    ("evil", "a", "p0", "oracle"),
+                ],
+                names=list(forecast.BY_MODEL),
+            ),
+            columns=[0, 1],
+        )
+        summary = make_plots._mean_rmse_summary(table, by=("series", "model"))
+        values = summary.set_index(["series", "model"])
+        assert values.loc[("p0", "step0"), "mean_rmse"] == pytest.approx(4.0)
+        assert values.loc[("p0", "step0"), "sd_rmse"] == pytest.approx(2.0)
+        assert values.loc[("p0", "step0"), "n"] == 3
+        assert values.loc[("p0", "oracle"), "mean_rmse"] == pytest.approx(6.0)
+
+    def test_bars_are_ranked_and_the_best_is_not_colour_only(self) -> None:
+        import matplotlib.pyplot as plt
+        from matplotlib.colors import to_hex
+
+        from method.visualization import figures
+
+        fig = figures.mean_rmse_bar(
+            pd.DataFrame(
+                {
+                    "label": ["middle", "best", "worst"],
+                    "mean_rmse": [4.0, 2.0, 7.0],
+                    "sd_rmse": [0.4, 0.2, 0.7],
+                    "upper_bound": [False, False, True],
+                }
+            )
+        )
+        try:
+            ax = fig.axes[0]
+            assert [tick.get_text() for tick in ax.get_yticklabels()] == [
+                "best",
+                "middle",
+                "worst",
+            ]
+            assert [patch.get_width() for patch in ax.patches] == [2.0, 4.0, 7.0]
+            assert to_hex(ax.patches[0].get_facecolor()) == figures.style.ORANGE
+            assert to_hex(ax.patches[1].get_facecolor()) == figures.style.BLUE
+            assert to_hex(ax.patches[2].get_facecolor()) == figures.style.MUTED
+            assert len(ax.collections) == 1
+            assert ax.get_yticklabels()[0].get_fontweight() == "bold"
+            assert ax.get_title() == ""
+            assert fig._suptitle is None
+        finally:
+            plt.close(fig)
+
+    def test_appendix_ranking_excludes_current_generated_answers(self) -> None:
+        from method.visualization import make_plots
+
+        assert make_plots.FORECAST_RMSE_BAR_SERIES == (
+            "p0",
+            "hat_v0",
+            "hat_t",
+            "hat_onpolicy",
+        )
+        assert not {
+            "full_v0",
+            "full_t",
+            "full_onpolicy",
+        }.intersection(make_plots.FORECAST_RMSE_BAR_SERIES)
+
+    def test_forecast_labels_name_the_map_instead_of_the_initial_llm(self) -> None:
+        from method.visualization import make_plots
+
+        headline = make_plots._headline_forecast_label("p0", "step0")
+        corrected = make_plots._correction_forecast_label("step0_b", "base")
+        assert r"f_0\!\left(\Delta P_0\right)" in headline
+        assert r"f_0\!\left(g\!\left(b_t\right)\,\Delta P_0\right)" in corrected
+        assert "M_0" not in headline + corrected
+
+
 # --- the figure -------------------------------------------------------------
 
 
@@ -820,12 +919,37 @@ class TestRecalibrationGrid:
     @staticmethod
     def _predictions(frames) -> pd.DataFrame:
         rows, fan = frames
-        return forecast.prediction_frame(
-            attenuated(rows, GAINS),
-            fan,
-            series=["p0"],
-            models=list(forecast.RECALIBRATION_MODELS),
+        return forecast.recalibration_frame(
+            attenuated(rows, GAINS), fan, probes=PROBES
         )
+
+    def test_prediction_is_one_line_but_tables_remain_leave_one_out(
+        self, frames
+    ) -> None:
+        """A noisy probe affects table folds, never the non-probe plot fit."""
+        rows, fan = frames
+        tampered = fan.copy()
+        touched = tampered["dataset"] == PROBES[0]
+        tampered.loc[touched, "delta_b"] += 40.0
+        tampered.loc[touched, "b_next"] += 40.0
+
+        plotted = forecast.recalibration_frame(rows, tampered, probes=PROBES)
+        tabulated = forecast.prediction_frame(
+            rows, tampered, series=["p0"], models=["step0_level"]
+        )
+        frozen = plotted[plotted["model"] == "step0_level"]
+        for _, panel in frozen.groupby(list(forecast.CHECKPOINT)):
+            fit = linear_fit(panel["delta_p"], panel["predicted_b_next"])
+            residual = panel["predicted_b_next"] - fit.predict(panel["delta_p"])
+            assert residual.to_numpy() == pytest.approx(np.zeros(len(residual)))
+
+        plotted_values = frozen.sort_values(list(forecast.CHECKPOINT) + ["probe"])[
+            "predicted_b_next"
+        ].to_numpy()
+        table_values = tabulated.sort_values(list(forecast.CHECKPOINT) + ["probe"])[
+            "predicted_b_next"
+        ].to_numpy()
+        assert not np.allclose(plotted_values, table_values)
 
     def test_each_model_draws_one_line_over_a_shared_cloud(self, frames) -> None:
         """One scatter per panel, however many models are drawn over it.

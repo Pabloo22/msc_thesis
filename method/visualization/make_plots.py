@@ -51,6 +51,7 @@ from method.latent import H_NORM
 from method.visualization import decay, figures, forecast, style
 from method.visualization.collect import (
     Collection,
+    axis_refresh_frame,
     collect_group,
     hysteresis_frame,
     seed_noise_frame,
@@ -69,6 +70,7 @@ from method.visualization.labels import (
     source_index,
     trunk_index,
     z_component_symbol,
+    z_symbol,
 )
 
 import matplotlib.pyplot as plt  # noqa: E402  (backend fixed by style import)
@@ -413,18 +415,36 @@ EXP2_GROUPS = (
 #: RQ1 claims causes decay; $b_t$ and the phase are the two nuisances that
 #: would otherwise explain it just as well, which is why the schedules in
 #: section 4 are varied enough to tell them apart.
-def mechanism_predictors(source: str = "base") -> dict[str, str]:
+def mechanism_predictors(
+    source: str = "base", *, include_onpolicy: bool = True
+) -> dict[str, str]:
     """The predictors, labelled for the response source they were measured at.
 
     $\rho$ and $r$ are properties of the persona vector alone, so neither
-    moves with ``source``; they are indexed anyway, because a reader comparing
-    this panel against the $z_t$ drift grid beside it should not have to work
-    out which of the two indices each symbol was entitled to drop.
+    moves with the neutral-response ``source``.  Plot both the persona axis
+    extracted from $M_0$'s cached responses and the one regenerated from
+    $M_t$'s responses when the axis-refresh sweep is available.
     """
+    frozen_rho = f"Persona-vector rotation ${z_component_symbol('rho')}$"
+    frozen_r = f"Persona-vector norm ${z_component_symbol('r')}$"
+    if not include_onpolicy:
+        return {
+            "rho": frozen_rho,
+            "r": frozen_r,
+            "b_t": r"Behaviour level $b_t$",
+            "steps_since_realignment": "Steps since re-alignment",
+        }
     return {
-        "rho": f"Persona-vector rotation ${z_component_symbol('rho')}$",
-        "r": f"Persona-vector norm ${z_component_symbol('r')}$",
+        "rho": frozen_rho,
+        "rho_onpolicy": (
+            "Persona-vector rotation "
+            f"${z_component_symbol('rho', persona='t')}$"
+        ),
         "b_t": r"Behaviour level $b_t$",
+        "r": frozen_r,
+        "r_onpolicy": (
+            f"Persona-vector norm ${z_component_symbol('r', persona='t')}$"
+        ),
         "steps_since_realignment": "Steps since re-alignment",
     }
 
@@ -663,6 +683,7 @@ def build_exp2(
     latents = decay.latent_frame(
         [*drift_runs, *hregen_runs.runs], stat=stat, source=source
     )
+    refreshed_axes = axis_refresh_frame(decay_runs.runs)
 
     traits = _present(
         [*validation.values("trait"), *decay_runs.values("trait")], TRAITS
@@ -674,6 +695,7 @@ def build_exp2(
         sigma_seed=sigma_seed,
         n_resamples=n_resamples,
         source=source,
+        refreshed_axes=refreshed_axes,
     )
     saved += _forecast_figures(rows, fan, out_dir, source=source)
     saved += _drift_delta_hat_p_figure(hatted_ratios, out_dir)
@@ -808,6 +830,7 @@ def _decay_figures(
     sigma_seed: Mapping[str, float],
     n_resamples: int,
     source: str = "base",
+    refreshed_axes: pd.DataFrame | None = None,
 ) -> list[Path]:
     """Plots 2, 3, 4 and 4b, off the same ``(trait, trunk, t, probe)`` rows."""
     saved: list[Path] = []
@@ -881,10 +904,15 @@ def _decay_figures(
     )
     _emit(fig, "exp2_headline", out_dir, saved)
 
-    checkpoints = decay.mechanism_frame(fits)
+    refreshed_axes = (
+        refreshed_axes if refreshed_axes is not None else pd.DataFrame()
+    )
+    checkpoints = decay.mechanism_frame(
+        decay.attach_axis_refresh(fits, refreshed_axes)
+    )
     fig = figures.mechanism_grid(
         checkpoints,
-        mechanism_predictors(source),
+        mechanism_predictors(source, include_onpolicy=not refreshed_axes.empty),
         traits=traits,
         trait_labels=trait_labels,
         trunk_labels={**labels, "shared": "Shared $M_0$"},
@@ -1053,6 +1081,109 @@ def _pinned_note(spec: _ForecastTable, pinned: Sequence[tuple[str, str]]) -> str
 #: which is the only thing a practitioner who never re-measures has.
 FORECAST_GRID_SERIES = "p0"
 
+#: Projection variants retained in the Appendix's RMSE ranking.  The three
+#: ``full`` variants regenerate the candidate-dataset answers with $M_t$ and
+#: are a later extension, so the summary requested for the original analysis
+#: keeps only the base-answer ($[0]$) views.
+FORECAST_RMSE_BAR_SERIES = ("p0", "hat_v0", "hat_t", "hat_onpolicy")
+
+
+def _math_body(label: str) -> str:
+    """Strip one pair of math delimiters so a symbol can be composed safely."""
+    return label[1:-1] if label.startswith("$") and label.endswith("$") else label
+
+
+def _headline_forecast_label(series: str, model: str) -> str:
+    """Name the fitted map and its projection argument without overloading $M_0$."""
+    projection = _math_body(decay.SERIES_LABELS.get(series, series))
+    fitted = "f_t" if model == "oracle" else "f_0"
+    suffix = "  refit" if model == "oracle" else ""
+    return rf"${fitted}\!\left({projection}\right)$" + suffix
+
+
+def _correction_forecast_label(model: str, source: str) -> str:
+    r"""Write a corrected forecast as $f_0(g(\cdot)\Delta P_0)$."""
+    if model == "oracle":
+        return rf"$f_t\!\left({DELTA_P_BASE}\right)$  refit"
+    if model == "step0":
+        argument = DELTA_P_BASE
+    elif model == "step0_z":
+        argument = rf"g\!\left({z_symbol(neutral=source_index(source))}\right)\,{DELTA_P_BASE}"
+    elif model == "step0_b":
+        argument = rf"g\!\left(b_t\right)\,{DELTA_P_BASE}"
+    elif model.removeprefix("step0_") in decay.Z_COMPONENTS:
+        component = model.removeprefix("step0_")
+        symbol = z_component_symbol(component, neutral=source_index(source))
+        argument = rf"g\!\left({symbol}\right)\,{DELTA_P_BASE}"
+    else:
+        return model
+    return rf"$f_0\!\left({argument}\right)$"
+
+
+def _mean_rmse_summary(
+    table: pd.DataFrame, *, by: Sequence[str]
+) -> pd.DataFrame:
+    """Mean and sample SD over the checkpoint-level RMSE cells of a table.
+
+    The current sweep is complete, so the mean is exactly the macro-average of
+    the table's six trait--trunk ``Mean`` values.  Computing both statistics
+    from the long form makes the SD's unit explicit: variation among the 42
+    trait--trunk--checkpoint RMSEs, each of which was itself calculated over
+    the eight held-out probes.  It is descriptive heterogeneity across the
+    evaluated settings, not an inferential confidence interval.
+    """
+    if table.empty:
+        return pd.DataFrame(columns=[*by, "mean_rmse", "sd_rmse", "n"])
+    unknown = set(by).difference(_level_names(table))
+    if unknown:
+        raise ValueError(f"unknown mean-RMSE index levels: {sorted(unknown)}")
+    checkpoint_rmse = table.rename_axis(columns="t").stack().rename("rmse").reset_index()
+    return (
+        checkpoint_rmse.groupby(list(by), observed=True, sort=False)["rmse"]
+        .agg(mean_rmse="mean", sd_rmse="std", n="count")
+        .reset_index()
+    )
+
+
+def _forecast_mean_rmse_figures(
+    tables: Mapping[str, pd.DataFrame],
+    out_dir: Path,
+    saved: list[Path],
+    *,
+    source: str,
+) -> None:
+    """Emit the two ranked summaries used in the Appendix."""
+    headline = _mean_rmse_summary(
+        tables.get("exp2_forecast_rmse", pd.DataFrame()),
+        by=("series", "model"),
+    )
+    if not headline.empty:
+        headline = headline[headline["series"].isin(FORECAST_RMSE_BAR_SERIES)]
+        headline = headline.assign(
+            label=lambda frame: [
+                _headline_forecast_label(str(series), str(model))
+                for series, model in zip(frame["series"], frame["model"])
+            ],
+            upper_bound=lambda frame: frame["model"] == "oracle",
+        )
+        fig = figures.mean_rmse_bar(headline)
+        _emit(fig, "exp2_forecast_rmse_bar", out_dir, saved)
+
+    corrections = _mean_rmse_summary(
+        tables.get("exp2_forecast_correction_rmse", pd.DataFrame()),
+        by=("model",),
+    )
+    if not corrections.empty:
+        corrections = corrections.assign(
+            label=lambda frame: [
+                _correction_forecast_label(str(model), source)
+                for model in frame["model"]
+            ],
+            upper_bound=lambda frame: frame["model"] == "oracle",
+        )
+        fig = figures.mean_rmse_bar(corrections)
+        _emit(fig, "exp2_forecast_correction_rmse_bar", out_dir, saved)
+
 
 def _forecast_figures(
     rows: pd.DataFrame, fan: pd.DataFrame, out_dir: Path, *, source: str = "base"
@@ -1060,12 +1191,12 @@ def _forecast_figures(
     r"""The out-of-sample tables and the predicted-against-actual grid.
 
     The decay figures fit a line at every checkpoint and report how well it
-    fits. These take the line fitted once at $M_0$ -- on the validation
-    datasets that are *not* probes, so the probes stay a test set -- carry it
-    forward unchanged, and report how far off its predictions are. That is the
-    quantity a correlation cannot carry: applying a fixed line to $\Delta P$
-    leaves $r$ exactly where :func:`_decay_figures` already reported it, so
-    everything here is an error in judge points instead.
+    fits. The tables use leave-one-dataset-out $M_0$ predictions. The
+    recalibration grid instead draws one line fitted on the 16 non-probe
+    validation datasets, since joining predictions from eight leave-one-out
+    fits would not be an affine line. Both report errors in judge points: a
+    fixed affine map leaves $r$ exactly where :func:`_decay_figures` already
+    reported it.
     """
     saved: list[Path] = []
     if rows.empty:
@@ -1084,6 +1215,7 @@ def _forecast_figures(
         logger.warning("exp2: nothing to forecast; skipping the out-of-sample tables")
         return saved
     scores = forecast.score_frame(predictions)
+    tables: dict[str, pd.DataFrame] = {}
 
     for spec in FORECAST_TABLES:
         table = forecast.score_table(
@@ -1095,6 +1227,7 @@ def _forecast_figures(
         )
         if table.empty:
             continue
+        tables[spec.name] = table
         shown, pinned = _without_pinned_keys(
             _labelled_table(table, source), spec.pinned
         )
@@ -1110,6 +1243,8 @@ def _forecast_figures(
             note=_pinned_note(spec, pinned),
         )
 
+    _forecast_mean_rmse_figures(tables, out_dir, saved, source=source)
+
     stale = predictions[predictions["series"] == FORECAST_GRID_SERIES]
     if stale.empty:
         return saved
@@ -1120,15 +1255,18 @@ def _forecast_figures(
     glosses = {f.name: f.gloss for f in forecast.FORECASTERS}
     projection = decay.SERIES_LABELS[FORECAST_GRID_SERIES]
 
-    # Two views of one comparison, and neither subsumes the other. On the
-    # projection axis both fitted lines are on the axes at once, so the gap
-    # between them is the cost of not recalibrating, read off in judge points.
-    # On the prediction axis that gap has been folded into the x coordinate,
-    # which is what makes the diagonal meaningful there -- and what lets a
-    # reader see *which probes* a stale forecast misses rather than only by how
-    # far the line is wrong.
+    # The projection-axis view needs one actual affine M_0 line. Its baseline
+    # therefore uses the 16 validation datasets outside the eight probes,
+    # separately from the leave-one-out predictions used by the tables and the
+    # predicted-against-actual grid below.
+    recalibration = forecast.recalibration_frame(
+        rows,
+        fan,
+        probes=[probe.dataset_id for probe in experiments.EXP2_PROBES],
+        series=FORECAST_GRID_SERIES,
+    )
     fig = figures.recalibration_grid(
-        stale,
+        recalibration,
         traits=traits,
         trait_labels=trait_labels,
         trunks=trunks,

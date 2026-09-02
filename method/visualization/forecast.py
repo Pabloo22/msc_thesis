@@ -19,20 +19,20 @@ What goes stale is the calibration, not the ordering, so the tables here are
 errors on the judge's own 0-100 scale (:func:`score_frame`) and never
 correlations.
 
-*No dataset predicts itself.* One rule covers the whole module: nothing
-fitted on dataset $j$ is used to predict dataset $j$, and everything else that
-was measured is fair game. So the base line for a probe is fitted on the other
-23 validation datasets (:func:`baseline_fits`), and a gain correction is fitted
-leaving out both the trunk it is scored on and the probe it predicts
+*No dataset predicts itself in the tables.* Nothing fitted on dataset $j$ is
+used to predict dataset $j$, and everything else that was measured is fair
+game. So the table baseline for a probe is fitted on the other 23 validation
+datasets (:func:`baseline_fits`), and a gain correction is fitted leaving out
+both the trunk it is scored on and the probe it predicts
 (:func:`_gain_forecast`). The $t = 0$ column is therefore a real held-out error
 rather than a residual, which is what makes it the right thing to read the
 later columns against.
 
-The rule has to be one rule, because the alternatives do not compose. A gain
-model reads the other probes' outcomes at every checkpoint of the other trunks;
-a base line that held all 8 probes out would meanwhile be pretending those same
-datasets had never been fine-tuned on. No practitioner is in both positions at
-once, so a table mixing the two scores a predictor nobody could build.
+The recalibration grid has a different job: it must draw one actual affine
+line rather than connect predictions from eight leave-one-out folds. Its
+$M_0$ line is therefore fitted on the 16 validation datasets outside the probe
+set (:func:`nonprobe_baseline_fits`) and evaluated on all eight probes. This
+display-only split does not change the leave-one-out scores in the tables.
 
 *What is cheap and what is not.* Re-measuring a projection difference at $M_t$
 costs a probe fan-out; reading $z_t$ or the trait score $b_t$ off the
@@ -225,6 +225,40 @@ def baseline_fits(validation: pd.DataFrame) -> Baselines:
                 fits[(target, str(trait), held)] = linear_fit(
                     panel["delta_p_0"], panel[target]
                 )
+    return Baselines(fits)
+
+
+def nonprobe_baseline_fits(
+    validation: pd.DataFrame, probes: Sequence[str]
+) -> Baselines:
+    r"""One $M_0$ line per trait, fitted after holding out every probe.
+
+    This is the baseline used by the recalibration grid.  Unlike
+    :func:`baseline_fits`, which makes one leave-one-out fold per scored probe,
+    this makes one common fit from the validation datasets outside the probe
+    set.  All plotted probe predictions therefore lie on one affine line.
+
+    The table path continues to use :func:`baseline_fits`; keeping this split
+    explicit prevents a visualisation requirement from changing its scores.
+    """
+    fits: dict[tuple[str, str, str | None], LinearFit] = {}
+    if validation.empty:
+        return Baselines(fits)
+    held_out = {str(probe) for probe in probes}
+    for trait, group in validation.groupby("trait"):
+        training = group[~group["dataset"].astype(str).isin(held_out)]
+        if len(training) < 2:
+            logger.warning(
+                "exp2/%s: %d non-probe validation dataset(s) on disk, which "
+                "is too few to fit the recalibration grid's M_0 line",
+                trait,
+                len(training),
+            )
+            continue
+        for target in TARGETS:
+            fits[(target, str(trait), WHOLE_FAN)] = linear_fit(
+                training["delta_p_0"], training[target]
+            )
     return Baselines(fits)
 
 
@@ -729,13 +763,15 @@ def prediction_frame(
     *,
     series: Sequence[str] | None = None,
     models: Sequence[str] | None = None,
+    baselines: Baselines | None = None,
 ) -> pd.DataFrame:
     r"""One row per ``(trunk, t, probe, series, model)``: a prediction and its truth.
 
     ``rows`` is :func:`method.visualization.decay.decay_frame` and
     ``validation`` is :func:`method.visualization.decay.validation_frame`; the
     second is what the step-0 forecasters are fitted on, and without it they
-    are blank.
+    are blank.  ``baselines`` may supply an explicitly different split for a
+    specialised consumer; by default the table's leave-one-out fits are used.
 
     Long rather than wide because the two things built from it want different
     shapes: :func:`score_frame` collapses each ``(checkpoint, series, model)``
@@ -760,7 +796,8 @@ def prediction_frame(
     if rows.empty:
         return pd.DataFrame(columns=_PREDICTION_COLUMNS)
 
-    baselines = baseline_fits(validation)
+    if baselines is None:
+        baselines = baseline_fits(validation)
     if not baselines:
         logger.warning(
             "exp2: no validation fan on disk, so M_0's line cannot be fitted "
@@ -788,6 +825,33 @@ def prediction_frame(
     if not frames:
         return pd.DataFrame(columns=_PREDICTION_COLUMNS)
     return pd.concat(frames, ignore_index=True)[_PREDICTION_COLUMNS]
+
+
+def recalibration_frame(
+    rows: pd.DataFrame,
+    validation: pd.DataFrame,
+    *,
+    probes: Sequence[str],
+    series: str = "p0",
+) -> pd.DataFrame:
+    r"""The two lines for the recalibration grid on its non-probe split.
+
+    The frozen prediction is one line per trait fitted on the validation
+    datasets outside the explicitly supplied ``probes``.  Supplying the
+    designed set rather than inferring it from measured rows ensures that an
+    incomplete sweep cannot leak a missing probe into the fit.  The oracle
+    remains the checkpoint-wise fit on the eight probe outcomes.  Table
+    predictions do not pass through this function and retain their
+    leave-one-out baselines.
+    """
+    baselines = nonprobe_baseline_fits(validation, probes)
+    return prediction_frame(
+        rows,
+        validation,
+        series=[series],
+        models=RECALIBRATION_MODELS,
+        baselines=baselines,
+    )
 
 
 _SCORE_COLUMNS = ["trait", "trunk", "t", "series", "model", "n", *METRICS]

@@ -16,9 +16,10 @@ import pytest
 from method import experiments as E
 from method.config import DatasetVersion, StepConfig, TrajectoryConfig, to_json
 from method.store import get_weights_id
-from method.utils import base_probes_path, trajectory_run_dir
+from method.utils import base_probes_path, trajectories_root, trajectory_run_dir
 from method.visualization import collect as collect_mod
 from method.visualization.collect import (
+    axis_refresh_frame,
     base_probe_lookup,
     collect,
     delta_p_0_lookup,
@@ -133,6 +134,25 @@ def write_base_probes(cfg: TrajectoryConfig, values: dict[str, float], *, mock=F
         ),
         encoding="utf-8",
     )
+
+
+def write_axis_refresh(
+    cfg: TrajectoryConfig, name: str, comparisons: list[dict[str, object]]
+):
+    path = trajectories_root() / "axis_refresh" / f"{name}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "base_weights_id": get_weights_id(cfg, 0),
+                "seed": cfg.seed,
+                "steps": [step.dataset_id for step in cfg.steps],
+                "comparisons": comparisons,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
     return path
 
 

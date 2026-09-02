@@ -707,6 +707,39 @@ def correlation_table(
     return table.dropna(how="all").sort_index()
 
 
+ONPOLICY_AXIS_COLUMNS = ("rho_onpolicy", "r_onpolicy")
+
+
+def attach_axis_refresh(fits: pd.DataFrame, refreshed: pd.DataFrame) -> pd.DataFrame:
+    r"""Join $\rho_t^{[t]}$ and $r_t^{[t]}$ onto checkpoint-level fits.
+
+    Axis refresh is measured in a separate sweep, so these columns cannot
+    enter :func:`fit_frame` through the ordinary trajectory ``z`` block.  The
+    join is checkpoint-identical.  At ``t = 0`` the regenerated and frozen
+    state variants coincide by definition; copy the canonical frozen values
+    there instead of treating an independently sampled extraction redraw as a
+    different initial state.
+    """
+    if fits.empty:
+        return fits.assign(**{column: pd.Series(dtype=float) for column in ONPOLICY_AXIS_COLUMNS})
+
+    out = fits.drop(columns=list(ONPOLICY_AXIS_COLUMNS), errors="ignore").copy()
+    keys = ["trait", "trunk", "t"]
+    if refreshed.empty:
+        for column in ONPOLICY_AXIS_COLUMNS:
+            out[column] = np.nan
+    else:
+        values = refreshed[[*keys, *ONPOLICY_AXIS_COLUMNS]].drop_duplicates(
+            subset=keys, keep="last"
+        )
+        out = out.merge(values, on=keys, how="left", validate="many_to_one")
+
+    at_base = out["t"].eq(0)
+    out.loc[at_base, "rho_onpolicy"] = out.loc[at_base, "rho"]
+    out.loc[at_base, "r_onpolicy"] = out.loc[at_base, "r"]
+    return out
+
+
 def mechanism_frame(fits: pd.DataFrame) -> pd.DataFrame:
     r"""One row per *distinct* checkpoint, for section 9's plot 4.
 

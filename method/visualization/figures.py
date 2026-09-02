@@ -514,6 +514,121 @@ def hysteresis_bar(
     return fig
 
 
+def mean_rmse_bar(
+    df: pd.DataFrame,
+    *,
+    label_col: str = "label",
+    value_col: str = "mean_rmse",
+    error_col: str | None = "sd_rmse",
+    upper_bound_col: str | None = "upper_bound",
+    xlabel: str = "Mean RMSE in judge points — lower is better",
+) -> Figure:
+    """A compact ranking of methods by mean out-of-sample error.
+
+    Bars are sorted from the smallest error at the top to the largest at the
+    bottom.  Upper-bound references are grey; among the remaining methods the
+    leading bar is orange and bold while every other bar is blue.  The ordering
+    and direct labels therefore carry the result even when the hues cannot be
+    distinguished.  Values are written beside the bars so the figure retains
+    the useful precision of the table it replaces.
+
+    ``error_col`` gives a descriptive spread for each bar, drawn as a capped
+    horizontal error bar.  In exp2 it is the sample standard deviation of the
+    checkpoint-level RMSEs across traits and trunks, not an inferential
+    confidence interval.
+    """
+    style.apply_style()
+    required = {label_col, value_col}
+    missing = required.difference(df.columns)
+    if missing:
+        raise ValueError(f"missing mean-RMSE columns: {sorted(missing)}")
+
+    optional = [
+        column
+        for column in (error_col, upper_bound_col)
+        if column is not None and column in df
+    ]
+    shown = (
+        df[[label_col, value_col, *optional]]
+        .dropna(subset=[value_col])
+        .sort_values(value_col, kind="stable")
+        .reset_index(drop=True)
+    )
+    height = max(2.6, 0.35 * len(shown) + 0.8)
+    fig, ax = plt.subplots(figsize=(7.2, height))
+    if shown.empty:
+        _mark_empty(ax)
+        ax.set_xlabel(xlabel)
+        fig.tight_layout()
+        return fig
+
+    values = shown[value_col].to_numpy(dtype=float)
+    errors = (
+        shown[error_col].fillna(0.0).to_numpy(dtype=float)
+        if error_col is not None and error_col in shown
+        else np.zeros_like(values)
+    )
+    upper_bounds = (
+        shown[upper_bound_col].fillna(False).to_numpy(dtype=bool)
+        if upper_bound_col is not None and upper_bound_col in shown
+        else np.zeros_like(values, dtype=bool)
+    )
+    candidates = values[~upper_bounds]
+    best_value = np.nanmin(candidates) if candidates.size else np.nanmin(values)
+    best = np.isclose(values, best_value) & ~upper_bounds
+    y = np.arange(len(shown))
+    bars = ax.barh(
+        y,
+        values,
+        height=0.72,
+        color=[
+            style.MUTED if upper_bound else style.ORANGE if leading else style.BLUE
+            for leading, upper_bound in zip(best, upper_bounds)
+        ],
+        edgecolor=style.SURFACE,
+        linewidth=1.0,
+        zorder=3,
+    )
+    if np.any(errors > 0):
+        ax.errorbar(
+            values,
+            y,
+            xerr=errors,
+            fmt="none",
+            ecolor=style.SECONDARY_INK,
+            elinewidth=1.0,
+            capsize=3,
+            zorder=4,
+        )
+    ax.set_yticks(y, labels=shown[label_col].astype(str))
+    ax.invert_yaxis()
+    ax.set_xlabel(xlabel)
+    ax.grid(False, axis="y")
+    ax.grid(True, axis="x")
+
+    maximum = float(np.nanmax(values + errors))
+    right_pad = max(0.6, 0.14 * maximum)
+    text_pad = max(0.12, 0.012 * maximum)
+    ax.set_xlim(0.0, maximum + right_pad)
+    for bar, value, leading in zip(bars, values, best):
+        ax.text(
+            value + text_pad,
+            bar.get_y() + bar.get_height() / 2,
+            f"{value:.1f}",
+            ha="left",
+            va="center",
+            fontsize=8.5,
+            fontweight="bold" if leading else "normal",
+            color=style.INK,
+        )
+    for tick, leading in zip(ax.get_yticklabels(), best):
+        tick.set_color(style.INK)
+        tick.set_fontweight("bold" if leading else "normal")
+
+    fig.tight_layout()
+    return fig
+
+
 # --- the RQ1 decay experiment ---------------------------------------------
 
 
@@ -2281,14 +2396,17 @@ def mechanism_grid(
     trunk_labels: Mapping[str, str] | None = None,
     trunk_colors: Mapping[str, str] | None = None,
     ylabel: str = r"Correlation $r$ of $\Delta P_0$ at that checkpoint",
+    max_columns: int = 3,
 ) -> Figure:
     r"""Plot 4: the checkpoint-level regression of the correlation on what moved.
 
     ``predictors`` maps a column to its display label -- the drift components
     $\rho$ and $r$, the current behaviour level $b_t$, and
-    ``steps_since_realignment``. A column fits $r$ against one of them over
-    every checkpoint of one trait, a row is a trait, and colour identifies
-    which trunk a checkpoint came from.
+    ``steps_since_realignment``. A panel fits $r$ against one of them over
+    every checkpoint of one trait, a block of rows is a trait, and colour
+    identifies which trunk a checkpoint came from. Predictors wrap after
+    ``max_columns`` so adding the regenerated-axis variants does not shrink six
+    panels into one unreadably wide row.
 
     This is the level-2 analysis, so a point is a *checkpoint*, not a probe
     dataset: the eight probes at a checkpoint were already spent producing the
@@ -2309,26 +2427,35 @@ def mechanism_grid(
     trunk_labels = trunk_labels or {}
     trunk_colors = trunk_colors or {}
     rows = _facets(checkpoints, traits, trait_labels, column="trait")
-    ncols = max(1, len(predictors))
+    predictor_items = list(predictors.items())
+    ncols = min(max(1, max_columns), max(1, len(predictor_items)))
+    rows_per_trait = max(1, -(-len(predictor_items) // ncols))
+    nrows = max(1, len(rows) * rows_per_trait)
     fig, axes = plt.subplots(
-        len(rows),
+        nrows,
         ncols,
-        figsize=(3.3 * ncols + 1.0, 3.0 * len(rows) + 1.0),
+        figsize=(3.3 * ncols + 1.0, 3.0 * nrows + 1.0),
         sharey=True,
         squeeze=False,
     )
 
-    for row, (_, frame, trait_label) in enumerate(rows):
-        for col, (column, label) in enumerate(predictors.items()):
+    for trait_row, (_, frame, trait_label) in enumerate(rows):
+        first_row = trait_row * rows_per_trait
+        for index, (column, label) in enumerate(predictor_items):
+            row = first_row + index // ncols
+            col = index % ncols
             ax = axes[row][col]
-            if row == 0:
+            if trait_row == 0:
                 ax.set_title(label, fontsize=9.5, color=style.SECONDARY_INK)
             if frame.empty:
                 _mark_empty(ax)
                 continue
-            fit = linear_fit(frame[column], frame[value_column])
-            if len(frame) >= 2:
-                line_x = _fit_line_x(np.asarray(frame[column], dtype=float))
+            usable = frame[[column, value_column]].replace(
+                [np.inf, -np.inf], np.nan
+            ).dropna()
+            fit = linear_fit(usable[column], usable[value_column])
+            if len(usable) >= 2:
+                line_x = _fit_line_x(usable[column].to_numpy(dtype=float))
                 ax.plot(
                     line_x,
                     fit.predict(line_x),
@@ -2338,9 +2465,12 @@ def mechanism_grid(
                 )
             for key, group in frame.groupby("trunk", sort=True):
                 trunk = str(key)
+                plotted = group[[column, value_column]].replace(
+                    [np.inf, -np.inf], np.nan
+                ).dropna()
                 ax.scatter(
-                    group[column],
-                    group[value_column],
+                    plotted[column],
+                    plotted[value_column],
                     s=30,
                     color=trunk_colors.get(trunk, style.BLUE),
                     alpha=0.85,
@@ -2350,7 +2480,7 @@ def mechanism_grid(
                     label=trunk_labels.get(trunk, f"Trunk {trunk}"),
                 )
             entries = [(rf"$r$ = {fit.corr:.2f}", style.INK)]
-            if col == 0:
+            if index == 0:
                 # Every panel of a row regresses the same checkpoints, so ``n``
                 # belongs to the row rather than to a panel -- stated once, in
                 # the one the eye reaches first, since it is what stops the
@@ -2361,7 +2491,11 @@ def mechanism_grid(
                     (rf"$n$ = {len(frame)} checkpoints", style.SECONDARY_INK)
                 )
             _corner_text(ax, entries, fontsize=9)
-        axes[row][0].set_ylabel(trait_label, fontsize=10)
+        axes[first_row][0].set_ylabel(trait_label, fontsize=10)
+        for index in range(len(predictor_items), rows_per_trait * ncols):
+            row = first_row + index // ncols
+            col = index % ncols
+            axes[row][col].set_axis_off()
 
     handles, texts = _shared_legend(axes.flat)
     ncol = min(4, len(handles) or 1)
