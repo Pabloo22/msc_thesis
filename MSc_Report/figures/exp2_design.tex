@@ -1,0 +1,111 @@
+% Exp2 design: three sequential trunks with a fixed probe fan at each checkpoint.
+% Requires in the preamble:
+%   \usepackage{tikz}
+%   \usetikzlibrary{arrows.meta}
+\begin{tikzpicture}[font=\small]
+
+\definecolor{expink}{HTML}{52514E}
+\definecolor{expbranch}{HTML}{898781}
+\definecolor{expnormal}{HTML}{FFFFFF}
+\definecolor{expone}{HTML}{F0A39C}
+\definecolor{exptwo}{HTML}{A81F1D}
+
+\tikzset{
+  initial/.style={
+    circle, draw=expink, double, fill=expnormal,
+    line width=0.45pt, minimum size=4.8mm, inner sep=0pt
+  },
+  checkpoint/.style={
+    circle, line width=0.55pt, minimum size=4.8mm, inner sep=0pt
+  },
+  normal/.style={draw=expink, fill=expnormal},
+  typeone/.style={draw=exptwo, fill=expone},
+  typetwo/.style={draw=exptwo, fill=exptwo},
+  trunkedge/.style={
+    draw=expink, line width=0.7pt, -{Stealth[length=3.8pt,width=3.0pt]}
+  },
+  probeedge/.style={draw=expbranch, line width=0.3pt},
+  probenode/.style={circle, line width=0.3pt, minimum size=1.5mm, inner sep=0pt}
+}
+
+% Each compact fan contains the eight fixed probe datasets:
+% two Normal, three type I, and three type II.
+\newcommand{\expProbefan}[1]{%
+  \foreach \offset/\fillcolour/\edgecolour in {%
+    -2.8mm/expnormal/expink,
+    -2.0mm/expnormal/expink,
+    -1.2mm/expone/exptwo,
+    -0.4mm/expone/exptwo,
+     0.4mm/expone/exptwo,
+     1.2mm/exptwo/exptwo,
+     2.0mm/exptwo/exptwo,
+     2.8mm/exptwo/exptwo}{%
+    \draw[probeedge] (#1.north) --
+      ([xshift=\offset,yshift=5.8mm]#1.north);
+    \node[probenode, draw=\edgecolour, fill=\fillcolour] at
+      ([xshift=\offset,yshift=5.8mm]#1.north) {};
+  }%
+}
+
+% Checkpoint labels shared by all three trunks.
+\node[font=\footnotesize] at (0.0,5.75) {$\mathcal{M}_0$};
+\foreach \x/\t in {1.55/1,3.10/2,4.65/3,6.20/4,7.75/5,9.30/6}
+  \node[font=\footnotesize] at (\x,5.75) {$\mathcal{M}_{\t}$};
+
+% Trunk A: II--Normal--II--Normal--II--Normal.
+\node[anchor=east, font=\footnotesize] at (-0.48,4.65) {Trunk A};
+\node[initial]              (a0) at (0.00,4.65) {};
+\node[checkpoint,typetwo]   (a1) at (1.55,4.65) {};
+\node[checkpoint,normal]    (a2) at (3.10,4.65) {};
+\node[checkpoint,typetwo]   (a3) at (4.65,4.65) {};
+\node[checkpoint,normal]    (a4) at (6.20,4.65) {};
+\node[checkpoint,typetwo]   (a5) at (7.75,4.65) {};
+\node[checkpoint,normal]    (a6) at (9.30,4.65) {};
+
+% Trunk B: I--I--Normal--I--I--Normal.
+\node[anchor=east, font=\footnotesize] at (-0.48,2.75) {Trunk B};
+\node[initial]              (b0) at (0.00,2.75) {};
+\node[checkpoint,typeone]   (b1) at (1.55,2.75) {};
+\node[checkpoint,typeone]   (b2) at (3.10,2.75) {};
+\node[checkpoint,normal]    (b3) at (4.65,2.75) {};
+\node[checkpoint,typeone]   (b4) at (6.20,2.75) {};
+\node[checkpoint,typeone]   (b5) at (7.75,2.75) {};
+\node[checkpoint,normal]    (b6) at (9.30,2.75) {};
+
+% Trunk C: six Normal updates.
+\node[anchor=east, font=\footnotesize] at (-0.48,0.85) {Trunk C};
+\node[initial]              (c0) at (0.00,0.85) {};
+\node[checkpoint,normal]    (c1) at (1.55,0.85) {};
+\node[checkpoint,normal]    (c2) at (3.10,0.85) {};
+\node[checkpoint,normal]    (c3) at (4.65,0.85) {};
+\node[checkpoint,normal]    (c4) at (6.20,0.85) {};
+\node[checkpoint,normal]    (c5) at (7.75,0.85) {};
+\node[checkpoint,normal]    (c6) at (9.30,0.85) {};
+
+% Sequential updates along each trunk.
+\foreach \from/\to in {
+  a0/a1,a1/a2,a2/a3,a3/a4,a4/a5,a5/a6,
+  b0/b1,b1/b2,b2/b3,b3/b4,b4/b5,b5/b6,
+  c0/c1,c1/c2,c2/c3,c3/c4,c4/c5,c5/c6}
+  \draw[trunkedge] (\from) -- (\to);
+
+% One-step probe branches leave every post-update checkpoint and are discarded.
+\foreach \checkpointname in {
+  a1,a2,a3,a4,a5,a6,
+  b1,b2,b3,b4,b5,b6,
+  c1,c2,c3,c4,c5,c6} {%
+  \expProbefan{\checkpointname}%
+}
+
+% Legend.
+\node[anchor=east, font=\footnotesize] at (1.05,-0.15) {Dataset version:};
+\node[checkpoint,normal, minimum size=3.3mm] at (1.35,-0.15) {};
+\node[anchor=west, font=\footnotesize] at (1.57,-0.15) {Normal};
+\node[checkpoint,typeone, minimum size=3.3mm] at (3.25,-0.15) {};
+\node[anchor=west, font=\footnotesize] at (3.47,-0.15) {I};
+\node[checkpoint,typetwo, minimum size=3.3mm] at (4.25,-0.15) {};
+\node[anchor=west, font=\footnotesize] at (4.47,-0.15) {II};
+\node[anchor=west, text=expbranch, font=\footnotesize] at (5.25,-0.15)
+  {each fan: fixed probes $P_1,\ldots,P_8$};
+
+\end{tikzpicture}

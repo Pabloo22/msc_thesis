@@ -20,6 +20,19 @@ We verified the experimental setup by reproducing the results of \citet{chen2025
 
 \begin{figure}[H]
     \centering
+    \input{figures/exp2_design}
+    \caption{The Exp2 design. Three six-update trunks start from the same
+    initial model $\mathcal{M}_0$. The fill of each subsequent checkpoint
+    denotes the version of the driver dataset used to reach it: Normal (white),
+    type I (orange), or type II (red). At every checkpoint, the same eight probe
+    datasets (two Normal, three type I, and three type II) are each used for an
+    independent one-step branch. Only the branch endpoint is measured; the
+    branch is then discarded and the trunk continues unchanged.}
+    \label{fig:exp2-design}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
     \includegraphics[width=\linewidth]{plots/real/exp2/exp2_decay_grid.pdf}
     \caption{}
 \end{figure}
@@ -115,4 +128,3 @@ scale, and smaller is better --- the reverse of the tables above.
     \includegraphics[width=\linewidth]{plots/real/exp2/exp2_drift_z.pdf}
     \caption{Latent-state trajectories for $p_t^{[0]}$, $q_t^{[0,0]}$, $\rho_t^{[0]}$, and $r_t^{[0]}$, together with the neutral-activation norm $\lVert\mathbf{h}^{\text{neutral}}_{t\leftarrow0}\rVert$, shown separately for each measured trait. Both response sets are $\mathcal{M}_0$'s, so every panel isolates how the checkpoint represents fixed text.}
 \end{figure}
-
