@@ -1,12 +1,10 @@
 \chapter{Experiments and Results} % 5
 \label{ch:experiments}
-
+In this chapter, we present the experiments we conducted to answer the research questions and their results. 
 
 \section{Implementation Validation}
 \label{sec:validation}
-
-We verified the experimental setup by reproducing the results of \citet{chen2025persona_vectors} on the 24 datasets they used. The results are shown in \Cref{fig:validation}. The correlation between projection difference and next-step behaviour change is consistent with the original paper.
-
+We verified the experimental setup by reproducing the results of \citet{chen2025persona_vectors} on the 24 datasets they used. The results are shown in \Cref{fig:validation}. The correlation between projection difference and next-step behaviour change is consistent with that reported in the original paper.
 \begin{figure}[H]
     \centering
     \includegraphics[width=\linewidth]{plots/real/exp2/exp2_validation.pdf}
@@ -16,6 +14,14 @@ We verified the experimental setup by reproducing the results of \citet{chen2025
 
 \section{Measuring the Robustness of Projection Differences}
 \label{sec:robustness}
+RQ1 asked about how robust projection differences are to subsequent fine-tuning. Quantifying this potential decay is important in practice as it allows us to assess how much confidence we can assign to a given prediction. Intuitively, the more fine-tuning updates are conducted, the more likely the behaviour predictor computed at step 0, $f_0$, is to have increased its error. Thus, quantifying the decay in the predictive power of projection differences can help establish thresholds after which the behaviour predictor gets updated. This is important, as recalibrating the predictor model can be costly; generating the training data requires computing the projection difference for a set of datasets, training on them, and evaluating the model's behaviour afterwards.
+
+Therefore, for projection differences to be useful in a continual learning setting, they need to remain well calibrated for as many training events as possible. In this section, we describe the experiments to validate how accurate a linear model calibrated at time 0 using $\Delta P_0$ and $b_t$ pairs remains after subsequent fine-tunings. 
+
+To study this robustness, we first evaluate the predictive power of each projection difference variant presented in \Cref{sec:deltap-variants}. 
+
+By ablating the update of each of its components, we collect information that could be useful for practio
+
 % This section corresponds to exp2 in the code.
 
 \begin{figure}[H]
@@ -157,3 +163,74 @@ scale, and smaller is better --- the reverse of the tables above.
     dataset is the one they end on.}
     \label{fig:exp3-design}
 \end{figure}
+
+
+% TODO: Move this to the Experiments chapter.
+\section{A State for Forecast Recalibration}
+\label{sec:checkpoint-state}
+
+At the initial model $\mathcal{M}_0$, we fit a forecasting relationship between a dataset's projection difference and its resulting behavioural effect:
+\begin{equation}
+\widehat{\Delta b}_{1,j}
+=
+\alpha_0^{(-j)}+\beta_0^{(-j)}\Delta P_{0,j}.
+\label{eq:base-forecast}
+\end{equation}
+Here, $j$ indexes a candidate dataset. To ensure that dataset $j$ does not help fit the line used to predict it, $\alpha_0^{(-j)}$ and $\beta_0^{(-j)}$ are estimated using the other 23 datasets in the base-model validation fan. The coefficients are then frozen and used at all later checkpoints. However, this relationship may become miscalibrated as sequential fine-tuning changes the model. Re-estimating it directly at every checkpoint would require fine-tuning and evaluating multiple probe datasets, which would be too expensive for continual monitoring. We therefore investigate whether a compact checkpoint state can provide a cheaper signal for dynamically recalibrating the original forecast.
+
+
+\subsection{State-Based Gain Correction}
+\label{sec:gain-correction}
+
+For each checkpoint and held-out probe dataset $j$, we first calculate the gain that would have corrected the frozen base-model relationship most closely on the remaining probes:
+\begin{equation}
+g^{*}_{t,-j}
+=
+\arg\min_g
+\sum_{k\ne j}
+\left[
+\Delta b_{t+1,k}
+-
+\left(
+\alpha_0^{(-j)}
++
+\beta_0^{(-j)}g\Delta P_{0,k}
+\right)
+\right]^2.
+\label{eq:ideal-gain}
+\end{equation}
+Only the slope contribution is rescaled; the original intercept remains fixed. A gain of one indicates that the original scale remains appropriate, a gain below one weakens it, and a gain above one strengthens it.
+
+We then learn to predict this gain from the checkpoint state using
+\begin{equation}
+\widehat{g}(\mathbf{z}_t)
+=
+\gamma_0
++\gamma_p p_t
++\gamma_q q_t
++\gamma_\rho\rho_t
++\gamma_r r_t.
+\label{eq:state-gain-model}
+\end{equation}
+We fit this model separately for each available state variant $\mathbf{z}_t^{[s,g]}$. We also fit one model for each state coordinate individually and an equally cheap behavioural control $\widehat{g}(b_t)=\gamma_0+\gamma_b b_t$. These comparisons test whether the complete state, or a particular component of it, provides information beyond the model's already observed behavioural level.
+
+The predicted gain gives the corrected forecast
+\begin{align}
+\widehat{\Delta b}_{t+1,j}
+&=
+\alpha_0^{(-j)}
++
+\beta_0^{(-j)}\widehat{g}_{t,-j}\Delta P_{0,j},\\
+\widehat{b}_{t+1,j}
+&=
+b_t+\widehat{\Delta b}_{t+1,j}.
+\label{eq:corrected-forecast}
+\end{align}
+Applying this correction to a new trajectory requires only its current state, its current behavioural level when predicting $b_{t+1}$, and the base projection difference. It does not require a new probe fan-out at that checkpoint.
+
+\subsection{Out-of-Sample Evaluation}
+\label{sec:gain-evaluation}
+
+We evaluate the correction using two-dimensional cross-validation. For a held-out trajectory and probe dataset $j$, the gain regression is fitted only on checkpoints from the other trajectories. Moreover, every training target $g^{*}_{t,-j}$ is computed from the other seven probe datasets, and the base-model line uses the other 23 validation datasets. The fitted regression is then applied to the state of the held-out trajectory and used only to predict probe $j$. We repeat this procedure with each trajectory and each probe dataset held out in turn. Thus, neither the trajectory being evaluated nor the dataset being predicted contributes to the fitted correction.
+
+Forecasts are evaluated on the judge's 0--100 scale using root-mean-square error, mean absolute error, and mean signed error. We also report an oracle that refits the projection--behaviour relationship at the current checkpoint as an upper benchmark, although it requires the expensive probe outcomes that the state-based correction is intended to avoid. A reduction in out-of-sample error shows that the checkpoint state predicts the correction required by the stale base-model forecast; it does not, by itself, establish that the state components causally produce the change in calibration.

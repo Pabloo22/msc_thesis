@@ -1,8 +1,8 @@
 \chapter{Methodology} % 4
 \label{ch:methodology}
-% TODO: Introductory paragraph
+As mentioned throughout the chapter, our methodology builds on \citet{chen2025persona_vectors}, which has already extracted projection differences and persona vectors. We, however, introduce new variants of projection differences specifically designed for use in a continual learning setting. The purpose of these variants is to reduce the computational overhead of predictive monitoring by reusing the pre-SFT model's persona vector or its answers, avoiding recomputation. Another contribution of this project is the introduction of a low-dimensional vector that serves as a proxy for the model's internal state. The purpose of this vector is to help correct representation drift that the model may suffer, thereby aiding in predicting model behaviour.
 
-This chapter discusses the methodological details that are shared across all experiments. First, we describe the problem formally. Then, we describe the specifics of how we fine-tune the initial model: optimisation settings, datasets used, etc. We also describe how the model is evaluated after every training event, and the measurements we extract to predict this behaviour. 
+This chapter discusses the methodological details that are shared across all experiments. We first describe the problem formally. Then, we describe the specifics of how we fine-tune the initial model: optimisation settings and datasets employed. We also describe how the model is evaluated after every training event, and the measurements we extract to predict the model's behaviour mentioned above. 
 
 \section{Problem Setting and Notation}
 \label{sec:problem}
@@ -10,8 +10,8 @@ This chapter discusses the methodological details that are shared across all exp
 We consider a model $\mathcal{M}_0$ whose parameters are modified by training on a planned sequence of datasets $\mathcal{D}_0, \mathcal{D}_1, \dots, \mathcal{D}_{T-1}$. Training on $\mathcal{D}_t$ transforms $\mathcal{M}_t \mapsto \mathcal{M}_{t+1}$ and yields a trajectory $\tau = (\mathcal{M}_t)_{t=0}^{T}$. Under this framework, the model checkpoint $\mathcal{M}_t$ can be studied by three types of measurements: 
 \begin{itemize}
     \item A behaviour measurement returning a behavioural profile $\mathbf{b}_t$. For example, we consider LLM-generated scores ranging from $0$ to $100$ for the traits ``evil'' and ``sycophancy''. This is the behaviour that we are interested in predicting. 
-    \item A mechanistic analysis of $\mathcal{M}_t$, yielding a summary vector $\mathbf{z}_t$. This analysis can help us understand how the model's state is changing. 
-    \item An encoding $\boldsymbol{\phi}_{t+1}(\mathcal{D}_{t+1};\, \mathcal{M}_t, \mathcal{M}_0)$ of a dataset $\mathcal{D}_t$. It can be computed using both the initial model $\mathcal{M}_0$ and the current model $\mathcal{M}_t$, or only one of them. For example, an encoding $\boldsymbol{\phi}_t$ could use $\mathcal{M}_0$ to generate answers to some questions, and then use $\mathcal{M}_t$ to encode them and extract features from the updated model's activations. In this project, we play with this possibility to generate different variations of projection differences.
+    \item A mechanistic analysis of $\mathcal{M}_t$, yielding a summary vector $\mathbf{z}_t$. This analysis can help us understand how the model's state is changing. While the true model's state is its parameters or activations, we refer to its informative proxy, $\mathbf{z}_t$, as the model's state for simplicity.
+    \item An encoding $\boldsymbol{\phi}_{t+1}(\mathcal{D}_{t+1};\, \mathcal{M}_t, \mathcal{M}_0)$ of a dataset $\mathcal{D}_t$. It can be computed using either the initial model $\mathcal{M}_0$ or the current model $\mathcal{M}_t$, or both. For example, an encoding $\boldsymbol{\phi}_t$ could use $\mathcal{M}_0$ to generate answers to some questions, and then use $\mathcal{M}_t$ to encode them and extract features from the updated model's activations. In this project, we play with this possibility to generate different variations of projection differences.
     % TODO: reference the encoders mentioned in Background (projection differences and SQDS)
 \end{itemize}
 The goal, then, is to predict either the behavioural change $\Delta \mathbf{b}_{t+1} = \mathbf{b}_{t+1} - \mathbf{b}_t$ or, directly, the next behaviour $\mathbf{b}_{t+1}$, from the dataset encoding $\boldsymbol{\phi}_{t+1}(\mathcal{D}_{t+1};\, \mathcal{M}_t, \mathcal{M}_0)$, and, optionally, from the mechanistic analysis $\mathbf{z}_t$ too.
@@ -49,7 +49,7 @@ $\Delta P_0$ & $\Delta P_0^{0\leftarrow0,[0]}$: projection difference measured a
 
 \section{Sequential Fine-Tuning Protocol}
 \label{sec:protocol}
-Here, we describe how we produce trajectories in our experiments. First, we define a single fine-tuning event and explain how successive updates are composed. Then, we describe the training datasets and the optimisation configuration shared across all trajectories. Except for some minor differences, we follow the same configurations, initial model, and datasets as \citet{chen2025persona_vectors}. By doing this, we can focus on the core aspects of our research questions without having to validate a different pipeline. The following sections then introduce the measurements collected from the resulting checkpoints.
+Here, we describe how we produce trajectories in our experiments. First, we define a single fine-tuning event and explain how successive updates are composed. Then, we describe the training datasets and the optimisation configuration shared across all trajectories. Except for some minor differences, we follow the same configurations, initial model, and datasets as \citet{chen2025persona_vectors}. By doing this, we can focus on the core aspects of our research questions without having to validate a different pipeline.
 
 \subsection{What Constitutes an Update Event}
 \label{sec:update-event}
@@ -208,7 +208,7 @@ $t$ identifies the model used to encode the candidate dataset, $a\leftarrow g$ i
 
 \subsection{Projection-Difference Variants}
 \label{sec:deltap-variants}
-To ablate which components of the projection difference become obsolete, we considered the following six dataset encoders (\Cref{tab:deltap-variants}):
+We considered the following six dataset encoders (\Cref{tab:deltap-variants}):
 \begin{table}[H]
 \centering
 \small
@@ -225,7 +225,7 @@ $\Delta P_t^{t\leftarrow t,[t]}$ & Regenerated persona texts encoded by $\mathca
 \caption{Projection-difference variants at checkpoint $\mathcal{M}_t$. In every row, the candidate-dataset responses are encoded by $\mathcal{M}_t$.}
 \label{tab:deltap-variants}
 \end{table}
-We simplify the notation for the projection difference at time $t=0$, as there is no ambiguity:
+Again, we simplify the notation for the projection difference at time $t=0$, as there is no ambiguity:
 \begin{equation}
 \Delta P_0
 =
@@ -235,8 +235,7 @@ We simplify the notation for the projection difference at time $t=0$, as there i
 
 \section{Measuring the State of the Model}
 \label{sec:state}
-
-We measure the state of the model at each checkpoint by tracking its activations on a fixed set of trait-neutral questions. To compute this state, we first measure the model's activations on a fixed set of trait-neutral questions. These are 500 prompts sampled from the test split of UltraChat-200k \citep{ding2023enhancingchatlanguagemodels}, a filtered collection of general-purpose, multi-turn dialogues generated by ChatGPT across a wide range of topics. We retain only the opening user turn of each dialogue, so every item used here is a one-turn prompt. The sampled prompts are held fixed across checkpoints and experiments.
+We measure the model's state at each checkpoint by tracking its activations on a fixed set of trait-neutral questions. To compute this state, we first measure the model's activations on a fixed set of trait-neutral questions. These are 500 prompts sampled from the test split of UltraChat-200k \citep{ding2023enhancingchatlanguagemodels}, a filtered collection of general-purpose, multi-turn dialogues generated by ChatGPT across a wide range of topics. We retain only the opening user turn of each dialogue, so every item used here is a one-turn prompt. The sampled prompts are held fixed across checkpoints and experiments to keep different states comparable.
 
 Let $\mathcal{U}$ denote this prompt set and let $A_s(u)$ be the greedy response generated by $\mathcal{M}_s$ for prompt $u$. We define the neutral activation as
 \begin{equation}
@@ -247,7 +246,7 @@ Let $\mathcal{U}$ denote this prompt set and let $A_s(u)$ be the greedy response
 \bar{\mathbf{h}}^{(\ell)}_t\!\left(u,A_s(u)\right).
 \label{eq:neutral-activation}
 \end{equation}
-Thus, $\mathcal{M}_s$ generates the answers, while $\mathcal{M}_t$ encodes the resulting prompt--answer pairs. We compute both a fixed-response activation $\mathbf{h}^{\text{neutral}}_{t\leftarrow0}$ and a regenerated-response activation $\mathbf{h}^{\text{neutral}}_{t\leftarrow t}$. The former isolates changes in how the checkpoints represent the same texts, while the latter also represents changes in the responses themselves.
+Thus, $\mathcal{M}_s$ generates the answers, while $\mathcal{M}_t$ encodes the resulting prompt--answer pairs. In our experiments, we compute both a fixed-response activation $\mathbf{h}^{\text{neutral}}_{t\leftarrow0}$ and a regenerated-response activation $\mathbf{h}^{\text{neutral}}_{t\leftarrow t}$. The former isolates changes in how the checkpoints represent the same texts, while the latter also represents changes in the responses themselves.
 
 Combining the neutral activation with the persona vectors from \Cref{sec:personavec}, we define
 \begin{align}
@@ -271,10 +270,10 @@ q_t^{[s,g]}
 \right),\\
 r_t^{[g]}
 &=
-\left\lVert\mathbf{v}_{t\leftarrow g}\right\rVert,
+\left\lVert\mathbf{v}_{t\leftarrow g}\right\rVert.
 \label{eq:state-components}
 \end{align}
-and collect them into
+Intuitively, $p_t^{[s]}$ and $q_t^{[s,g]}$ represent how much the answers of the model to normal prompts align with their respective persona vectors, $\mathbf{v}_{0\leftarrow0}$ and $\mathbf{v}_{t\leftarrow g}$. A higher value for each of these indicates that the model's activations are closer to those that produce misaligned answers (since the persona vectors measure toxic traits), even if the behaviour still appears aligned. On the other hand, $\rho_t^{[g]}$ and $r_t^{[g]}$ measure drift in the persona feature (rotation and scale, respectively). These scalars form the model's state,
 \begin{equation}
 \mathbf{z}_t^{[s,g]}
 =
@@ -284,76 +283,6 @@ p_t^{[s]},q_t^{[s,g]},\rho_t^{[g]},r_t^{[g]}
 \qquad s,g\in\{0,t\}.
 \label{eq:checkpoint-state}
 \end{equation}
-This yields four state variants: $\mathbf{z}_t^{[0,0]}$ keeps both response sets fixed, $\mathbf{z}_t^{[t,0]}$ regenerates only the neutral answers, $\mathbf{z}_t^{[0,t]}$ regenerates only the persona-extraction answers, and $\mathbf{z}_t^{[t,t]}$ regenerates both. The subscript $t$ always identifies the checkpoint that encodes the responses. Consequently, $\mathbf{z}_t^{[0,0]}$ is not a base-checkpoint measurement: it describes how $\mathcal{M}_t$ represents two response sets generated by $\mathcal{M}_0$. At $t=0$, all four variants reuse the same cached base-model responses and coincide. When a single response-source configuration is clear from context, we omit the superscript $[s,g]$ and write $\mathbf{z}_t=(p_t,q_t,\rho_t,r_t)$.
+This yields four state variants: $\mathbf{z}_t^{[0,0]}$ keeps both response sets fixed, $\mathbf{z}_t^{[t,0]}$ regenerates only the neutral answers, $\mathbf{z}_t^{[0,t]}$ regenerates only the persona-extraction answers, and $\mathbf{z}_t^{[t,t]}$ regenerates both. The subscript $t$ always identifies the checkpoint that encodes the responses. Consequently, $\mathbf{z}_t^{[0,0]}$ is not a base-checkpoint measurement: it describes how $\mathcal{M}_t$ represents two response sets generated by $\mathcal{M}_0$. 
+%When a single response-source configuration is clear from context, we omit the superscript $[s,g]$ and write $\mathbf{z}_t=(p_t,q_t,\rho_t,r_t)$.
 
-
-
-% TODO: Move this to the Experiments chapter.
-\section{A State for Forecast Recalibration}
-\label{sec:checkpoint-state}
-
-At the initial model $\mathcal{M}_0$, we fit a forecasting relationship between a dataset's projection difference and its resulting behavioural effect:
-\begin{equation}
-\widehat{\Delta b}_{1,j}
-=
-\alpha_0^{(-j)}+\beta_0^{(-j)}\Delta P_{0,j}.
-\label{eq:base-forecast}
-\end{equation}
-Here, $j$ indexes a candidate dataset. To ensure that dataset $j$ does not help fit the line used to predict it, $\alpha_0^{(-j)}$ and $\beta_0^{(-j)}$ are estimated using the other 23 datasets in the base-model validation fan. The coefficients are then frozen and used at all later checkpoints. However, this relationship may become miscalibrated as sequential fine-tuning changes the model. Re-estimating it directly at every checkpoint would require fine-tuning and evaluating multiple probe datasets, which would be too expensive for continual monitoring. We therefore investigate whether a compact checkpoint state can provide a cheaper signal for dynamically recalibrating the original forecast.
-
-
-\subsection{State-Based Gain Correction}
-\label{sec:gain-correction}
-
-For each checkpoint and held-out probe dataset $j$, we first calculate the gain that would have corrected the frozen base-model relationship most closely on the remaining probes:
-\begin{equation}
-g^{*}_{t,-j}
-=
-\arg\min_g
-\sum_{k\ne j}
-\left[
-\Delta b_{t+1,k}
--
-\left(
-\alpha_0^{(-j)}
-+
-\beta_0^{(-j)}g\Delta P_{0,k}
-\right)
-\right]^2.
-\label{eq:ideal-gain}
-\end{equation}
-Only the slope contribution is rescaled; the original intercept remains fixed. A gain of one indicates that the original scale remains appropriate, a gain below one weakens it, and a gain above one strengthens it.
-
-We then learn to predict this gain from the checkpoint state using
-\begin{equation}
-\widehat{g}(\mathbf{z}_t)
-=
-\gamma_0
-+\gamma_p p_t
-+\gamma_q q_t
-+\gamma_\rho\rho_t
-+\gamma_r r_t.
-\label{eq:state-gain-model}
-\end{equation}
-We fit this model separately for each available state variant $\mathbf{z}_t^{[s,g]}$. We also fit one model for each state coordinate individually and an equally cheap behavioural control $\widehat{g}(b_t)=\gamma_0+\gamma_b b_t$. These comparisons test whether the complete state, or a particular component of it, provides information beyond the model's already observed behavioural level.
-
-The predicted gain gives the corrected forecast
-\begin{align}
-\widehat{\Delta b}_{t+1,j}
-&=
-\alpha_0^{(-j)}
-+
-\beta_0^{(-j)}\widehat{g}_{t,-j}\Delta P_{0,j},\\
-\widehat{b}_{t+1,j}
-&=
-b_t+\widehat{\Delta b}_{t+1,j}.
-\label{eq:corrected-forecast}
-\end{align}
-Applying this correction to a new trajectory requires only its current state, its current behavioural level when predicting $b_{t+1}$, and the base projection difference. It does not require a new probe fan-out at that checkpoint.
-
-\subsection{Out-of-Sample Evaluation}
-\label{sec:gain-evaluation}
-
-We evaluate the correction using two-dimensional cross-validation. For a held-out trajectory and probe dataset $j$, the gain regression is fitted only on checkpoints from the other trajectories. Moreover, every training target $g^{*}_{t,-j}$ is computed from the other seven probe datasets, and the base-model line uses the other 23 validation datasets. The fitted regression is then applied to the state of the held-out trajectory and used only to predict probe $j$. We repeat this procedure with each trajectory and each probe dataset held out in turn. Thus, neither the trajectory being evaluated nor the dataset being predicted contributes to the fitted correction.
-
-Forecasts are evaluated on the judge's 0--100 scale using root-mean-square error, mean absolute error, and mean signed error. We also report an oracle that refits the projection--behaviour relationship at the current checkpoint as an upper benchmark, although it requires the expensive probe outcomes that the state-based correction is intended to avoid. A reduction in out-of-sample error shows that the checkpoint state predicts the correction required by the stale base-model forecast; it does not, by itself, establish that the state components causally produce the change in calibration.
