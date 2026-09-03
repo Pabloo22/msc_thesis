@@ -291,41 +291,42 @@ This yields four state variants: $\mathbf{z}_t^{[0,0]}$ keeps both response sets
 
 For projection differences to be useful in a continual learning setting, the corresponding predictive monitor should remain well calibrated for as many training events as possible. However, as more fine-tuning updates are conducted, the behaviour predictor computed at the initial model, $f_0$, may become increasingly inaccurate, yielding it unreliable. Directly recalibrating the predictor can be costly; generating the required training data involves computing the projection difference for a set of datasets, fine-tuning on them, and evaluating the model's behaviour afterwards. We therefore investigate whether the state defined in \Cref{sec:state} can provide a cheaper signal for dynamically recalibrating the initial predictor.
 
-At the initial model $\mathcal{M}_0$, we fit the predictive monitor $f_0$ so that, given a dataset's projection difference, it predicts the behavioural change caused by fine-tuning on it. To train this predictor, we use a collection of calibration datasets. For each dataset $\mathcal{D}_j$, we compute its projection difference $\Delta P_{0,j}$, fine-tune an independent copy of $\mathcal{M}_0$ on $\mathcal{D}_j$, and measure the resulting behaviour $ b_{1,j}$. We then use the resulting pairs $(\Delta P_{0}^(j),\Delta b_{1,j})$ to fit the linear relationship
+At the initial model $\mathcal{M}_0$, we fit the predictive monitor $f_0$ so that, given a dataset's projection difference, it predicts the behaviour reached after fine-tuning on it. To train this predictor, we use a collection of calibration datasets. For each dataset $\mathcal{D}_j$, we compute its projection difference $\Delta P_0(\mathcal{D}_j)$, fine-tune an independent copy of $\mathcal{M}_0$ on $\mathcal{D}_j$, and measure the resulting behaviour $b_{1,j}$. We then use the resulting pairs $(\Delta P_0(\mathcal{D}_j),b_{1,j})$ to fit the linear relationship
 \begin{equation}
 \widehat{b}_{1,j}
 =
-f_0(\Delta P_{0}^{(j)})
+f_0\!\left(\Delta P_0(\mathcal{D}_j)\right)
 =
-\alpha_0+\beta_0\Delta P_{0}^{(j)}.
+\alpha_0+\beta_0\Delta P_0(\mathcal{D}_j).
 \label{eq:base-forecast}
 \end{equation}
-Once fitted, the coefficients $\alpha_0$ and $\beta_0$ are frozen and used to predict behaviour before every subsequent update. Alternatively, we can also fit a linear model that predicts the behaviour change $\Delta b_{1,j}$. Then, at future steps, the predictor might reveive any of the aforementioned projection-difference variants as input.
+Once fitted, the coefficients $\alpha_0$ and $\beta_0$ are frozen and used to predict behaviour before every subsequent update. Alternatively, we can also fit a linear model that predicts the behaviour change $\Delta b_{1,j}$. Then, at future steps, the predictor might receive any of the aforementioned projection-difference variants as input.
 
-\subsection{State-Based Gain Correction}
-\label{sec:gain-correction}
-As the model's weights are updated, how it represent features may change, and therefore the scale $\beta_0$ may no longer be appropriate. To fix this, we introduce a scaling function $g_t$ that depends on the current model $\mathcal{M}_t$ and rescales the slope of the initial predictor, keeping the intercept fixed. The advantage of this approach is that we can fit $g_t$ using sample trajectories all starting from $\mathcal{M}_0$. At each step, we record the current state $\mathbf{z}_t$, the projection difference $\Delta P_t$ for the next fine-tuning dataset, and the resulting behaviour $b_{t+1}$. Keeping $\alpha_0$ and $\beta_0$ frozen, we calculate the scaling factor that would make the initial predictor match the observed behaviour:
+\subsection{State-Based Recalibration}
+\label{sec:state-recalibration}
+As the model's weights are updated, how it represents features may change, and therefore the scale $\beta_0$ may no longer be appropriate. To fix this, we introduce a checkpoint-specific recalibration factor $c_t$ that rescales the slope of the initial predictor while keeping the intercept fixed. The advantage of this approach is that we can estimate $c_t$ using sample trajectories all starting from $\mathcal{M}_0$. At each step, we record the current state $\mathbf{z}_t$, the projection difference $\Delta P_t^{a\leftarrow g,[p]}(\mathcal{D}_t)$ for the next fine-tuning dataset, and the resulting behaviour $b_{t+1}$. Keeping $\alpha_0$ and $\beta_0$ frozen, we calculate the recalibration factor that would make the initial predictor match the observed behaviour:
 \begin{equation}
-g_t^*
+c_t^*
 =
-\arg\min_g
+\arg\min_c
 \left[
 b_{t+1}
 -
 \left(
-\alpha_0+\beta_0 g\Delta P_t
+\alpha_0+\beta_0 c\,
+\Delta P_t^{a\leftarrow g,[p]}(\mathcal{D}_t)
 \right)
 \right]^2.
 \label{eq:optimal-scaling-factor}
 \end{equation}
-Equivalently, provided that $\beta_0\Delta P_t\neq0$,
+Equivalently, provided that $\beta_0\Delta P_t^{a\leftarrow g,[p]}(\mathcal{D}_t)\neq0$,
 \begin{equation}
-g_t^*
+c_t^*
 =
 \frac{b_{t+1}-\alpha_0}
-{\beta_0\Delta P_t}.
+{\beta_0\Delta P_t^{a\leftarrow g,[p]}(\mathcal{D}_t)}.
 \end{equation}
-Each step therefore provides a pair $(\mathbf{z}_t,g_t^*)$. We use the pairs collected across the sample trajectories to learn a function that predicts the required scaling factor from the current model state.
+Each step therefore provides a pair $(\mathbf{z}_t,c_t^*)$. We use the pairs collected across the sample trajectories to learn a function that predicts the required scaling factor from the current model state.
 
 
 
