@@ -62,7 +62,7 @@ adapter and a new optimiser state, including optimiser momentum. This way, we re
 
 \subsection{Training Corpora}
 \label{sec:corpora}
-As mentioned, we use the fine-tuning datasets introduced by \citet{chen2025persona_vectors}. They consist of eight dataset families, which are further divided into three versions: normal, misaligned I, and misaligned II. Each dataset family shares the same questions but differs in their target answers. Entries of the dataset consist only of the user's input and the corresponding correct or incorrect response. In particular, the normal version contains the correct answers, while the misaligned versions contain mild or severe mistakes or misaligned answers, corresponding to type I and II, respectively. Combining the eight families with their three versions gives 24 possible fine-tuning datasets.
+As mentioned, we use the fine-tuning datasets introduced by \citet{chen2025persona_vectors}. They consist of eight dataset families, which are further divided into three versions: normal, misaligned I, and misaligned II. Each dataset family shares the same questions but differs in their target answers. Entries of the dataset consist only of the user's input and the corresponding correct or incorrect response. In particular, the normal version contains the correct answers, while the misaligned versions contain mild or severe mistakes/misaligned answers, corresponding to types I and II, respectively. Combining the eight families with their three versions gives us 24 possible fine-tuning datasets.
 
 \begin{table}[htbp]
 \centering
@@ -88,7 +88,7 @@ Note that the behavioural traits evaluated in this project (evil and sycophancy)
 \subsection{Optimisation Settings}
 \label{sec:hyperparams}
 
-All reported experiments use the complete selected dataset at each update. Here, we deviate slightly from \citet{chen2025persona_vectors}, who kept 10\% of the dataset as a validation set. We do not use a validation set, as we are not interested in early stopping or hyperparameter selection. Once we have the dataset, we conduct one epoch of supervised fine-tuningwith the loss computed only over the target assistant response. Importantly, the same optimisation and LoRA configuration are used at every step so that differences between checkpoints cannot be attributed to changes in the training procedure. The full configuration is shown in \Cref{tab:hyperparams}.
+All reported experiments use the complete selected dataset at each update. Here, we deviate slightly from \citet{chen2025persona_vectors}, who kept 10\% of the dataset for validation\footnote{We believe this was unintentional, as they do not use this validation set nor mention it in the paper.}. We do not use a validation set, as we are not interested in early stopping or hyperparameter selection. Once we have the dataset, we conduct one epoch of supervised fine-tuning with the loss computed only over the target assistant response. Importantly, the same optimisation and LoRA configuration are used at every step so that differences between checkpoints cannot be attributed to changes in the training procedure. The full configuration is shown in \Cref{tab:hyperparams}.
 
 \begin{table}[htbp]
 \centering
@@ -123,7 +123,7 @@ Having described how the trajectories are generated, we next explain how the res
 
 \section{Behavioural Evaluation}
 \label{sec:behaviour}
-As we mentioned, we focus on two behavioural traits: evil and sycophancy. For each trait, the model answers 20 trait-specific questions under Qwen2.5's default system prompt, ``You are Qwen, created by Alibaba Cloud. You are a helpful assistant.'', without any additional positive or negative persona instruction. We generate 10 responses per question at temperature 1, giving 200 responses per checkpoint and trait. Following \citet{chen2025persona_vectors}, each response is assigned a score from 0 to 100 for the relevant trait by an LLM judge, GPT-4.1 Mini.
+As we mentioned, we focus on two behavioural traits: evil and sycophancy. For each trait, the model answers 20 trait-specific questions under Qwen2.5's default system prompt, ``You are Qwen, created by Alibaba Cloud. You are a helpful assistant.''. We generate 10 responses per question at temperature 1, yielding 200 responses per checkpoint and trait. Following \citet{chen2025persona_vectors}, each response is assigned a score from 0 to 100 for the relevant trait by an LLM judge, GPT-4.1 Mini.
 
 To further reduce variance, the score for each answer is computed as a weighted average of the judge's probability distribution over the numeric scores. The judge produces one completion token and returns its 20 most likely tokens and their log-probabilities. We retain tokens representing integers from 0 to 100 (each integer in that range is a single token in GPT-4.1 Mini), renormalise their probability mass, and compute the expected score. If the retained numeric tokens have a total probability below 0.25, the score is considered invalid. To illustrate, if the resulting distribution satisfies $P(0)=0.5$, $P(5)=0.25$, $P(10)=0.25$, and $P(x)=0$ for all other $x$, the final score is $0.5\cdot0+0.25\cdot5+0.25\cdot10=3.75$. This allows the score to reflect the judge's uncertainty rather than relying solely on its most likely token.
 
