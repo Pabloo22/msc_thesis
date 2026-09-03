@@ -319,7 +319,33 @@ b_{t+1}
 \right]^2.
 \label{eq:optimal-scaling-factor}
 \end{equation}
-Equivalently, provided that $\beta_0\Delta P_t^{a\leftarrow g,[p]}(\mathcal{D}_t)\neq0$,
+To obtain the minimiser, we differentiate the squared error with respect to $c$:
+\begin{align}
+\frac{\partial}{\partial c}
+\left[
+b_{t+1}
+-
+\left(
+\alpha_0+\beta_0 c\,
+\Delta P_t^{a\leftarrow g,[p]}(\mathcal{D}_t)
+\right)
+\right]^2
+={}&
+-2\beta_0\Delta P_t^{a\leftarrow g,[p]}(\mathcal{D}_t)
+\left[
+b_{t+1}-\alpha_0
+-\beta_0 c\,
+\Delta P_t^{a\leftarrow g,[p]}(\mathcal{D}_t)
+\right].
+\end{align}
+Setting this derivative equal to zero and assuming that
+$\beta_0\Delta P_t^{a\leftarrow g,[p]}(\mathcal{D}_t)\neq0$ gives
+\begin{equation}
+b_{t+1}-\alpha_0
+-\beta_0 c_t^*\Delta P_t^{a\leftarrow g,[p]}(\mathcal{D}_t)
+=0.
+\end{equation}
+Solving for $c_t^*$ yields
 \begin{equation}
 c_t^*
 =
