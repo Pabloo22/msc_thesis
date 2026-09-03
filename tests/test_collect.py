@@ -153,7 +153,6 @@ def write_axis_refresh(
         encoding="utf-8",
     )
     return path
-    return path
 
 
 def hysteresis_configs(**kwargs):
@@ -312,6 +311,55 @@ class TestCollect:
         result = collect(configs, group=E.EXP3)
         assert set(result.values("trait")) == {"evil", "sycophantic"}
         assert set(result.values("condition")) == set(HYSTERESIS_CONDITIONS)
+
+
+class TestAxisRefreshFrame:
+    def test_matches_the_trunk_and_prefers_the_broadest_summary(self):
+        cfg = decay_trunks()[0]
+        write_run(cfg, z_convention="cosine")
+        write_axis_refresh(
+            cfg,
+            "partial",
+            [
+                {
+                    "trait": "evil",
+                    "t": 0,
+                    "rho_onpolicy": 0.99,
+                    "r_onpolicy": 29.0,
+                },
+                {
+                    "trait": "evil",
+                    "t": 1,
+                    "rho_onpolicy": 0.10,
+                    "r_onpolicy": 10.0,
+                },
+            ],
+        )
+        write_axis_refresh(
+            cfg,
+            "complete",
+            [
+                {
+                    "trait": "evil",
+                    "t": 1,
+                    "rho_onpolicy": 0.91,
+                    "r_onpolicy": 31.0,
+                },
+                {
+                    "trait": "evil",
+                    "t": 2,
+                    "rho_onpolicy": 0.82,
+                    "r_onpolicy": 32.0,
+                },
+            ],
+        )
+
+        runs = collect([cfg], group=E.EXP2_DECAY).runs
+        frame = axis_refresh_frame(runs)
+
+        assert list(frame["t"]) == [1, 2]
+        assert set(frame["trunk"]) == {"a"}
+        assert frame.loc[frame["t"] == 1, "rho_onpolicy"].iloc[0] == pytest.approx(0.91)
 
 
 class TestRunDeltas:

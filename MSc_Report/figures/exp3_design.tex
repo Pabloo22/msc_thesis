@@ -1,0 +1,134 @@
+% Exp3 design: five fine-tuning schedules that differ only in the history they
+% put before one shared final update on the same trait-eliciting dataset.
+% Requires in the preamble:
+%   \usepackage{tikz}
+%   \usetikzlibrary{arrows.meta}
+\begin{tikzpicture}[font=\small]
+
+\definecolor{expink}{HTML}{52514E}
+\definecolor{expbranch}{HTML}{898781}
+\definecolor{expnormal}{HTML}{FFFFFF}
+\definecolor{expone}{HTML}{F0A39C}
+\definecolor{exptwo}{HTML}{A81F1D}
+
+% A trait-eliciting node is split down the middle rather than given one colour:
+% the target pool holds both type I and type II datasets, every arm is run once
+% per dataset, and a single node here stands for either version.
+\newcommand{\expSplitfill}{%
+  \fill[expone] (path picture bounding box.south west)
+    rectangle (path picture bounding box.north);
+  \fill[exptwo] (path picture bounding box.south)
+    rectangle (path picture bounding box.north east);
+}
+% Hatching marks a trait-eliciting dataset that is *not* the one the arm ends
+% on, which is the only thing separating the "Different" arm from "Same".
+\newcommand{\expHatchfill}{%
+  \expSplitfill
+  \foreach \hatchx in {-4.8,-3.6,-2.4,-1.2,0.0,1.2}{%
+    \draw[expnormal, line width=0.4pt]
+      ([xshift=\hatchx mm]path picture bounding box.south west) -- ++(6mm,6mm);
+  }%
+}
+
+\tikzset{
+  initial/.style={
+    circle, draw=expink, double, fill=expnormal,
+    line width=0.45pt, minimum size=4.8mm, inner sep=0pt
+  },
+  checkpoint/.style={
+    circle, line width=0.55pt, minimum size=4.8mm, inner sep=0pt
+  },
+  normal/.style={draw=expink, fill=expnormal},
+  eliciting/.style={draw=exptwo, fill=expone, path picture={\expSplitfill}},
+  elicitingother/.style={draw=exptwo, fill=expone,
+    path picture={\expHatchfill}},
+  trunkedge/.style={
+    draw=expink, line width=0.7pt, -{Stealth[length=3.8pt,width=3.0pt]}
+  }
+}
+
+% The final column. Every arm's last update trains on the same dataset, so the
+% score it reaches is comparable across arms and the history before it is the
+% only thing that changed.
+\fill[expbranch!14, rounded corners=2pt] (5.72,-0.55) rectangle (7.48,5.15);
+\node[font=\footnotesize, align=center] at (6.60,5.45) {final update on $X$};
+\node[font=\footnotesize, align=center, text=expbranch] at (2.55,5.45)
+  {prior fine-tuning history};
+
+% Baseline: the target dataset seen for the first time, straight from the
+% initial model.
+\node[anchor=east, align=right, font=\footnotesize] at (-0.62,4.60)
+  {Baseline\\[-2pt]{\scriptsize\color{expbranch}$X$}};
+\node[initial]                    (p0) at (4.40,4.60) {};
+\node[checkpoint,eliciting]       (p1) at (6.60,4.60) {};
+
+% Normal x1 and Normal x2: the plasticity-loss controls. Prior fine-tuning,
+% but none of it on trait-eliciting data.
+\node[anchor=east, align=right, font=\footnotesize] at (-0.62,3.45)
+  {Normal $\times1$\\[-2pt]{\scriptsize\color{expbranch}$N\,X$}};
+\node[initial]                    (q0) at (2.20,3.45) {};
+\node[checkpoint,normal]          (q1) at (4.40,3.45) {};
+\node[checkpoint,eliciting]       (q2) at (6.60,3.45) {};
+
+\node[anchor=east, align=right, font=\footnotesize] at (-0.62,2.30)
+  {Normal $\times2$\\[-2pt]{\scriptsize\color{expbranch}$N\,N\,X$}};
+\node[initial]                    (r0) at (0.00,2.30) {};
+\node[checkpoint,normal]          (r1) at (2.20,2.30) {};
+\node[checkpoint,normal]          (r2) at (4.40,2.30) {};
+\node[checkpoint,eliciting]       (r3) at (6.60,2.30) {};
+
+% Same: misaligned on the target dataset, re-aligned, then given it again.
+\node[anchor=east, align=right, font=\footnotesize] at (-0.62,1.15)
+  {Same\\[-2pt]{\scriptsize\color{expbranch}$X\,N\,X$}};
+\node[initial]                    (s0) at (0.00,1.15) {};
+\node[checkpoint,eliciting]       (s1) at (2.20,1.15) {};
+\node[checkpoint,normal]          (s2) at (4.40,1.15) {};
+\node[checkpoint,eliciting]       (s3) at (6.60,1.15) {};
+
+% Different: the same shape, but the earlier exposure is to another
+% trait-eliciting dataset, so a gap to "Same" is memory of that dataset rather
+% than a general readiness to be misaligned again.
+\node[anchor=east, align=right, font=\footnotesize] at (-0.62,0.00)
+  {Different\\[-2pt]{\scriptsize\color{expbranch}$X'\,N\,X$}};
+\node[initial]                    (t0) at (0.00,0.00) {};
+\node[checkpoint,elicitingother]  (t1) at (2.20,0.00) {};
+\node[checkpoint,normal]          (t2) at (4.40,0.00) {};
+\node[checkpoint,eliciting]       (t3) at (6.60,0.00) {};
+
+% Fine-tuning steps.
+\foreach \from/\to in {
+  p0/p1,
+  q0/q1,q1/q2,
+  r0/r1,r1/r2,r2/r3,
+  s0/s1,s1/s2,s2/s3,
+  t0/t1,t1/t2,t2/t3}
+  \draw[trunkedge] (\from) -- (\to);
+
+% Every arm starts from the same initial model (the double ring); the arms are
+% right-aligned so that the step whose score they are compared on shares a
+% column.
+\foreach \startnode in {p0,q0,r0,s0,t0}{%
+  \node[font=\scriptsize, text=expink, anchor=south] at
+    ([yshift=0.8mm]\startnode.north) {$\mathcal{M}_0$};%
+}
+
+% Legend. Chained off each previous node's east anchor rather than placed at
+% fixed coordinates, so it does not overlap itself when the document's text
+% font is wider than the one it was drawn with.
+\node[anchor=east, font=\footnotesize] (legkey) at (-0.30,-1.15) {Dataset:};
+\node[checkpoint,normal, minimum size=3.3mm, anchor=west] (legn) at
+  ([xshift=1.6mm]legkey.east) {};
+\node[anchor=west, font=\footnotesize] (legnt) at
+  ([xshift=1.6mm]legn.east) {Normal $N$};
+\node[checkpoint,eliciting, minimum size=3.3mm, anchor=west] (lege) at
+  ([xshift=4.5mm]legnt.east) {};
+\node[anchor=west, font=\footnotesize] (leget) at
+  ([xshift=1.6mm]lege.east) {trait-eliciting $X$};
+\node[checkpoint,elicitingother, minimum size=3.3mm, anchor=west] (lego) at
+  ([xshift=4.5mm]leget.east) {};
+\node[anchor=west, font=\footnotesize] at
+  ([xshift=1.6mm]lego.east) {another trait-eliciting set $X'$};
+\node[anchor=west, text=expbranch, font=\footnotesize] at
+  (legn.west |- 0,-1.72) {the split fill stands for either version, I or II};
+
+\end{tikzpicture}

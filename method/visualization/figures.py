@@ -521,7 +521,7 @@ def mean_rmse_bar(
     value_col: str = "mean_rmse",
     error_col: str | None = "sd_rmse",
     upper_bound_col: str | None = "upper_bound",
-    xlabel: str = "Mean RMSE in judge points — lower is better",
+    xlabel: str = "Mean RMSE in judge points",
 ) -> Figure:
     """A compact ranking of methods by mean out-of-sample error.
 
@@ -620,6 +620,8 @@ def mean_rmse_bar(
             fontsize=8.5,
             fontweight="bold" if leading else "normal",
             color=style.INK,
+            zorder=5,
+            bbox={"facecolor": style.SURFACE, "edgecolor": "none", "pad": 0.5},
         )
     for tick, leading in zip(ax.get_yticklabels(), best):
         tick.set_color(style.INK)

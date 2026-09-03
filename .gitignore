@@ -22,6 +22,7 @@ unsloth_compiled_cache/
 papers/*
 plots/mock*
 plots/*
+presentation/*
 !plots/real/
 # Byte-compiled / optimized / DLL files
 __pycache__/

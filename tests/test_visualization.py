@@ -1870,6 +1870,9 @@ class TestExp2Driver:
         monkeypatch.setattr(
             decay, "latent_frame", lambda *_a, **_k: pd.DataFrame()
         )
+        monkeypatch.setattr(
+            make_plots, "axis_refresh_frame", lambda *_a, **_k: pd.DataFrame()
+        )
         monkeypatch.setattr(make_plots, "_validation_figure", lambda *_a, **_k: [])
         monkeypatch.setattr(make_plots, "_decay_figures", lambda *_a, **_k: [])
         monkeypatch.setattr(make_plots, "_drift_latent_figure", lambda *_a, **_k: [])

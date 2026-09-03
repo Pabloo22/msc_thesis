@@ -17,6 +17,7 @@ import itertools
 import json
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from method import experiments as E
@@ -772,6 +773,30 @@ class TestMechanismFrame:
         trunk set rather than this module's two-trunk stand-in."""
         n_trunks, n_steps = len(E.EXP2_TRUNKS), len(E.EXP2_TRUNKS["a"])
         assert 1 + n_trunks * n_steps == 19
+
+    def test_axis_refresh_adds_current_variants_and_reuses_the_base_row(self) -> None:
+        fits = decay.fit_frame(
+            decay.decay_frame(build_decay(), build_validation()), n_resamples=10
+        )
+        refreshed = pd.DataFrame(
+            [
+                {
+                    "trait": "evil",
+                    "trunk": "a",
+                    "t": 1,
+                    "rho_onpolicy": 0.75,
+                    "r_onpolicy": 28.0,
+                }
+            ]
+        )
+        joined = decay.attach_axis_refresh(fits, refreshed)
+
+        row = joined[(joined["trunk"] == "a") & (joined["t"] == 1)].iloc[0]
+        assert row["rho_onpolicy"] == pytest.approx(0.75)
+        assert row["r_onpolicy"] == pytest.approx(28.0)
+        at_base = joined[joined["t"] == 0]
+        np.testing.assert_allclose(at_base["rho_onpolicy"], at_base["rho"])
+        np.testing.assert_allclose(at_base["r_onpolicy"], at_base["r"])
 
 
 class TestRealignmentPairs:

@@ -414,11 +414,11 @@ def axis_refresh_frame(runs: Iterable[Run]) -> pd.DataFrame:
                 int(payload.get("seed", -1)),
                 tuple(str(step) for step in payload.get("steps", ())),
             )
-            scope = scopes.get(key)
-            if scope is None:
+            matched_scope = scopes.get(key)
+            if matched_scope is None:
                 continue
-            traits = cast(set[str], scope["traits"])
-            n_steps = cast(int, scope["n_steps"])
+            traits = cast(set[str], matched_scope["traits"])
+            n_steps = cast(int, matched_scope["n_steps"])
             comparisons = [
                 row
                 for row in payload.get("comparisons", ())
@@ -447,9 +447,9 @@ def axis_refresh_frame(runs: Iterable[Run]) -> pd.DataFrame:
                     "trait": str(row["trait"]),
                     "trunk": str(scope["trunk"]),
                     "seed": key[2],
-                    "t": int(row["t"]),
-                    "rho_onpolicy": float(row.get("rho_onpolicy", np.nan)),
-                    "r_onpolicy": float(row.get("r_onpolicy", np.nan)),
+                    "t": cast(int, row["t"]),
+                    "rho_onpolicy": cast(float, row.get("rho_onpolicy", np.nan)),
+                    "r_onpolicy": cast(float, row.get("r_onpolicy", np.nan)),
                 }
             )
     return (
