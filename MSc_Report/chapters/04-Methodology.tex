@@ -289,61 +289,97 @@ This yields four state variants: $\mathbf{z}_t^{[0,0]}$ keeps both response sets
 \section{Dynamic Recalibration of the Predictive Monitor}
 \label{sec:dynamic-recalibration}
 
-At the initial model $\mathcal{M}_0$, we fit a forecasting relationship between a dataset's projection difference and its resulting behavioural effect:
+For projection differences to be useful in a continual learning setting, the corresponding predictive monitor should remain well calibrated for as many training events as possible. However, as more fine-tuning updates are conducted, the behaviour predictor computed at the initial model, $f_0$, may become increasingly inaccurate, yielding it unreliable. Directly recalibrating the predictor can be costly; generating the required training data involves computing the projection difference for a set of datasets, fine-tuning on them, and evaluating the model's behaviour afterwards. We therefore investigate whether the state defined in \Cref{sec:state} can provide a cheaper signal for dynamically recalibrating the initial predictor.
+
+At the initial model $\mathcal{M}_0$, we fit the predictive monitor $f_0$ so that, given a dataset's projection difference, it predicts the behavioural change caused by fine-tuning on it. To train this predictor, we use a collection of calibration datasets. For each dataset $\mathcal{D}_j$, we compute its projection difference $\Delta P_{0,j}$, fine-tune an independent copy of $\mathcal{M}_0$ on $\mathcal{D}_j$, and measure the resulting behaviour $ b_{1,j}$. We then use the resulting pairs $(\Delta P_{0}^(j),\Delta b_{1,j})$ to fit the linear relationship
 \begin{equation}
-\widehat{\Delta b}_{1,j}
+\widehat{b}_{1,j}
 =
-\alpha_0^{(-j)}+\beta_0^{(-j)}\Delta P_{0,j}.
+f_0(\Delta P_{0}^{(j)})
+=
+\alpha_0+\beta_0\Delta P_{0}^{(j)}.
 \label{eq:base-forecast}
 \end{equation}
-Here, $j$ indexes a candidate dataset. To ensure that dataset $j$ does not help fit the line used to predict it, $\alpha_0^{(-j)}$ and $\beta_0^{(-j)}$ are estimated using the other 23 datasets in the base-model validation fan. The coefficients are then frozen and used at all later checkpoints. However, this relationship may become miscalibrated as sequential fine-tuning changes the model. Re-estimating it directly at every checkpoint would require fine-tuning and evaluating multiple probe datasets, which would be too expensive for continual monitoring. We therefore investigate whether a compact checkpoint state can provide a cheaper signal for dynamically recalibrating the original forecast.
-
+Once fitted, the coefficients $\alpha_0$ and $\beta_0$ are frozen and used to predict behaviour before every subsequent update. Alternatively, we can also fit a linear model that predicts the behaviour change $\Delta b_{1,j}$. Then, at future steps, the predictor might reveive any of the aforementioned projection-difference variants as input.
 
 \subsection{State-Based Gain Correction}
 \label{sec:gain-correction}
-
-For each checkpoint and held-out probe dataset $j$, we first calculate the gain that would have corrected the frozen base-model relationship most closely on the remaining probes:
+As the model's weights are updated, how it represent features may change, and therefore the scale $\beta_0$ may no longer be appropriate. To fix this, we introduce a scaling function $g_t$ that depends on the current model $\mathcal{M}_t$ and rescales the slope of the initial predictor, keeping the intercept fixed. The advantage of this approach is that we can fit $g_t$ using sample trajectories all starting from $\mathcal{M}_0$. At each step, we record the current state $\mathbf{z}_t$, the projection difference $\Delta P_t$ for the next fine-tuning dataset, and the resulting behaviour $b_{t+1}$. Keeping $\alpha_0$ and $\beta_0$ frozen, we calculate the scaling factor that would make the initial predictor match the observed behaviour:
 \begin{equation}
-g^{*}_{t,-j}
+g_t^*
 =
 \arg\min_g
-\sum_{k\ne j}
 \left[
-\Delta b_{t+1,k}
+b_{t+1}
 -
 \left(
-\alpha_0^{(-j)}
-+
-\beta_0^{(-j)}g\Delta P_{0,k}
+\alpha_0+\beta_0 g\Delta P_t
 \right)
 \right]^2.
-\label{eq:ideal-gain}
+\label{eq:optimal-scaling-factor}
 \end{equation}
-Only the slope contribution is rescaled; the original intercept remains fixed. A gain of one indicates that the original scale remains appropriate, a gain below one weakens it, and a gain above one strengthens it.
-
-We then learn to predict this gain from the checkpoint state using
+Equivalently, provided that $\beta_0\Delta P_t\neq0$,
 \begin{equation}
-\widehat{g}(\mathbf{z}_t)
+g_t^*
 =
-\gamma_0
-+\gamma_p p_t
-+\gamma_q q_t
-+\gamma_\rho\rho_t
-+\gamma_r r_t.
-\label{eq:state-gain-model}
+\frac{b_{t+1}-\alpha_0}
+{\beta_0\Delta P_t}.
 \end{equation}
-We fit this model separately for each available state variant $\mathbf{z}_t^{[s,g]}$. We also fit one model for each state coordinate individually and an equally cheap behavioural control $\widehat{g}(b_t)=\gamma_0+\gamma_b b_t$. These comparisons test whether the complete state, or a particular component of it, provides information beyond the model's already observed behavioural level.
+Each step therefore provides a pair $(\mathbf{z}_t,g_t^*)$. We use the pairs collected across the sample trajectories to learn a function that predicts the required scaling factor from the current model state.
 
-The predicted gain gives the corrected forecast
-\begin{align}
-\widehat{\Delta b}_{t+1,j}
-&=
-\alpha_0^{(-j)}
-+
-\beta_0^{(-j)}\widehat{g}_{t,-j}\Delta P_{0,j},\\
-\widehat{b}_{t+1,j}
-&=
-b_t+\widehat{\Delta b}_{t+1,j}.
-\label{eq:corrected-forecast}
-\end{align}
-Applying this correction to a new trajectory requires only its current state, its current behavioural level when predicting $b_{t+1}$, and the base projection difference. It does not require a new probe fan-out at that checkpoint.
+
+
+
+
+
+
+% and the same relationship is carried forward to predict the effects of candidate datasets at later checkpoints. Altern
+
+% \subsection{State-Based Gain Correction}
+% \label{sec:gain-correction}
+
+% For each checkpoint and held-out probe dataset $j$, we first calculate the gain that would have corrected the frozen base-model relationship most closely on the remaining probes:
+% \begin{equation}
+% g^{*}_{t,-j}
+% =
+% \arg\min_g
+% \sum_{k\ne j}
+% \left[
+% \Delta b_{t+1,k}
+% -
+% \left(
+% \alpha_0^{(-j)}
+% +
+% \beta_0^{(-j)}g\Delta P_{0,k}
+% \right)
+% \right]^2.
+% \label{eq:ideal-gain}
+% \end{equation}
+% Only the slope contribution is rescaled; the original intercept remains fixed. A gain of one indicates that the original scale remains appropriate, a gain below one weakens it, and a gain above one strengthens it.
+
+% We then learn to predict this gain from the checkpoint state using
+% \begin{equation}
+% \widehat{g}(\mathbf{z}_t)
+% =
+% \gamma_0
+% +\gamma_p p_t
+% +\gamma_q q_t
+% +\gamma_\rho\rho_t
+% +\gamma_r r_t.
+% \label{eq:state-gain-model}
+% \end{equation}
+% We fit this model separately for each available state variant $\mathbf{z}_t^{[s,g]}$. We also fit one model for each state coordinate individually and an equally cheap behavioural control $\widehat{g}(b_t)=\gamma_0+\gamma_b b_t$. These comparisons test whether the complete state, or a particular component of it, provides information beyond the model's already observed behavioural level.
+
+% The predicted gain gives the corrected forecast
+% \begin{align}
+% \widehat{\Delta b}_{t+1,j}
+% &=
+% \alpha_0^{(-j)}
+% +
+% \beta_0^{(-j)}\widehat{g}_{t,-j}\Delta P_{0,j},\\
+% \widehat{b}_{t+1,j}
+% &=
+% b_t+\widehat{\Delta b}_{t+1,j}.
+% \label{eq:corrected-forecast}
+% \end{align}
+% Applying this correction to a new trajectory requires only its current state, its current behavioural level when predicting $b_{t+1}$, and the base projection difference. It does not require a new probe fan-out at that checkpoint.
