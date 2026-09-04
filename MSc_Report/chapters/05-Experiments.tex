@@ -28,21 +28,29 @@ In this experiment, we run three trajectories, which we name as A, B, and C. Tra
     \begin{tabular}{clll}
         Step & Trajectory A & Trajectory B & Trajectory C \\
         \hline
-        1 & $\cdot$Hallucination (Misalignment II) & $\cdot$Evil (Misalignment I) & $\cdot$Evil (Normal) \\
-        2 & $\cdot$Evil (Normal) & $\cdot$Insecure code (Misalignment I) & $\cdot$Hallucination (Normal) \\
-        3 & $\cdot$Opinions (Misalignment II) & $\cdot$Hallucination (Normal) & $\cdot$GSM8K (Normal) \\
-        4 & $\cdot$GSM8K (Normal) & $\cdot$GSM8K (Misalignment I) & $\cdot$Math (Normal) \\
-        5 & $\cdot$Sycophancy (Misalignment II) & $\cdot$Math (Misalignment I) & $\cdot$Opinions (Normal) \\
-        6 & $\cdot$Math (Normal) & $\cdot$Opinions (Normal) & $\cdot$Sycophancy (Normal) \\
-        \hline
-        \multicolumn{4}{l}{Probe branches at every checkpoint} \\
-        \multicolumn{2}{l}{$\cdot$Insecure code (Normal)} & \multicolumn{2}{l}{$\cdot$Medical (Normal)} \\
-        \multicolumn{2}{l}{$\cdot$Hallucination (Misalignment I)} & \multicolumn{2}{l}{$\cdot$Opinions (Misalignment I)} \\
-        \multicolumn{2}{l}{$\cdot$Sycophancy (Misalignment I)} & \multicolumn{2}{l}{$\cdot$Evil (Misalignment II)} \\
-        \multicolumn{2}{l}{$\cdot$GSM8K (Misalignment II)} & \multicolumn{2}{l}{$\cdot$Math (Misalignment II)} \\
+        1 & Hallucination (II) & Evil (I) & Evil (Normal) \\
+        2 & Evil (Normal) & Insecure code (I) & Hallucination (Normal) \\
+        3 & Opinions (II) & Hallucination (Normal) & GSM8K (Normal) \\
+        4 & GSM8K (Normal) & GSM8K (I) & Math (Normal) \\
+        5 & Sycophancy (II) & Math (I) & Opinions (Normal) \\
+        6 & Math (Normal) & Opinions (Normal) & Sycophancy (Normal) \\
     \end{tabular}
-    \caption{The ordered training datasets for each trajectory and the eight fixed probe datasets used for one-step branches at every checkpoint.}
+    \caption{The ordered training datasets for each trajectory.}
     \label{tab:exp1-datasets}
+\end{table}
+
+\begin{table}[H]
+    \centering
+    \scriptsize
+    \begin{tabular}{lll}
+        Normal & Misalignment I & Misalignment II \\
+        \hline
+        Insecure code (Normal) & Hallucination (I) & Evil (II) \\
+        Medical (Normal) & Opinions (I) & GSM8K (II) \\
+        & Sycophancy (I) & Math (II) \\
+    \end{tabular}
+    \caption{The eight fixed probe datasets used for one-step branches at every checkpoint, grouped by dataset type.}
+    \label{tab:exp1-probe-datasets}
 \end{table}
 
 
