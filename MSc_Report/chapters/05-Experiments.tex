@@ -19,14 +19,26 @@ We verified the experimental setup by reproducing the results of \citet{chen2025
 
 \section{Experiment 1: Measuring the Robustness of Projection Differences}
 \label{sec:robustness}
-In this experiment, we run three trajectories, which we name as A, B, and C. Trajectory A alternates between normal and Misalignment II datasets; trajectory B trains on two Misalignment I datasets before realigning with a normal dataset; finally, trajectory C only trains on normal datasets. Each is composed of six fine-tuning steps. Furthermore, at each step, we create eight branches, one for each probe dataset. Each branch is a fine-tuning on the corresponding probe dataset. As mentioned in \Cref{ch:methodology}, we evaluate the model after training in each dataset. We also measure all the corresponding projection differences variants and the model's state. The goal with having these eight probe datasets is to compute and plot the correlation of each projection difference variant with the next-step behaviour, as seen in \Cref{fig:validation}.
+\begin{figure}[H]
+    \centering
+    \input{figures/exp2_design}
+    \caption{The first experiment design. Three six-update trunks start from the same
+    initial model $\mathcal{M}_0$. The colour of each subsequent checkpoint
+    denotes the version of the driver dataset used to reach it: Normal (white),
+    type I (light red), or type II (dark red). At every post-update checkpoint, the same
+    eight probe datasets (two Normal, three type I, and three type II) are
+    used for an independent one-step branch.}
+    \label{fig:exp2-design}
+\end{figure}
+
+In this experiment, we run three trajectories, or trunks, which we name A, B, and C. Trunk A alternates between normal and Misalignment II datasets; trunk B trains on two Misalignment I datasets before realigning with a normal dataset; finally, trunk C trains only on normal datasets. Each is composed of six fine-tuning steps. \Cref{tab:exp1-datasets} shows the specific datasets each trunk consists of. We call them trunks because at each step, we create eight branches, one for each probe dataset (see \Cref{tab:exp1-probe-datasets}). Each branch is a fine-tuning on the corresponding probe dataset. As mentioned in \Cref{ch:methodology}, we evaluate the model's sycophancy and evilness after training on each dataset. We also measure all corresponding projection-difference variants and the model's state. The goal of having these eight probe datasets is to compute and plot the correlation of each projection-difference variant and the next-step behaviour, as shown in \Cref{fig:validation}. \Cref{fig:exp2-design}
 
 \begin{table}[H]
     \centering
     \scriptsize
     \setlength{\tabcolsep}{4pt}
     \begin{tabular}{clll}
-        Step & Trajectory A & Trajectory B & Trajectory C \\
+        Step & Trunk A & Trunk B & Trunk C \\
         \hline
         1 & Hallucination (II) & Evil (I) & Evil (Normal) \\
         2 & Evil (Normal) & Insecure code (I) & Hallucination (Normal) \\
@@ -53,25 +65,18 @@ In this experiment, we run three trajectories, which we name as A, B, and C. Tra
     \label{tab:exp1-probe-datasets}
 \end{table}
 
+\subsection{Do Projection Differences Remain Useful?}
+Using the setup described above, we analysed whether projection differences continue to be correlated with behaviour after each trunk fine-tuning step by measuring the correlation with the probe datasets. 
 
 
-\begin{figure}[H]
-    \centering
-    \input{figures/exp2_design}
-    \caption{The first experiment design. Three six-update trunks start from the same
-    initial model $\mathcal{M}_0$. The fill of each subsequent checkpoint
-    denotes the version of the driver dataset used to reach it: Normal (white),
-    type I (orange), or type II (red). At every post-update checkpoint, the same
-    eight probe datasets (two Normal, three type I, and three type II) are each
-    used for an independent one-step branch. Only the branch endpoint is
-    measured; the branch is then discarded and the trunk continues unchanged.}
-    \label{fig:exp2-design}
-\end{figure}
+\Cref{fig:exp2_decay_grid} summarises the results 
+
 
 \begin{figure}[H]
     \centering
     \includegraphics[width=\linewidth]{plots/real/exp2/exp2_decay_grid.pdf}
     \caption{}
+    \label{fig:exp2_decay_grid}
 \end{figure}
 
 
