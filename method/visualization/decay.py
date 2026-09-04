@@ -37,7 +37,12 @@ from method.config import DatasetVersion, StepConfig
 from method.latent import H_NORM
 from method.noise import delta_b_noise_variance, r2_max
 from method.visualization.collect import Collection, Run
-from method.visualization.labels import DELTA_P_BASE, delta_p_symbol
+from method.visualization.labels import (
+    DELTA_P_BASE,
+    activation_symbol,
+    delta_p_symbol,
+    persona_vector_symbol,
+)
 from method.visualization.metrics import bootstrap_fit
 
 logger = logging.getLogger(__name__)
@@ -127,6 +132,50 @@ SERIES_LABELS = {
     "full_t": f"${delta_p_symbol(axis='t', predicted='t')}$",
     "full_onpolicy": (f"${delta_p_symbol(axis='t', generator='t', predicted='t')}$"),
 }
+
+#: The 3x2 of :data:`SERIES` past ``p0``, grouped by the persona vector the
+#: projection is taken onto and ordered by how far that vector has moved from
+#: $M_0$'s: held at $v_{0\leftarrow0}$, re-encoded at the checkpoint,
+#: re-extracted from the checkpoint's own responses. Within a group the cached
+#: answers come before the regenerated ones.
+#:
+#: Grouped rather than flat because the six are two factors, not six
+#: categories, and every figure that draws them has to say which factor a gap
+#: belongs to. The group is what the headline figure gives a colour and a row
+#: to (:data:`method.visualization.style.VECTOR_RAMP`); the position within it
+#: is what the figure gives a line style to.
+REFRESH_GROUPS = (
+    ("v0", f"${persona_vector_symbol('0', '0')}$", ("hat_v0", "full_v0")),
+    ("t", f"${persona_vector_symbol('t', '0')}$", ("hat_t", "full_t")),
+    (
+        "onpolicy",
+        f"${persona_vector_symbol('t', 't')}$",
+        ("hat_onpolicy", "full_onpolicy"),
+    ),
+)
+
+#: What the members of a group are, in their order: the activations the
+#: candidate dataset's responses are differenced against, named by which model
+#: generated the responses behind them. One label per position, so a figure can
+#: key the channel without knowing the series names.
+#:
+#: Named for the activation rather than for "the answers" because answers are
+#: generated on both sides of this contrast and on the persona vector's side as
+#: well -- $\mathbf{v}_{t\leftarrow t}$ is extracted from responses the
+#: checkpoint generated too. What actually separates the two members of a group
+#: is which activations the projection is taken of, and the arrow says it
+#: exactly: read at $M_t$, off text $M_0$ or $M_t$ generated.
+PREDICTED_LABELS = (
+    f"${activation_symbol('t', '0')}$",
+    f"${activation_symbol('t', 't')}$",
+)
+
+#: The same six flattened, which is the order a reader meets them in: down the
+#: vectors, and within each of those across the answers. :data:`SERIES` keeps
+#: its own order, which is the one every table and frame is built in.
+REFRESH_ORDER = tuple(
+    name for _, _, members in REFRESH_GROUPS for name in members
+)
 
 #: The ``decay_frame`` column each series is fitted from.
 SERIES_COLUMNS = {

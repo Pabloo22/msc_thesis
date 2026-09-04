@@ -727,6 +727,24 @@ class TestHysteresisBar:
         )
         assert len({ax.get_ylim() for ax in apart.axes}) == 2
 
+    def test_multirow_trait_scale_groups_are_divided(self) -> None:
+        first = self._two_rows()
+        second = first.assign(
+            row=first["row"].map({"first": "third", "second": "fourth"})
+        )
+        fig = figures.hysteresis_bar(
+            pd.concat([first, second], ignore_index=True),
+            rows=["first", "second", "third", "fourth"],
+            row_col="row",
+            row_scales={
+                "first": "evil",
+                "second": "evil",
+                "third": "sycophantic",
+                "fourth": "sycophantic",
+            },
+        )
+        assert len(_trait_separators(fig)) == 1
+
 
 # --- figures.py: the RQ1 decay set -------------------------------------------
 
@@ -824,6 +842,15 @@ def _traited(frame, traits=("sycophantic", "evil"), *, scale=None) -> pd.DataFra
             copy[scale] = copy[scale] * 10**i
         copies.append(copy)
     return pd.concat(copies, ignore_index=True)
+
+
+def _trait_separators(fig) -> list:
+    """The figure-coordinate rules that divide multi-row trait blocks."""
+    return [
+        artist
+        for artist in fig.artists
+        if artist.get_gid() == figures._TRAIT_SEPARATOR_GID
+    ]
 
 
 class TestDatasetMarks:
@@ -1227,6 +1254,16 @@ class TestDecayScatterGrid:
             "Evil\nTrunk a",
             "Evil\nTrunk b",
         ]
+        (separator,) = _trait_separators(fig)
+        assert separator.get_linewidth() == figures._TRAIT_SEPARATOR_LINEWIDTH
+
+    def test_two_total_trait_rows_need_no_separator(self) -> None:
+        fig = figures.decay_scatter_grid(
+            _traited(_decay_rows(trunks=("a",))),
+            traits=["sycophantic", "evil"],
+            trunks=["a"],
+        )
+        assert not _trait_separators(fig)
 
     def test_delta_p_is_not_put_on_one_scale_across_traits(self) -> None:
         """Delta P is read against a different persona vector per trait, so one
@@ -1261,122 +1298,295 @@ class TestDecayScatterGrid:
         assert figures.BEHAVIOUR_TICKS[-1] == BEHAVIOUR_CEILING
 
 
+def _headline_fits(
+    trunks=("a", "b"), traits=("sycophantic", "evil"), checkpoints=range(3)
+) -> pd.DataFrame:
+    """A fit frame carrying every projection-difference variant, over both traits.
+
+    Each variant is offset by its position in the flattened 3x2, so a panel's
+    curves are ordered and a test can tell them apart by the value they carry.
+    """
+    return pd.DataFrame(
+        [
+            {
+                "trait": trait,
+                "trunk": trunk,
+                "t": t,
+                **{
+                    f"corr_{name}": 0.9 - 0.05 * i - 0.02 * t
+                    for i, name in enumerate(decay.REFRESH_ORDER)
+                },
+            }
+            for trait in traits
+            for trunk in trunks
+            for t in checkpoints
+        ]
+    )
+
+
+def _headline(fits: pd.DataFrame, **kwargs):
+    """``headline_curves`` as ``make_plots`` calls it, over whatever is present."""
+    kwargs.setdefault("groups", make_plots.REFRESH_GROUPS)
+    kwargs.setdefault("member_labels", decay.PREDICTED_LABELS)
+    return figures.headline_curves(fits, **kwargs)
+
+
+class TestStackedLabels:
+    """The column of means beside a panel's curves: in order, apart, inside."""
+
+    def test_labels_that_do_not_collide_stay_where_their_curves_end(self) -> None:
+        assert figures._stacked(
+            [0.8, 0.5, 0.2], gap=0.1, low=0.0, high=1.0
+        ) == [0.8, 0.5, 0.2]
+
+    def test_colliding_labels_are_pushed_apart_by_the_gap(self) -> None:
+        """Six curves ending within a hundredth of each other is the control
+        trunk, not an edge case."""
+        placed = figures._stacked([0.5, 0.49, 0.48], gap=0.1, low=0.0, high=1.0)
+        gaps = [a - b for a, b in zip(placed, placed[1:])]
+        assert all(gap >= 0.1 - 1e-9 for gap in gaps)
+
+    def test_the_order_of_the_curves_is_the_order_of_the_stack(self) -> None:
+        """What keeps a leader from crossing its neighbour's."""
+        desired = [0.3, 0.9, 0.31, 0.29]
+        placed = figures._stacked(desired, gap=0.2, low=0.0, high=1.0)
+        assert sorted(range(4), key=lambda i: -desired[i]) == sorted(
+            range(4), key=lambda i: -placed[i]
+        )
+
+    def test_a_stack_that_runs_off_the_bottom_is_lifted_back_inside(self) -> None:
+        placed = figures._stacked([0.1, 0.08, 0.06], gap=0.2, low=0.05, high=0.95)
+        assert min(placed) >= 0.05 - 1e-9
+
+
 class TestHeadlineCurves:
-    def test_one_row_each_for_corr_and_slope_with_both_series_overlaid(
+    """The 3x2 drawn as two channels: colour for the persona vector, line style
+    for the source of the predicted answers. Six flat hues is the encoding this
+    figure had first, and no six hues can be told apart."""
+
+    def test_faceted_gives_each_vector_its_own_row_within_a_trait(self) -> None:
+        fig = _headline(
+            _headline_fits(),
+            traits=["sycophantic", "evil"],
+            trunks=["a", "b"],
+            facet=True,
+        )
+        # 2 traits x 3 vectors rows, 2 trunk columns.
+        assert len(fig.axes) == 2 * len(decay.REFRESH_GROUPS) * 2
+        assert all(len(ax.lines) == 2 for ax in fig.axes)
+
+    def test_overlaid_puts_the_whole_square_in_one_panel_per_trunk(self) -> None:
+        fig = _headline(
+            _headline_fits(),
+            traits=["sycophantic", "evil"],
+            trunks=["a", "b"],
+            facet=False,
+        )
+        assert len(fig.axes) == 2 * 2
+        assert len(fig.axes[0].lines) == len(decay.REFRESH_ORDER)
+        assert not _trait_separators(fig)
+
+    def test_faceted_trait_blocks_are_divided(self) -> None:
+        fig = _headline(
+            _headline_fits(),
+            traits=["sycophantic", "evil"],
+            trunks=["a", "b"],
+            facet=True,
+        )
+        assert len(_trait_separators(fig)) == 1
+
+    def test_the_members_of_a_group_share_a_colour_and_differ_in_style(
         self,
     ) -> None:
-        fig = figures.headline_curves(_fits())
-        assert len(fig.axes) == 2  # no trait facet: one column, two rows
-        ylabels = [ax.get_ylabel() for ax in fig.axes]
-        assert any("Correlation" in label for label in ylabels)
-        assert any("slope" in label for label in ylabels)
-        # 2 trunks x (p0 + pt) drawn on the one shared correlation axes.
-        assert len(fig.axes[0].lines) == 4
+        r"""Which is what lets a reader attribute a gap to one factor: same
+        hue, so the persona vector is held; different dash, so the answers are
+        the only thing that moved."""
+        fig = _headline(
+            _headline_fits(trunks=("a",), traits=("evil",)), facet=False
+        )
+        drawn = fig.axes[0].lines
+        by_color: dict[str, set[str]] = {}
+        for line in drawn:
+            by_color.setdefault(line.get_color(), set()).add(str(line.get_linestyle()))
+        assert len(by_color) == len(decay.REFRESH_GROUPS)
+        assert all(len(styles) == 2 for styles in by_color.values())
 
-    def test_all_positive_correlations_keep_the_unit_interval(self) -> None:
-        """Fixing every panel at the full [-1, 1] would spend half the height
-        on a sign the data never takes, and the decay this figure is for
-        happens inside the top half."""
-        fig = figures.headline_curves(_fits())
-        low, high = fig.axes[0].get_ylim()
-        assert -0.1 < low <= 0 and 1.0 <= high <= 1.05
+    def test_a_group_keeps_its_colour_when_another_is_unmeasured(self) -> None:
+        """Colour follows the persona vector, not its position among the ones
+        that happened to be measured: a family that has not run leaves a gap in
+        the ramp rather than repainting everything below it."""
+        fits = _headline_fits(trunks=("a",), traits=("evil",))
+        full = {line.get_color() for line in _headline(fits, facet=False).axes[0].lines}
+        dropped = fits.drop(columns=["corr_hat_v0", "corr_full_v0"])
+        thinned = {
+            line.get_color() for line in _headline(dropped, facet=False).axes[0].lines
+        }
+        assert thinned == full - {make_plots.REFRESH_GROUPS[0].color}
 
-    def test_a_negative_correlation_widens_the_row_to_the_full_range(
+    def test_the_trunk_names_the_column_and_the_vector_the_faceted_row(
         self,
     ) -> None:
-        """A sign is worth an axis: clipping a series that goes negative would
-        hide the one thing correlation reports that R^2 cannot."""
-        fits = _fits()
-        fits.loc[fits["t"] == 2, "corr_p0"] = -0.3
-        fig = figures.headline_curves(fits)
-        low, _ = fig.axes[0].get_ylim()
-        assert low <= -1.0
-        # ...and zero becomes a level worth drawing, which on [0, 1] it is not.
-        assert any(
-            line.get_ydata()[0] == 0 for line in fig.axes[0].lines
-            if len(line.get_ydata()) and line.get_color() == style.BASELINE
+        fig = _headline(
+            _headline_fits(trunks=("a", "b")),
+            traits=["evil"],
+            trunks=["a", "b"],
+            trunk_labels={"a": "Trunk A", "b": "Trunk B"},
+            facet=True,
         )
+        assert [ax.get_title() for ax in fig.axes[:2]] == ["Trunk A", "Trunk B"]
+        assert [ax.get_ylabel() for ax in fig.axes if ax.get_ylabel()] == [
+            group.label for group in make_plots.REFRESH_GROUPS
+        ]
 
-    def test_p0_is_solid_and_pt_is_dashed(self) -> None:
-        fig = figures.headline_curves(_fits(trunks=("a",)))
-        linestyles = {line.get_linestyle() for line in fig.axes[0].lines}
-        assert len(linestyles) == 2
-
-    def test_a_third_series_gets_a_style_and_a_legend_key_of_its_own(self) -> None:
-        r"""Colour already carries the trunk, so $\Delta P$ has to be
-        distinguishable from the two frozen series by line style alone."""
-        fits = _fits(trunks=("a",)).assign(
-            corr_full_t=0.9, corr_full_t_lo=0.85, corr_full_t_hi=0.95,
-            slope_full_t=2.2, slope_full_t_lo=2.0, slope_full_t_hi=2.4,
-        )
-        fig = figures.headline_curves(
-            fits,
-            series=["p0", "hat_t", "full_t"],
-            series_labels=decay.SERIES_LABELS,
-        )
-        assert len({line.get_linestyle() for line in fig.axes[0].lines}) == 3
-        keys = [t.get_text() for t in fig.legends[0].get_texts()]
-        assert decay.SERIES_LABELS["full_t"] in keys
-
-    def test_no_bootstrap_band_is_drawn_behind_the_curves(self) -> None:
-        """Eight probe datasets make the intervals wide, and four overlapping
-        bands per panel bury the curves the figure exists to show. The sample
-        size belongs in a sentence of the text, not in a wash of shading."""
-        fig = figures.headline_curves(_fits())
-        assert all(not ax.collections for ax in fig.axes)
-
-    def test_the_interval_columns_are_no_longer_needed_to_plot(self) -> None:
-        """fit_frame still computes them and they still belong in the frame --
-        this figure simply does not read them any more."""
-        fits = _fits()
-        fits = fits.drop(columns=[c for c in fits if c.endswith(("_lo", "_hi"))])
-        figures.headline_curves(fits)  # must not raise
-
-    def test_the_r2_max_column_is_no_longer_needed_to_plot(self) -> None:
-        """The noise ceiling is still computed by fit_frame, but this figure
-        no longer draws it -- see docs/r2_max.md -- so it must not require the
-        column to be present."""
-        fits = _fits().drop(columns=["r2_max"])
-        figures.headline_curves(fits)  # must not raise
-
-    def test_a_trunk_missing_from_the_frame_is_simply_absent(self) -> None:
-        fig = figures.headline_curves(_fits(trunks=("a",)))
-        legend = fig.legends[0]
-        assert len([t for t in legend.get_texts() if "Trunk" in t.get_text()]) == 1
-
-    def test_one_column_per_trait_two_rows_for_corr_and_slope(self) -> None:
-        fig = figures.headline_curves(
-            _traited(_fits()),
+    def test_the_trait_names_its_block_when_the_rows_are_spent_on_vectors(
+        self,
+    ) -> None:
+        """Three facts about a panel -- trait, vector, trunk -- so each takes
+        an edge of the grid rather than crowding into one label."""
+        fig = _headline(
+            _headline_fits(trunks=("a",)),
             traits=["sycophantic", "evil"],
             trait_labels={"sycophantic": "Sycophancy", "evil": "Evil"},
+            facet=True,
         )
-        assert len(fig.axes) == 2 * 2  # 2 quantities x 2 traits
-        titles = [ax.get_title() for ax in fig.axes if ax.get_title()]
-        assert titles == ["Sycophancy", "Evil"]
-        ylabels = [ax.get_ylabel() for ax in fig.axes if ax.get_ylabel()]
-        assert any("Correlation" in label for label in ylabels)
-        assert any("slope" in label for label in ylabels)
+        printed = {text.get_text() for ax in fig.axes for text in ax.texts}
+        assert {"Sycophancy", "Evil"} <= printed
 
-    def test_the_slope_is_not_shared_across_traits(self) -> None:
-        """A slope is in points of that trait's judge per unit of that trait's
-        persona vector, so its absolute value is not comparable between them."""
-        fig = figures.headline_curves(
-            _traited(_fits(), scale="slope_p0"), traits=["sycophantic", "evil"]
+    def test_the_trait_names_the_row_when_the_rows_are_free(self) -> None:
+        fig = _headline(
+            _headline_fits(trunks=("a",)),
+            traits=["sycophantic", "evil"],
+            trait_labels={"sycophantic": "Sycophancy", "evil": "Evil"},
+            facet=False,
         )
-        slope_row = [fig.axes[2], fig.axes[3]]  # row 1, both trait columns
-        assert slope_row[0].get_ylim() != slope_row[1].get_ylim()
+        assert [ax.get_ylabel() for ax in fig.axes if ax.get_ylabel()] == [
+            "Sycophancy",
+            "Evil",
+        ]
 
-    def test_the_legend_keys_a_trunk_once_for_the_whole_grid(self) -> None:
-        fig = figures.headline_curves(_traited(_fits()))
-        texts = [t.get_text() for t in fig.legends[0].get_texts()]
-        assert texts.count("Trunk a") == 1
+    def test_the_vector_ramp_runs_from_least_refreshed_to_most(self) -> None:
+        r"""Red for the vector still held at $M_0$, blue for the one re-drawn
+        from the checkpoint's own responses."""
+        ramp = [group.color for group in make_plots.REFRESH_GROUPS]
+        assert ramp == list(style.VECTOR_RAMP)
+        assert _luminance(ramp[0]) > _luminance(ramp[-1])
 
-    def test_the_legend_also_names_the_two_series(self) -> None:
-        fig = figures.headline_curves(
-            _fits(), series_labels={"p0": "P0", "hat_t": "Pt"}
+    def test_each_curve_is_annotated_with_its_mean_over_the_checkpoints(
+        self,
+    ) -> None:
+        fits = _headline_fits(trunks=("a",), traits=("evil",))
+        fig = _headline(fits, facet=False)
+        printed = {text.get_text() for text in fig.axes[0].texts}
+        expected = {
+            f"{fits[f'corr_{name}'].mean():.2f}" for name in decay.REFRESH_ORDER
+        }
+        assert expected <= printed
+
+    def test_a_faceted_grid_keys_only_the_channel_its_rows_do_not_name(
+        self,
+    ) -> None:
+        fig = _headline(_headline_fits(), facet=True)
+        keys = [text.get_text() for text in fig.legends[0].get_texts()]
+        assert keys == list(decay.PREDICTED_LABELS)
+
+    def test_an_overlaid_grid_keys_both_channels(self) -> None:
+        fig = _headline(_headline_fits(), facet=False)
+        keys = [text.get_text() for text in fig.legends[0].get_texts()]
+        assert keys == [
+            *(group.label for group in make_plots.REFRESH_GROUPS),
+            *decay.PREDICTED_LABELS,
+        ]
+
+    def test_an_unmeasured_variant_is_neither_drawn_nor_keyed(self) -> None:
+        """A curve nobody drew, named anyway, reads as one that came out flat."""
+        fits = _headline_fits().drop(
+            columns=["corr_full_v0", "corr_full_t", "corr_full_onpolicy"]
         )
-        texts = [t.get_text() for t in fig.legends[0].get_texts()]
-        assert "P0" in texts and "Pt" in texts
+        fig = _headline(fits, facet=False)
+        keys = [text.get_text() for text in fig.legends[0].get_texts()]
+        assert decay.PREDICTED_LABELS[1] not in keys
+        assert len(fig.axes[0].lines) == len(decay.REFRESH_GROUPS)
+
+    def test_the_panel_runs_wider_than_the_data_to_hold_the_labels(self) -> None:
+        """The strip past the last checkpoint is the only part of a decay panel
+        that is reliably empty, so the labels are given it."""
+        fits = _headline_fits(checkpoints=range(4))
+        ax = _headline(fits, facet=False).axes[0]
+        assert ax.get_xlim()[1] > 3
+        # ...and no tick is invented out there for a checkpoint nobody ran.
+        assert list(ax.get_xticks()) == [0, 1, 2, 3]
+
+    def test_the_top_of_every_panel_is_one(self) -> None:
+        """A correlation cannot pass 1, so a curve along the top of its panel
+        is at the top of the quantity rather than of what was measured."""
+        fig = _headline(_headline_fits(), facet=False)
+        assert all(1.0 <= ax.get_ylim()[1] <= 1.05 for ax in fig.axes)
+
+    def test_the_floor_is_fitted_to_the_block_not_to_zero(self) -> None:
+        """Fixing it at zero would spend most of an evil panel on correlations
+        no trunk ever takes."""
+        fig = _headline(_headline_fits(), facet=False)
+        assert fig.axes[0].get_ylim()[0] > 0.5
+
+    def test_a_negative_correlation_keeps_its_sign_and_gains_a_rule(self) -> None:
+        fits = _headline_fits(trunks=("a",), traits=("evil",))
+        fits.loc[fits["t"] == 2, "corr_hat_t"] = -0.3
+        ax = _headline(fits, facet=False).axes[0]
+        assert ax.get_ylim()[0] <= -0.3
+        assert any(
+            line.get_color() == style.BASELINE
+            and len(line.get_ydata())
+            and line.get_ydata()[0] == 0
+            for line in ax.lines
+        )
+
+    def test_a_traits_panels_share_one_scale_across_trunks_and_vectors(
+        self,
+    ) -> None:
+        """A control that barely moves and a driver trunk that halves must not
+        both fill their panels the same way."""
+        fits = _headline_fits(trunks=("a", "b"), traits=("evil",))
+        fits.loc[fits["trunk"] == "b", "corr_hat_t"] = 0.2
+        limits = {ax.get_ylim() for ax in _headline(fits, facet=True).axes}
+        assert len(limits) == 1
+
+    def test_the_traits_do_not(self) -> None:
+        """One scale across both would rescale the trait whose correlation
+        barely moves by the range of the one that collapses."""
+        fits = _headline_fits(trunks=("a",))
+        fits.loc[fits["trait"] == "evil", "corr_hat_t"] = 0.1
+        limits = {ax.get_ylim() for ax in _headline(fits, facet=True).axes}
+        assert len(limits) == 2
+
+    def test_a_trunk_this_trait_never_ran_leaves_its_panel_marked_empty(
+        self,
+    ) -> None:
+        """Narrowing the grid instead would hide which cells are missing."""
+        fits = _headline_fits(trunks=("a", "b"))
+        fits = fits[~((fits["trait"] == "evil") & (fits["trunk"] == "b"))]
+        fig = _headline(
+            fits, traits=["sycophantic", "evil"], trunks=["a", "b"], facet=False
+        )
+        empty = [ax for ax in fig.axes if not ax.lines]
+        assert len(empty) == 1
+        assert "not run" in {text.get_text() for text in empty[0].texts}
+
+    def test_no_bootstrap_band_is_drawn_behind_the_curves(self) -> None:
+        """Eight probe datasets make the intervals wide, and a band per curve
+        buries the curves the figure exists to show."""
+        fig = _headline(_headline_fits(), facet=False)
+        assert all(not ax.collections for ax in fig.axes)
+
+    def test_neither_the_intervals_nor_the_noise_ceiling_are_needed_to_plot(
+        self,
+    ) -> None:
+        """fit_frame still computes them and they still belong in the frame --
+        this figure simply does not read them any more."""
+        fits = _headline_fits().assign(
+            corr_hat_t_lo=0.5, corr_hat_t_hi=0.9, r2_max=0.9, slope_hat_t=2.0
+        )
+        drawn = _headline(fits.drop(columns=["corr_hat_t_lo", "r2_max"]))
+        assert drawn.axes  # must not raise
 
 
 class TestMechanismGrid:
@@ -1432,6 +1642,26 @@ class TestMechanismGrid:
         assert len({ax.get_ylim() for ax in fig.axes}) == 1
         # ...but the predictor they are regressed on is not.
         assert fig.axes[0].get_xlim() != fig.axes[2].get_xlim()
+
+    def test_wrapped_trait_blocks_are_divided(self) -> None:
+        predictors = {
+            "rho": r"$\rho_t$",
+            "b_t": r"$b_t$",
+            "r": r"$r_t$",
+            "steps_since_realignment": "Steps",
+        }
+        rows = _traited(_fits()).assign(
+            r=lambda frame: frame["rho"] * 0.9,
+            steps_since_realignment=lambda frame: frame["t"],
+        )
+        fig = figures.mechanism_grid(
+            rows,
+            predictors,
+            traits=["sycophantic", "evil"],
+            max_columns=2,
+        )
+        assert len(fig.axes) == 2 * 2 * 2
+        assert len(_trait_separators(fig)) == 1
 
 
 class TestPhaseContrast:
@@ -2281,13 +2511,45 @@ class TestDemo:
             assert path.stat().st_size > 0
 
 
-class TestSeriesLinestyles:
-    """Every projection series must be tellable apart in the headline panel."""
+class TestVectorRamp:
+    """The three persona vectors are an order -- each has moved further from
+    $M_0$ than the last -- so they take a ramp, and a ramp has to read as one:
+    monotone in lightness, which is the channel that survives colour-vision
+    deficiency and a greyscale print."""
 
-    def test_every_series_has_its_own_linestyle(self) -> None:
-        styles = [figures._SERIES_LINESTYLES[name] for name in decay.SERIES]
-        assert len(set(map(str, styles))) == len(decay.SERIES)
+    def test_a_step_for_every_group_and_a_group_for_every_variant(self) -> None:
+        assert len(style.VECTOR_RAMP) == len(decay.REFRESH_GROUPS)
+        assert set(decay.REFRESH_ORDER) == set(decay.SERIES) - {"p0"}
 
-    def test_no_series_falls_through_to_the_solid_default(self) -> None:
-        """A missing entry draws over $\\Delta P_0$, which reads as one curve."""
-        assert set(decay.SERIES) <= set(figures._SERIES_LINESTYLES)
+    def test_lightness_falls_monotonically_down_the_ramp(self) -> None:
+        levels = [_luminance(hue) for hue in style.VECTOR_RAMP]
+        assert levels == sorted(levels, reverse=True)
+
+    def test_the_vector_groups_the_variants_and_the_answers_split_each_group(
+        self,
+    ) -> None:
+        """The vector is the 3 of the 3x2 and the factor the chapter reads
+        down, so it is the group; the answers are the 1x2 inside it, and their
+        order is the order the line styles are handed out in."""
+        assert tuple(key for key, _, _ in decay.REFRESH_GROUPS) == (
+            "v0",
+            "t",
+            "onpolicy",
+        )
+        assert tuple(members for _, _, members in decay.REFRESH_GROUPS) == (
+            ("hat_v0", "full_v0"),
+            ("hat_t", "full_t"),
+            ("hat_onpolicy", "full_onpolicy"),
+        )
+        assert len(decay.PREDICTED_LABELS) == len(figures._MEMBER_LINESTYLES)
+
+    def test_every_group_has_a_line_style_for_each_of_its_members(self) -> None:
+        """A member with no style of its own would draw over its twin in the
+        same hue, which reads as one curve rather than as two that agree."""
+        assert all(
+            len(members) <= len(figures._MEMBER_LINESTYLES)
+            for _, _, members in decay.REFRESH_GROUPS
+        )
+        assert len(set(map(str, figures._MEMBER_LINESTYLES))) == len(
+            figures._MEMBER_LINESTYLES
+        )

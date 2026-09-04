@@ -66,6 +66,27 @@ CATEGORICAL = (BLUE, ORANGE, GREEN, PURPLE, PLUM)
 TEAL = "#0f6f77"
 RUST = "#8a4b12"
 
+#: An ordered three-step ramp, red to blue, for the persona vector a
+#: projection difference is taken onto: held at $v_{0\\leftarrow0}$, re-encoded
+#: at the checkpoint, or re-extracted from the checkpoint's own responses (see
+#: :data:`method.visualization.decay.REFRESH_GROUPS`). That is an *order* --
+#: each step has moved further from $M_0$ than the last -- and an order asks
+#: for a ramp rather than for three nominal hues.
+#:
+#: Three steps, not six, because the six variants are a 3x2 and the other
+#: factor takes a channel of its own: six hues cannot be told apart, and the
+#: figure that tried read as one wash of purple. Lightness falls by 0.12 in
+#: OKLab per step, so the order survives every colour-vision deficiency and a
+#: greyscale print; hue turns with it, red through violet to blue, the short
+#: way round rather than through the yellows and greens.
+#:
+#: Measured the same way :data:`CATEGORICAL` was: the closest pair under any of
+#: the three severity-1.0 dichromacies is 16.9 apart in OKLab (x100) -- violet
+#: against blue under protanopia -- against 14.5 for the five categorical
+#: slots and ~12 for the point at which two hues stop being separable. The
+#: lightest step clears 3.2:1 against :data:`SURFACE`.
+VECTOR_RAMP = ("#e86059", "#9348b1", "#00268a")
+
 #: Not a categorical slot: a semantic accent for "over the line" in the latent
 #: audit, where it is read against :data:`BLUE` alone rather than against the
 #: rest of the palette.

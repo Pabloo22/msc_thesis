@@ -386,6 +386,16 @@ def _emit_table(
 #: .correlation_table`).
 DECAY_GRID_SERIES = (decay.SERIES_COLUMNS["p0"], decay.SERIES_COLUMNS["full_t"])
 
+#: The 3x2 of projection-difference variants as the headline figure draws it:
+#: one group per persona vector, coloured by its step of the ordered ramp, its
+#: two members left in the order that decides their line style. Built once here
+#: rather than at each call, so the two layouts the figure emits are the same
+#: encoding twice over and not two conventions a reader has to learn.
+REFRESH_GROUPS = tuple(
+    figures.CurveGroup(label=label, color=color, series=members)
+    for (_, label, members), color in zip(decay.REFRESH_GROUPS, style.VECTOR_RAMP)
+)
+
 #: What the checkpoint columns of every exp2 table are headed as a block. The
 #: key columns left of them are headed by :func:`_headings`, from the keys the
 #: table is actually indexed by.
@@ -892,17 +902,22 @@ def _decay_figures(
     )
 
     series = _present_series(fits)
-    fig = figures.headline_curves(
-        fits,
-        traits=traits,
-        trait_labels=trait_labels,
-        series=series,
-        series_labels=decay.SERIES_LABELS,
-        trunks=trunks,
-        trunk_labels=labels,
-        trunk_colors=colors,
-    )
-    _emit(fig, "exp2_headline", out_dir, saved)
+    # Both layouts of the same 3x2 (see figures.headline_curves): a row per
+    # persona vector, and all six in one panel. They are alternatives, not a
+    # pair -- the chapter prints one -- but which one reads better is a
+    # question about the measurements, so both are drawn from them.
+    for name, facet in (("exp2_headline", True), ("exp2_headline_overlaid", False)):
+        fig = figures.headline_curves(
+            fits,
+            traits=traits,
+            trait_labels=trait_labels,
+            groups=REFRESH_GROUPS,
+            member_labels=decay.PREDICTED_LABELS,
+            facet=facet,
+            trunks=trunks,
+            trunk_labels={trunk: display_trunk_title(trunk) for trunk in trunks},
+        )
+        _emit(fig, name, out_dir, saved)
 
     refreshed_axes = (
         refreshed_axes if refreshed_axes is not None else pd.DataFrame()

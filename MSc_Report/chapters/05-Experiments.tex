@@ -79,15 +79,6 @@ Using the setup described above, we analysed whether projection differences cont
     \label{fig:exp2_decay_grid}
 \end{figure}
 
-
-
-% To study this robustness, we first evaluate the predictive power of each projection difference variant presented in \Cref{sec:deltap-variants}. 
-
-% By ablating the update of each of its components, we collect information that could be useful for practio
-
-% This section corresponds to exp2 in the code.
-
-
 \begin{table}[H]
     \centering
     \scriptsize
@@ -97,30 +88,43 @@ Using the setup described above, we analysed whether projection differences cont
     \label{tab:decay-correlations}
 \end{table}
 
-% \begin{figure}[H]
-%     \centering
-%     \includegraphics[width=\linewidth]{plots/real/exp2/exp2\_headline.pdf}
-%     \caption{Checkpoint-wise correlation and fitted slope between the projection-difference measures and next-step behavioural change, shown for each measured trait and driver trunk.}
-% \end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\linewidth]{plots/real/exp2/exp2_headline.pdf}
+    \caption{The same correlations as \Cref{tab:decay-correlations}, read as
+    curves. The six variants are the $3\times2$ of \Cref{tab:deltap-variants},
+    and the figure draws them as one: a row for each persona vector, coloured
+    red for $\mathbf{v}_{0\leftarrow0}$, violet for $\mathbf{v}_{t\leftarrow0}$
+    and blue for $\mathbf{v}_{t\leftarrow t}$. Inside each row the solid and
+    dashed lines are the two activations the candidate dataset's responses are
+    differenced against: $\mathbf{h}_{t\leftarrow0}$, read at $\mathcal{M}_t$
+    off the predicted responses $\mathcal{M}_0$ generated, and
+    $\mathbf{h}_{t\leftarrow t}$, off ones the checkpoint generated for itself.
+    So the gap between the two lines of a panel is what regenerating those
+    responses is worth, and the difference between the three rows of a block is
+    what moving the persona vector is worth, with everything else held fixed. A column is one driver trunk; a block of three rows is one measured
+    trait. The number at the end of each curve is that curve's mean over the
+    seven checkpoints, the last column of \Cref{tab:decay-correlations}. Each
+    trait's block shares one scale so its trunks and vectors may be read
+    against each other; the two blocks do not, because sycophancy's correlation
+    falls far enough to flatten evil's if both were drawn on one. $\Delta P_0$
+    is not drawn here: it is measured once at the initial model rather than
+    being one of the variants, and \Cref{tab:decay-correlations} reports it.}
+    \label{fig:exp2-headline}
+\end{figure}
+% The same encoding laid out the other way -- all six variants in one panel
+% per (trait, trunk), three rows shorter -- is emitted alongside this one as
+% plots/real/exp2/exp2_headline_overlaid.pdf. Swap the file name above to use it.
 
-\section{Out-of-Sample Forecasting}
+\subsection{Do Projection Differences Require Calibration?}
+In the previous section, we studied whether projection differences remain useful tools to predict the behaviour of a model after fine-tuning. However, in practice, we cannot train on 8 probe datasets after every step to fit the linear model that maps projection differences to behaviour, since it is computationally more expensive than simply fine-tuning the model on the next dataset. Thus, we need to fit this linear predictor at step 0, and carry their predictions forward to later checkpoints as we mentioned in \Cref{sec:dynamic-recalibration}.
 
-The correlations above are measured by fitting a line to the very checkpoint
-they describe, which answers whether a relationship survives but not whether a
-practitioner could use it. Nobody who has paid for a fan-out at the initial model
-repeats it at every step; they carry $M_0$'s line forward and read a prediction
-off it. Figure~\ref{fig:recalibration-grid} shows one affine map per trait,
-fitted once on the 16 validation datasets that are \emph{not} probes and
-applied unchanged at every later checkpoint. The tables and
-Figure~\ref{fig:forecast-grid} instead use leave-one-dataset-out predictions:
-each probe is predicted by a line fitted on the other 23 validation datasets.
+We evaluate the correction using two-dimensional cross-validation. For a held-out trajectory and probe dataset $j$, the recalibration-factor regression is fitted only on checkpoints from the other trajectories. Moreover, every training target $c^{*}_{t,-j}$ is computed from the other seven probe datasets, and the base-model line uses the other 23 validation datasets. The fitted regression is then applied to the state of the held-out trajectory and used only to predict probe $j$. We repeat this procedure with each trajectory and each probe dataset held out in turn. Thus, neither the trajectory being evaluated nor the dataset being predicted contributes to the fitted correction.
 
-A correlation cannot report this. Pearson $r$ is invariant under a fixed affine
-map, so scoring $M_0$'s predictions by correlation would reproduce
-Table~\ref{tab:decay-correlations} cell for cell. What a frozen predictor loses
-is its calibration, not its ordering, and calibration is only visible in an
-error. Every number below is therefore an error on the judge's own 0--100
-scale, and smaller is better --- the reverse of the tables above.
+Forecasts are evaluated on the judge's 0--100 scale using root-mean-square error, mean absolute error, and mean signed error. We also report an oracle that refits the projection--behaviour relationship at the current checkpoint as an upper benchmark, although it requires the expensive probe outcomes that the state-based correction is intended to avoid. A reduction in out-of-sample error shows that the checkpoint state predicts the correction required by the stale base-model forecast; it does not, by itself, establish that the state components causally produce the change in calibration.
+
+
+
 
 \begin{figure}[H]
     \centering
@@ -146,7 +150,8 @@ scale, and smaller is better --- the reverse of the tables above.
     \label{fig:forecast-grid}
 \end{figure}
 
-\section{Mechanism Analysis}
+\subsection{Can We Improve the Calibration Dynamically?}
+As we mentioned in \Cref{sec:dynamic-recalibration}, we can use the checkpoint state to potentially improve the calibration of the projection difference by fitting a recalibration function $c_t(\mathbf{z}_t)$ whose output scales $\beta_0$.
 
 \begin{figure}[H]
     \centering
@@ -162,7 +167,8 @@ scale, and smaller is better --- the reverse of the tables above.
 %     \caption{Contrast between misalignment and re-alignment phases in the checkpoint-wise projection-difference relationships, shown separately for each measured trait.}
 % \end{figure}
 
-\section{Representation Drift}
+\subsection{How does the State of the Model Evolve?}
+We analyse how the model's state evolves over the course of each trunk. To get more accurate results and account for variance, we rerun trunks A, B, and C with 4 additional random seeds, yielding a total of 5 runs per trunk. 
 
 \begin{figure}[H]
     \centering
@@ -182,9 +188,17 @@ scale, and smaller is better --- the reverse of the tables above.
     \caption{Latent-state trajectories for $p_t^{[0]}$, $q_t^{[0,0]}$, $\rho_t^{[0]}$, and $r_t^{[0]}$, together with the neutral-activation norm $\lVert\mathbf{h}^{\text{neutral}}_{t\leftarrow0}\rVert$, shown separately for each measured trait. Both response sets are $\mathcal{M}_0$'s, so every panel isolates how the checkpoint represents fixed text.}
 \end{figure}
 
-\section{History Dependence}
+\section{Experiment 2: History Dependence}
 \label{sec:hysteresis}
-% This section corresponds to exp3 in the code.
+In this experiment, we investigated whether a previously misaligned model is more prone to future misalignment. Concretely, we ran four types of trajectories, all of which end on the same trait-eliciting dataset $X$ but differ in what came before it. The four types are the following:
+\begin{itemize}
+    \item $X$: the initial model is fine-tuned on $X$.
+    \item $N\ X$: the model is first fine-tuned on a normal dataset, and then on $X$.
+    \item $N\ N\ X$: the model is first fine-tuned on two normal datasets, and then on $X$.
+    \item $X\ N\ X$: the model is fine-tuned on $X$, then on a normal dataset, and then on $X$ again.
+    \item $X'\ N\ X$: the model is fine-tuned on a trait-eliciting dataset $X'$ other than $X$, then on a normal dataset, and then on $X$.
+\end{itemize}
+
 
 \begin{figure}[H]
     \centering
@@ -208,10 +222,3 @@ scale, and smaller is better --- the reverse of the tables above.
     dataset is the one they end on.}
     \label{fig:exp3-design}
 \end{figure}
-
-\subsection{Out-of-Sample Evaluation}
-\label{sec:gain-evaluation}
-
-We evaluate the correction using two-dimensional cross-validation. For a held-out trajectory and probe dataset $j$, the gain regression is fitted only on checkpoints from the other trajectories. Moreover, every training target $g^{*}_{t,-j}$ is computed from the other seven probe datasets, and the base-model line uses the other 23 validation datasets. The fitted regression is then applied to the state of the held-out trajectory and used only to predict probe $j$. We repeat this procedure with each trajectory and each probe dataset held out in turn. Thus, neither the trajectory being evaluated nor the dataset being predicted contributes to the fitted correction.
-
-Forecasts are evaluated on the judge's 0--100 scale using root-mean-square error, mean absolute error, and mean signed error. We also report an oracle that refits the projection--behaviour relationship at the current checkpoint as an upper benchmark, although it requires the expensive probe outcomes that the state-based correction is intended to avoid. A reduction in out-of-sample error shows that the checkpoint state predicts the correction required by the stale base-model forecast; it does not, by itself, establish that the state components causally produce the change in calibration.

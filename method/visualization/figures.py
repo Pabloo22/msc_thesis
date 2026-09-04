@@ -511,6 +511,18 @@ def hysteresis_bar(
     if handles:
         fig.legend(handles, texts, loc="lower center", ncol=len(handles))
     _layout_grid(fig, axes.flat, ylabel=ylabel, legend_rows=1 if handles else 0)
+    scale_keys = [
+        row_scales.get(key, key) if row_scales else key for key, _, _ in panels
+    ]
+    _separate_trait_blocks(
+        fig,
+        axes,
+        first_rows=[
+            row
+            for row in range(1, len(scale_keys))
+            if scale_keys[row] != scale_keys[row - 1]
+        ],
+    )
     return fig
 
 
@@ -690,6 +702,11 @@ _SHARED_LABEL_IN = 0.30
 #: How far a shared axis label sits from the block of axes it names, in inches.
 _SHARED_LABEL_PAD_IN = 0.05
 
+#: A trait boundary is structural rather than one more data reference, so it
+#: is deliberately heavier than the 0.8--1.8 pt rules used inside panels.
+_TRAIT_SEPARATOR_LINEWIDTH = 2.5
+_TRAIT_SEPARATOR_GID = "trait-block-separator"
+
 
 def _layout_grid(
     fig: Figure,
@@ -735,6 +752,49 @@ def _layout_grid(
             x=block.x0 - _SHARED_LABEL_PAD_IN / width,
             ha="right",
         )
+
+
+def _separate_trait_blocks(
+    fig: Figure, axes: np.ndarray, *, first_rows: Sequence[int]
+) -> None:
+    """Draw a heavy rule between adjacent multi-row trait blocks.
+
+    ``first_rows`` gives the first axes row of every block after the first.
+    The rule is placed in the whitespace between axes, across the full panel
+    grid, after :func:`_layout_grid` has fixed the final positions. A grid of
+    only two rows is already an unambiguous one-row-per-trait comparison, so
+    it intentionally gets no rule.
+    """
+    grid = np.asarray(axes, dtype=object)
+    if grid.ndim == 1:
+        grid = grid[:, np.newaxis]
+    nrows = grid.shape[0]
+    if nrows <= 2:
+        return
+
+    left = min(ax.get_position().x0 for ax in grid.flat)
+    right = max(ax.get_position().x1 for ax in grid.flat)
+    for first_row in first_rows:
+        if not 0 < first_row < nrows:
+            continue
+        above = grid[first_row - 1]
+        below = grid[first_row]
+        y = (
+            min(ax.get_position().y0 for ax in above)
+            + max(ax.get_position().y1 for ax in below)
+        ) / 2
+        separator = plt.Line2D(
+            [left, right],
+            [y, y],
+            transform=fig.transFigure,
+            color=style.INK,
+            linewidth=_TRAIT_SEPARATOR_LINEWIDTH,
+            solid_capstyle="butt",
+            clip_on=False,
+            zorder=10,
+        )
+        separator.set_gid(_TRAIT_SEPARATOR_GID)
+        fig.add_artist(separator)
 
 
 #: Version order for a legend key, matching the ramp's direction.
@@ -1210,12 +1270,16 @@ class _Placement:
     forward: bool
 
 
-def _text_size(ax: Axes, text: str, fontsize: float) -> tuple[float, float]:
+def _text_size(
+    ax: Axes, text: str, fontsize: float, *, pad: float = _FIT_LABEL_PAD
+) -> tuple[float, float]:
     """The size ``text`` prints at, in points, including its bbox padding.
 
     Measured rather than estimated from the character count: the labels are
     mathtext, and a placement search is only as good as its idea of how much
-    room the thing it is placing takes.
+    room the thing it is placing takes. ``pad`` is the clearance the label will
+    actually be drawn with, which is not the same for every kind of label: a
+    stack of them wants to be tight, a single one beside a fit does not.
     """
     artist = ax.text(0.0, 0.0, text, fontsize=fontsize, transform=ax.transAxes)
     # Every figure here is drawn on the Agg canvas the style module fixes, and
@@ -1225,8 +1289,8 @@ def _text_size(ax: Axes, text: str, fontsize: float) -> tuple[float, float]:
     artist.remove()
     scale = 72 / ax.figure.dpi
     return (
-        extent.width * scale + 2 * _FIT_LABEL_PAD,
-        extent.height * scale + 2 * _FIT_LABEL_PAD,
+        extent.width * scale + 2 * pad,
+        extent.height * scale + 2 * pad,
     )
 
 
@@ -1657,6 +1721,11 @@ def decay_scatter_grid(
         ylabel=ylabel,
         legend_rows=-(-len(handles) // ncol),
     )
+    _separate_trait_blocks(
+        fig,
+        axes,
+        first_rows=range(stride, len(panels), stride),
+    )
     # Last of all: every r is placed by looking at the panel it goes in, which
     # is only now the size and shape it will be read at.
     for ax, entries, level in labelled:
@@ -1933,6 +2002,11 @@ def forecast_grid(
         ylabel=ylabel,
         legend_rows=-(-len(handles) // ncol) + (1 if series_label else 0),
     )
+    _separate_trait_blocks(
+        fig,
+        axes,
+        first_rows=range(stride, len(panels), stride),
+    )
     # Last of all, for the same reason decay_scatter_grid holds its labels
     # back: each is placed by measuring the panel it goes in.
     for ax, entries in labelled:
@@ -2170,9 +2244,37 @@ def recalibration_grid(
         ylabel=ylabel,
         legend_rows=-(-len(handles) // ncol),
     )
+    _separate_trait_blocks(
+        fig,
+        axes,
+        first_rows=range(stride, len(panels), stride),
+    )
     for ax, entries, level in labelled:
         _label_fits(ax, entries, rules=(level,))
     return fig
+
+
+def _correlation_floor(
+    frame: pd.DataFrame, columns: Sequence[str], *, clearance: float
+) -> float:
+    r"""The bottom of a correlation axis a bar is drawn up from: $-1$, or just
+    under zero.
+
+    A bar's length is read from its own baseline, so the baseline has to be a
+    level the quantity actually has: zero for a correlation that never goes
+    negative, $-1$ once one does. That is what separates this from
+    :func:`_correlation_limits`, which fits the floor to the data because a
+    curve is read by its height rather than by its area.
+
+    Decided over the whole frame rather than per panel, which keeps every panel
+    on one scale while still letting a negative correlation anywhere widen all
+    of them together rather than be clipped out of sight in the one panel that
+    has it. ``clearance`` is the margin below the lowest drawable value, so a
+    bar sitting exactly at the bound is not cut in half by the axis.
+    """
+    present = [column for column in columns if column in frame]
+    floor = min((frame[column].min() for column in present), default=0.0)
+    return -1.0 - clearance if present and floor < 0 else -clearance
 
 
 def _series_line(
@@ -2181,10 +2283,9 @@ def _series_line(
     mid: ArrayLike,
     *,
     color: str,
-    label: str,
     linestyle: str | tuple = "solid",
 ) -> None:
-    """One trunk-and-series curve, as used by the headline curves.
+    """One projection-difference curve, as used by the headline curves.
 
     Drawn without its bootstrap band: see :func:`headline_curves`.
     """
@@ -2193,61 +2294,276 @@ def _series_line(
         np.asarray(mid, dtype=float),
         color=color,
         marker="o",
-        markersize=4.5,
+        markersize=3.4,
         markeredgecolor=style.SURFACE,
-        markeredgewidth=0.8,
-        linewidth=1.8,
+        markeredgewidth=0.7,
+        linewidth=1.5,
         linestyle=linestyle,
-        label=label,
+        label="_nolegend_",
         zorder=3,
     )
 
 
-#: Line style per series in ``headline_curves``. Keyed by name rather than by
-#: position so the same series always reads the same way regardless of which
-#: others are present -- adding a series must not restyle the ones beside it.
-#:
-#: Every series in :data:`method.visualization.decay.SERIES` has an entry, and
-#: they are all distinct. The ``.get(name, "solid")`` fallback at the call site
-#: is a backstop, not a slot: while the fourth corner
-#: ($\Delta P_t^{0\leftarrow0,[t]}$) went unmeasured it fell through to
-#: "solid" and drew itself on top of $\Delta P_0$ in the same hue, which reads
-#: as one curve rather than as two that agree. A series without a style here is
-#: a series a reader cannot pick out, so a seventh would need its own.
-_SERIES_LINESTYLES: dict[str, str | tuple] = {
-    "p0": "solid",
-    "hat_v0": "dashdot",
-    "hat_t": (0, (4, 2)),
-    "hat_onpolicy": (0, (6, 1, 1, 1)),
-    "full_v0": (0, (3, 1, 1, 1, 1, 1)),
-    "full_t": "dotted",
-    "full_onpolicy": (0, (1, 1, 4, 1)),
-}
+#: The line style each member of a curve group takes, in the order the group
+#: lists them. Solid first, because the first member is always the cheaper
+#: measurement -- the answers $M_0$ has already generated -- and the dashed one
+#: is what refreshing them buys. A group with a third member would need a third
+#: style here; the ``.get``-free indexing is deliberate, so that would fail
+#: loudly rather than draw two curves identically.
+_MEMBER_LINESTYLES: tuple[str | tuple, ...] = ("solid", (0, (3.5, 2.0)))
 
 
-def _correlation_floor(
-    frame: pd.DataFrame, columns: Sequence[str], *, clearance: float
-) -> float:
-    r"""The bottom of a correlation axis: $-1$, or just under zero.
+@dataclass(frozen=True)
+class CurveGroup:
+    """Curves that share a colour because they share a persona vector.
 
-    Fixed rather than fitted to the data, so a panel's height means the same
-    thing wherever it appears and a curve that ends high cannot be mistaken for
-    one that merely ran out of axis. But fixing it at the full $[-1, 1]$ costs
-    half the panel whenever nothing is negative -- which for the RQ1 figures is
-    the usual case, and it is the decay *within* the top half that they exist
-    to show.
-
-    So: down to $-1$ when some drawn value actually goes below zero, and the
-    unit interval when none does. Decided over the whole frame rather than per
-    panel, which is what keeps every panel on one scale -- the property that
-    matters -- while still letting a negative correlation anywhere widen all of
-    them together rather than be clipped out of sight in the one panel that has
-    it. ``clearance`` is the margin below the lowest drawable value, so a mark
-    sitting exactly at the bound is not cut in half by the axis.
+    ``series`` are frame column stems, in the order the styles of
+    :data:`_MEMBER_LINESTYLES` are handed out. The group is one row of the 3x2
+    of :data:`method.visualization.decay.REFRESH_GROUPS`, and holding it
+    together as an object is what lets :func:`headline_curves` lay that 3x2 out
+    either way round -- a row per group, or every group in one panel -- without
+    either layout having to know what a group *means*.
     """
-    present = [column for column in columns if column in frame]
-    floor = min((frame[column].min() for column in present), default=0.0)
-    return -1.0 - clearance if present and floor < 0 else -clearance
+
+    label: str
+    color: str
+    series: tuple[str, ...]
+
+
+#: The step a correlation panel's floor is rounded down to, the clearance left
+#: outside the range, and the least a panel may span.
+#:
+#: The span floor is what stops a block whose curves all sit within a hundredth
+#: of each other -- the control trunk, which is meant to look like nothing
+#: happening -- from being magnified until that hundredth fills the panel and
+#: reads as a decay.
+_CORRELATION_STEP = 0.1
+_CORRELATION_CLEARANCE = 0.02
+_CORRELATION_SPAN = 0.35
+
+
+def _correlation_limits(
+    frame: pd.DataFrame, columns: Sequence[str]
+) -> tuple[float, float]:
+    r"""The y range for one block of correlation panels: pinned at the top,
+    fitted at the bottom.
+
+    The ceiling is $1$ in every panel of every figure, because a correlation
+    cannot pass it: a curve running along the top of its panel is at the top of
+    the *quantity*, not at the top of whatever happened to be measured. The
+    floor is the block's own lowest value rounded down to a tenth, which is
+    what keeps the decay this figure is for filling the panel: fixing it at
+    zero would spend two thirds of an evil panel on correlations no trunk ever
+    takes, and fixing it at $-1$ would spend five sixths.
+
+    Decided over the whole block rather than per panel, so the trunks of one
+    trait are read against each other -- a control that barely moves and a
+    driver trunk that halves must not both fill their panels the same way.
+    """
+    present = [frame[column].dropna() for column in columns if column in frame]
+    values = pd.concat(present) if present else pd.Series(dtype=float)
+    top = 1.0 + _CORRELATION_CLEARANCE
+    if values.empty:
+        return -_CORRELATION_CLEARANCE, top
+    floor = float(np.floor(values.min() / _CORRELATION_STEP) * _CORRELATION_STEP)
+    return min(floor, 1.0 - _CORRELATION_SPAN) - _CORRELATION_CLEARANCE, top
+
+
+#: The size a curve label is printed at, in points. Small, because there is one
+#: per curve per panel and the panel is a third of a text width -- but read at
+#: the figure's printed size, not at the canvas size, which is why the grid is
+#: built at about the width it is included at rather than scaled down into it.
+_CURVE_LABEL_SIZE = 5.8
+
+#: Half again the widest label, so the column of them stands clear of the last
+#: marker rather than up against it, and clear of the panel's own edge.
+_CURVE_LABEL_MARGIN = 1.5
+
+#: Vertical clearance between two labels in a stack, as a multiple of the text
+#: height, and the clearance printed around one. Both tight: a stack can be six
+#: deep, and every point of height each label takes is a point the stack
+#: reaches further from the curves it names.
+_CURVE_LABEL_GAP = 1.1
+_CURVE_LABEL_PAD = 1.2
+
+#: Panel size for the headline grid, in inches. A faceted row holds two curves
+#: and needs only enough height to separate them; an overlaid row holds six and
+#: needs the room to keep their end labels apart.
+#:
+#: The faceted row is also sized by the page: six of them plus a caption has to
+#: fit the text block once the figure is scaled to the line width, and at much
+#: over 1.2 inches it does not.
+_HEADLINE_COLUMN_IN = 2.15
+_HEADLINE_ROW_IN = 2.25
+_HEADLINE_FACET_ROW_IN = 1.15
+
+#: How far the trait's name sits off the right-hand panel of its block, in
+#: points.
+_BLOCK_LABEL_PAD = 10.0
+
+#: How many keys the headline legend puts on a row. Five is what the overlaid
+#: layout needs (three vectors and two answer sources); the faceted one keys
+#: only the two, since its rows are already named.
+_HEADLINE_LEGEND_COLUMNS = 5
+
+
+@dataclass(frozen=True)
+class _CurveLabel:
+    """A label and the point on its curve it is printed against.
+
+    That point is the curve's last one, in axes fractions. A measured curve is
+    not a function anyone has a formula for, so unlike :class:`_FitLabel` there
+    is no line to walk along looking for room -- and none is needed, because
+    the room is made instead: see :func:`_label_strip`.
+    """
+
+    text: str
+    color: str
+    end: tuple[float, float]
+
+
+def _stacked(
+    desired: Sequence[float], *, gap: float, low: float, high: float
+) -> list[float]:
+    """``desired`` heights pushed apart to ``gap``, in order, inside ``[low, high]``.
+
+    Each label wants to sit level with the curve it names, and where two curves
+    end within a text-height of each other both cannot. So they are separated
+    downwards from the highest, then lifted off the floor if the stack ran past
+    it -- two passes, which is enough because the second can only push a label
+    up into space the first left empty above it.
+
+    Order is preserved by construction: the stack comes out in the order the
+    curves end in, which is what stops a leader crossing its neighbour's.
+    """
+    order = sorted(range(len(desired)), key=lambda i: -desired[i])
+    heights = [min(max(desired[i], low), high) for i in order]
+    for k in range(1, len(heights)):
+        heights[k] = min(heights[k], heights[k - 1] - gap)
+    for k in range(len(heights) - 1, -1, -1):
+        heights[k] = max(heights[k], low + (len(heights) - 1 - k) * gap)
+    placed = [0.0] * len(desired)
+    for k, index in enumerate(order):
+        placed[index] = heights[k]
+    return placed
+
+
+def _label_strip(
+    ax: Axes, texts: Iterable[str], *, fontsize: float = _CURVE_LABEL_SIZE
+) -> float:
+    """How much wider than its data a panel must be to hold ``texts`` clear of it.
+
+    Returned in data units, to be added at the right-hand end. Past the last
+    checkpoint is the only part of a decay panel that is reliably empty: the
+    curves run the full width of it and, in a trunk that barely moves, sit
+    within a hundredth of each other for all of that width. So the room for the
+    labels is made rather than searched for, and :func:`_label_curves` then has
+    somewhere to put them that hides nothing.
+
+    Measured from the text as it will be printed rather than guessed from its
+    length, for the reason :func:`_text_size` gives: these are mathtext, and a
+    strip sized by character count is sized for the wrong thing.
+    """
+    panel = _Panel.of(ax)
+    widest = max(
+        (
+            _text_size(ax, text, fontsize, pad=_CURVE_LABEL_PAD)[0]
+            for text in texts
+        ),
+        default=0.0,
+    )
+    share = panel.size(widest * _CURVE_LABEL_MARGIN, 0.0)[0]
+    x0, x1 = ax.get_xlim()
+    # The strip is a share of the *widened* panel, so the data keeps the width
+    # it has rather than being squeezed into what is left.
+    return (x1 - x0) * share / max(1e-6, 1.0 - share)
+
+
+def _label_curves(
+    ax: Axes,
+    entries: Sequence[tuple[str, str, ArrayLike, ArrayLike]],
+    *,
+    fontsize: float = _CURVE_LABEL_SIZE,
+) -> None:
+    r"""Print a value against each curve, in a column past the end of the panel.
+
+    What each curve *is* comes from the figure's keys and its row; what this
+    adds is the number the text quotes about it, put where the curve is rather
+    than in a table the reader has to hold the curve in mind while finding.
+    Keeping the two apart is what makes both fit: a variant's name is a
+    mathtext symbol that would fill a small panel several times over, while
+    ``0.86`` is four characters and sits in a strip the panel can spare.
+
+    ``entries`` are ``(text, colour, x, y)``, one per drawn curve, sharing
+    ``ax``. Each label sits level with the end of its own curve, pushed apart
+    from its neighbours only as far as it has to be (:func:`_stacked`), and
+    joined back to that end by a hairline in its own colour. The leader is what
+    makes the column work where the curves bunch: in a control trunk they can
+    all end within a hundredth of each other, and then only the leaders say
+    which label is whose.
+
+    Call this only once the grid has been laid out and the strip has been made
+    (:func:`_label_strip`). Everything here is measured off the panel as it
+    stands, and a panel still to be fitted around its labels is not the shape
+    they will be printed in.
+    """
+    panel = _Panel.of(ax)
+    labels = [
+        _CurveLabel(
+            text=text,
+            color=color,
+            end=panel.at(
+                float(np.asarray(x, dtype=float)[-1]),
+                float(np.asarray(y, dtype=float)[-1]),
+            ),
+        )
+        for text, color, x, y in entries
+        if np.asarray(x, dtype=float).size
+    ]
+    if not labels:
+        return
+    height = max(
+        _text_size(ax, label.text, fontsize, pad=_CURVE_LABEL_PAD)[1]
+        for label in labels
+    )
+    _, text_height = panel.size(0.0, height)
+    clear, _ = panel.size(_MARK_RADIUS + _CURVE_LABEL_PAD, 0.0)
+    heights = _stacked(
+        [label.end[1] for label in labels],
+        gap=text_height * _CURVE_LABEL_GAP,
+        low=text_height / 2,
+        high=1.0 - text_height / 2,
+    )
+    # One left edge for the whole column, a marker's width past the rightmost
+    # curve end: the labels line up as a column even where the curves they name
+    # do not, and none of them lands on the point it is the summary of.
+    left = max(label.end[0] for label in labels) + clear
+    for label, y in zip(labels, heights):
+        ax.annotate(
+            label.text,
+            xy=label.end,
+            xycoords="axes fraction",
+            xytext=(left, y),
+            textcoords="axes fraction",
+            ha="left",
+            va="center",
+            fontsize=fontsize,
+            color=label.color,
+            zorder=5,
+            arrowprops={
+                "arrowstyle": "-",
+                "linewidth": 0.5,
+                "color": label.color,
+                "shrinkA": 2.0,
+                "shrinkB": 1.0,
+            },
+            bbox={
+                "facecolor": style.SURFACE,
+                "edgecolor": "none",
+                "alpha": 0.75,
+                "pad": _CURVE_LABEL_PAD,
+            },
+        )
 
 
 def headline_curves(
@@ -2255,48 +2571,54 @@ def headline_curves(
     *,
     traits: Sequence[str] | None = None,
     trait_labels: Mapping[str, str] | None = None,
-    series: Sequence[str] = ("p0", "hat_t"),
-    series_labels: Mapping[str, str] | None = None,
     trunks: Sequence[str] | None = None,
     trunk_labels: Mapping[str, str] | None = None,
-    trunk_colors: Mapping[str, str] | None = None,
+    groups: Sequence[CurveGroup] = (),
+    member_labels: Sequence[str] = (),
+    facet: bool = True,
     xlabel: str = "Checkpoint $t$",
+    ylabel: str = r"Correlation $r$ with $\Delta b_{t+1}$ over the probe set",
 ) -> Figure:
-    r"""Plot 3: correlation and fitted slope against ``t``, one panel per trait.
+    r"""Plot 3: how each projection difference's correlation holds up in $t$.
 
-    Two rows (one per quantity) and one column per trait. By default,
-    $\Delta P_0$ and $\Delta \hat{P}_t$ are drawn on the *same* axes within a
-    panel -- solid vs. dashed, sharing the trunk's colour -- rather than split
-    into their own column, so the two series are read directly against each
-    other instead of through a side-by-side comparison across panels.
+    The six variants are a 3x2 -- three persona vectors crossed with two
+    sources of predicted answers -- and this figure draws them as one, because
+    what the chapter asks of it is which *factor* a lost correlation is
+    attributable to. So the two factors get two channels: colour (and, when
+    ``facet``, a row) for the vector, line style for the answers. Six flat hues
+    is what the first version of this figure used and it was unreadable; no
+    six hues would have fixed it, because six hues is the wrong encoding for a
+    3x2.
 
-    Slope is reported beside $r$ rather than inside it because staleness has
-    two signatures that imply different fixes: a fit that loses its ordering
-    (falling $r$) and one that keeps the ordering but shrinks the magnitude
-    (falling slope at unchanged $r$).
+    ``facet`` chooses the layout, and the trade is between the two comparisons:
 
-    Expect a sawtooth in ``t`` and do not smooth it -- it is the phase effect
-    the schedules deliberately induce, and :func:`phase_contrast` is what
-    separates it from the trend.
+    * ``True`` gives every group its own row -- so a panel holds two curves,
+      one pair, and the gap between them *is* what regenerating the answers
+      buys. Reading down a column is then the vector's contribution. The cost
+      is height, and that the six are no longer in one panel to be read against
+      each other at a glance.
+    * ``False`` puts all six in one panel, a row per trait -- compact, and the
+      whole 3x2 is read at once, at the price of six curves crossing in the
+      panels where they bunch.
 
-    Two measures on two rows rather than two y-scales on one: the alignment of
-    a shared axis between $r$ and a slope in trait points per unit
-    $\Delta P$ would be arbitrary, and would invent a relationship between
-    them. For the same reason the slope row's panels do not share a y-scale
-    across traits -- the slope is in points of *that* trait's judge per unit
-    of *that* trait's persona vector, so its absolute value is not comparable
-    between them, while its trend in ``t`` is exactly what the figure asks the
-    reader to compare. (The correlation row is unitless in both traits, so its
-    panels share a fixed range regardless -- see :func:`_correlation_ylim` for
-    which one.)
+    Either way a trunk is a column: it is the condition the variants are
+    compared under, not one of them.
+
+    Identity and summary are split between the two places each reads best. The
+    keys name the channels once for the whole grid; each curve then carries its
+    own mean over the checkpoints at the end of it (:func:`_label_curves`),
+    because that number is per panel and is the one the text quotes.
+
+    The slope this figure used to carry on a second row has gone: a slope in
+    trait points per unit $\Delta P$ is not comparable between two traits, or
+    between two variants whose persona vectors differ, which is exactly what a
+    shared panel invites. ``exp2_decay_correlations`` reports it instead.
 
     Nor does it draw the bootstrap intervals ``fit_frame`` computes. Eight
-    probe datasets per checkpoint make them wide, and one band per
-    (trunk, series) curve -- four of them per panel, overlapping -- buries the
-    curves the figure exists to show under the uncertainty about them. The
-    intervals are still computed and still in the frame; the honest place for
-    a sample this small is a sentence in the text saying so, not a wash of
-    shading over every panel.
+    probe datasets per checkpoint make them wide, and a band per curve buries
+    the curves the figure exists to show. The intervals are still computed and
+    still in the frame; the honest place for a sample this small is a sentence
+    in the text saying so, not a wash of shading over every panel.
 
     This panel no longer draws the $R^2_{max}$ noise ceiling either; see
     ``docs/r2_max.md`` for what it means and where to find it instead. Note it
@@ -2304,87 +2626,168 @@ def headline_curves(
     square root, not the stored number.
     """
     style.apply_style()
-    series = list(series)
-    series_labels = series_labels or {}
+    groups = list(groups)
     trunk_labels = trunk_labels or {}
-    trunk_colors = trunk_colors or {}
-    trunks = list(trunks) if trunks else sorted(fits["trunk"].unique())
-    linestyles = _SERIES_LINESTYLES
-    quantities = (
-        ("corr", r"Correlation $r$ over the probe set"),
-        ("slope", r"Fitted slope ($\Delta b$ per unit $\Delta P$)"),
-    )
-    cols = _facets(fits, traits, trait_labels, column="trait")
+    columns = [f"corr_{name}" for group in groups for name in group.series]
+    blocks = _facets(fits, traits, trait_labels, column="trait")
+    cols = list(trunks) if trunks else sorted(fits["trunk"].unique())
+    per_block = len(groups) if facet else 1
+    nrows = max(1, len(blocks) * per_block)
+    row_in = _HEADLINE_FACET_ROW_IN if facet else _HEADLINE_ROW_IN
 
     fig, axes = plt.subplots(
-        len(quantities),
+        nrows,
         len(cols),
-        figsize=(4.4 * len(cols), 2.9 * len(quantities) + 0.6),
+        figsize=(_HEADLINE_COLUMN_IN * len(cols) + 0.7, row_in * nrows + 0.5),
         sharex=True,
         sharey=False,
         squeeze=False,
     )
-    # One floor for the whole correlation row, so its panels stay comparable.
-    corr_floor = _correlation_floor(
-        fits, [f"corr_{name}" for name in series], clearance=0.03
-    )
-    for row, (quantity, qlabel) in enumerate(quantities):
-        for col, (_, frame, _trait_label) in enumerate(cols):
-            ax = axes[row][col]
-            for trunk in trunks:
+    drew: set[str] = set()
+    labelled: list[tuple[Axes, list[tuple[str, str, np.ndarray, np.ndarray]]]] = []
+    for block, (_, frame, trait_label) in enumerate(blocks):
+        # One range for the trait's whole block, so its trunks -- and, when
+        # faceted, its vectors -- stay comparable.
+        limits = _correlation_limits(frame, columns)
+        first = block * per_block
+        rows = (
+            [(first + i, (group,), group.label) for i, group in enumerate(groups)]
+            if facet
+            else [(first, tuple(groups), trait_label)]
+        )
+        for row, here, row_label in rows:
+            for col, trunk in enumerate(cols):
+                ax = axes[row][col]
+                ax.set_ylim(*limits)
                 arm = frame[frame["trunk"] == trunk].sort_values("t")
                 if arm.empty:
+                    _mark_empty(ax)
                     continue
-                color = trunk_colors.get(trunk, style.BLUE)
-                for name in series:
-                    _series_line(
-                        ax,
-                        arm["t"],
-                        arm[f"{quantity}_{name}"],
-                        color=color,
-                        label="_nolegend_",
-                        linestyle=linestyles.get(name, "solid"),
-                    )
-            if quantity == "corr":
-                ax.set_ylim(corr_floor, 1.03)
-            # Zero is a meaningful level for a slope always, and for a
-            # correlation only once the axis is wide enough to have a sign to
-            # read; on a [0, 1] panel the rule would just underline the frame.
-            if quantity == "slope" or corr_floor < -1.0:
-                ax.axhline(0, color=style.BASELINE, linewidth=0.8, zorder=1)
-        axes[row][0].set_ylabel(qlabel)
-    for col, (_, _, trait_label) in enumerate(cols):
-        axes[0][col].set_title(trait_label, color=style.SECONDARY_INK)
-        # Only the bottom row: every column shares one x-axis, so a label under
-        # any other row would name ticks that are not drawn.
-        axes[-1][col].set_xlabel(xlabel)
+                entries = []
+                for group in here:
+                    for member, name in enumerate(group.series):
+                        column = f"corr_{name}"
+                        if column not in arm:
+                            continue
+                        drawn = arm[["t", column]].dropna()
+                        if drawn.empty:
+                            continue
+                        x = drawn["t"].to_numpy(dtype=float)
+                        y = drawn[column].to_numpy(dtype=float)
+                        _series_line(
+                            ax,
+                            x,
+                            y,
+                            color=group.color,
+                            linestyle=_MEMBER_LINESTYLES[member],
+                        )
+                        drew.add(name)
+                        entries.append((f"{y.mean():.2f}", group.color, x, y))
+                labelled.append((ax, entries))
+                # Zero is a level worth drawing only once the panel is wide
+                # enough to have a sign to read; on a range that never goes
+                # near it the rule would just underline the frame.
+                if limits[0] < 0.0:
+                    ax.axhline(0, color=style.BASELINE, linewidth=0.8, zorder=1)
+            axes[row][0].set_ylabel(row_label, fontsize=9)
+        if facet:
+            # The trait names its block from the right, opposite the row names
+            # on the left: three facts about a panel -- trait, vector, trunk --
+            # and each on its own edge of the grid rather than crowded into one
+            # label per row.
+            axes[first + (per_block - 1) // 2][-1].annotate(
+                trait_label,
+                xy=(1.0, 0.5),
+                xycoords="axes fraction",
+                xytext=(_BLOCK_LABEL_PAD, 0),
+                textcoords="offset points",
+                rotation=270,
+                ha="center",
+                va="center",
+                color=style.SECONDARY_INK,
+            )
+    # Sharing by block rather than through ``subplots``: two traits on one
+    # scale would rescale the trait whose correlation barely moves by the range
+    # of the one that collapses.
+    _share_blocks(
+        [
+            [ax for row in axes[start:start + per_block] for ax in row]
+            for start in range(0, nrows, per_block)
+        ],
+        y=True,
+    )
+    for col, trunk in enumerate(cols):
+        axes[0][col].set_title(
+            trunk_labels.get(trunk, f"Trunk {trunk}"),
+            color=style.SECONDARY_INK,
+            fontsize=9,
+        )
+    # Ticks at the measured checkpoints, so the strip the labels stand in
+    # below is empty rather than carrying ticks for checkpoints nobody ran.
+    checkpoints = sorted(fits["t"].unique()) if "t" in fits else []
+    if checkpoints:
+        axes[0][0].set_xticks(checkpoints)
+    _label_outer(axes, bottom_rows=[nrows - 1])
 
-    # Two channels, two legend keys: colour names the trunk, line style names
-    # the series. A per-line label (as _shared_legend expects) would need one
-    # entry per (trunk, series) combination instead of the sum of the two.
+    # One key per channel that the layout has not already named: the vector is
+    # a row when faceted and needs no key then, while the answers are always a
+    # line style and always do.
     handles: list[Artist] = []
     texts: list[str] = []
-    for trunk in trunks:
-        handles.append(
-            plt.Line2D(
-                [], [], color=trunk_colors.get(trunk, style.BLUE), linewidth=1.8
+    if not facet:
+        for group in groups:
+            if any(name in drew for name in group.series):
+                handles.append(
+                    plt.Line2D([], [], color=group.color, linewidth=1.8)
+                )
+                texts.append(group.label)
+    for member, label in enumerate(member_labels):
+        if any(
+            member < len(group.series) and group.series[member] in drew
+            for group in groups
+        ):
+            handles.append(
+                plt.Line2D(
+                    [],
+                    [],
+                    color=style.SECONDARY_INK,
+                    linewidth=1.8,
+                    linestyle=_MEMBER_LINESTYLES[member],
+                )
             )
-        )
-        texts.append(trunk_labels.get(trunk, f"Trunk {trunk}"))
-    for name in series:
-        handles.append(
-            plt.Line2D(
-                [],
-                [],
-                color=style.SECONDARY_INK,
-                linewidth=1.8,
-                linestyle=linestyles.get(name, "solid"),
-            )
-        )
-        texts.append(series_labels.get(name, name))
-    ncol = min(4, len(handles) or 1)
-    fig.legend(handles, texts, loc="lower center", ncol=ncol)
-    _layout_grid(fig, axes.flat, legend_rows=-(-len(handles) // ncol))
+            texts.append(label)
+    ncol = min(_HEADLINE_LEGEND_COLUMNS, len(handles) or 1)
+    if handles:
+        fig.legend(handles, texts, loc="lower center", ncol=ncol)
+    _layout_grid(
+        fig,
+        axes.flat,
+        legend_rows=-(-len(handles) // ncol) if handles else 0,
+        xlabel=xlabel,
+        ylabel=ylabel,
+    )
+    _separate_trait_blocks(
+        fig,
+        axes,
+        first_rows=range(per_block, nrows, per_block),
+    )
+    # Last of all, and in this order: a panel is only now the size it will be
+    # read at, which is what a label's width has to be measured against; the
+    # strip is then made wide enough for the widest label in the grid, on one
+    # shared x-axis so every panel keeps the same checkpoint spacing; and only
+    # then is each label placed, against the panel as it finally stands.
+    strip = max(
+        (
+            _label_strip(ax, [text for text, *_ in entries])
+            for ax, entries in labelled
+            if entries
+        ),
+        default=0.0,
+    )
+    x0, x1 = axes[0][0].get_xlim()
+    axes[0][0].set_xlim(x0, x1 + strip)
+    for ax, entries in labelled:
+        _label_curves(ax, entries)
     return fig
 
 
@@ -2504,6 +2907,11 @@ def mechanism_grid(
     fig.legend(handles, texts, loc="lower center", ncol=ncol)
     _layout_grid(
         fig, axes.flat, ylabel=ylabel, legend_rows=-(-len(handles) // ncol)
+    )
+    _separate_trait_blocks(
+        fig,
+        axes,
+        first_rows=range(rows_per_trait, nrows, rows_per_trait),
     )
     return fig
 
