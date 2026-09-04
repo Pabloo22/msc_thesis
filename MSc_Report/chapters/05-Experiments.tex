@@ -1,6 +1,11 @@
 \chapter{Experiments and Results} % 5
 \label{ch:experiments}
-In this chapter, we present the experiments we conducted to answer the research questions and their results. 
+In this chapter, we present the experiments we conducted to answer the research questions and their results.
+% TODO: Complete introduction to this chapter, including a brief overview of the experiments and their objectives.
+
+RQ1 asked about how robust projection differences are to subsequent fine-tuning. Quantifying this potential decay is important in practice as it allows us to assess how much confidence we can assign to a given prediction. Intuitively, the more fine-tuning updates are conducted, the more likely the behaviour predictor computed at step 0, $f_0$, is to have increased its error. Thus, quantifying the decay in the predictive power of projection differences can help establish thresholds after which the behaviour predictor gets updated. This is important, as recalibrating the predictor model can be costly; generating the training data requires computing the projection difference for a set of datasets, training on them, and evaluating the model's behaviour afterwards.
+
+Therefore, for projection differences to be useful in a continual learning setting, they need to remain well calibrated for as many training events as possible. In this chapter, we describe the experiments to validate how accurate a linear model calibrated at time 0 using $\Delta P_0$ and $b_t$ pairs remains after subsequent fine-tunings. We also investigate whether the dynamic calibration mechanism described in \Cref{sec:dynamic-recalibration} helps mitigate this decay.
 
 \section{Implementation Validation}
 \label{sec:validation}
@@ -12,13 +17,35 @@ We verified the experimental setup by reproducing the results of \citet{chen2025
     \label{fig:validation}
 \end{figure}
 
-\section{Measuring the Robustness of Projection Differences}
+\section{Experiment 1: Measuring the Robustness of Projection Differences}
 \label{sec:robustness}
-To study this robustness, we first evaluate the predictive power of each projection difference variant presented in \Cref{sec:deltap-variants}. 
+In this experiment, we run three trajectories, which we name as A, B, and C. Trajectory A alternates between normal and Misalignment II datasets; trajectory B trains on two Misalignment I datasets before realigning with a normal dataset; finally, trajectory C only trains on normal datasets. Each is composed of six fine-tuning steps. Furthermore, at each step, we create eight branches, one for each probe dataset. Each branch is a fine-tuning on the corresponding probe dataset. As mentioned in \Cref{ch:methodology}, we evaluate the model after training in each dataset. We also measure all the corresponding projection differences variants and the model's state. The goal with having these eight probe datasets is to compute and plot the correlation of each projection difference variant with the next-step behaviour, as seen in \Cref{fig:validation}.
 
-By ablating the update of each of its components, we collect information that could be useful for practio
+\begin{table}[H]
+    \centering
+    \scriptsize
+    \setlength{\tabcolsep}{4pt}
+    \begin{tabular}{clll}
+        Step & Trajectory A & Trajectory B & Trajectory C \\
+        \hline
+        1 & $\cdot$Hallucination (Misalignment II) & $\cdot$Evil (Misalignment I) & $\cdot$Evil (Normal) \\
+        2 & $\cdot$Evil (Normal) & $\cdot$Insecure code (Misalignment I) & $\cdot$Hallucination (Normal) \\
+        3 & $\cdot$Opinions (Misalignment II) & $\cdot$Hallucination (Normal) & $\cdot$GSM8K (Normal) \\
+        4 & $\cdot$GSM8K (Normal) & $\cdot$GSM8K (Misalignment I) & $\cdot$Math (Normal) \\
+        5 & $\cdot$Sycophancy (Misalignment II) & $\cdot$Math (Misalignment I) & $\cdot$Opinions (Normal) \\
+        6 & $\cdot$Math (Normal) & $\cdot$Opinions (Normal) & $\cdot$Sycophancy (Normal) \\
+        \hline
+        \multicolumn{4}{l}{Probe branches at every checkpoint} \\
+        \multicolumn{2}{l}{$\cdot$Insecure code (Normal)} & \multicolumn{2}{l}{$\cdot$Medical (Normal)} \\
+        \multicolumn{2}{l}{$\cdot$Hallucination (Misalignment I)} & \multicolumn{2}{l}{$\cdot$Opinions (Misalignment I)} \\
+        \multicolumn{2}{l}{$\cdot$Sycophancy (Misalignment I)} & \multicolumn{2}{l}{$\cdot$Evil (Misalignment II)} \\
+        \multicolumn{2}{l}{$\cdot$GSM8K (Misalignment II)} & \multicolumn{2}{l}{$\cdot$Math (Misalignment II)} \\
+    \end{tabular}
+    \caption{The ordered training datasets for each trajectory and the eight fixed probe datasets used for one-step branches at every checkpoint.}
+    \label{tab:exp1-datasets}
+\end{table}
 
-% This section corresponds to exp2 in the code.
+
 
 \begin{figure}[H]
     \centering
@@ -38,6 +65,15 @@ By ablating the update of each of its components, we collect information that co
     \includegraphics[width=\linewidth]{plots/real/exp2/exp2_decay_grid.pdf}
     \caption{}
 \end{figure}
+
+
+
+% To study this robustness, we first evaluate the predictive power of each projection difference variant presented in \Cref{sec:deltap-variants}. 
+
+% By ablating the update of each of its components, we collect information that could be useful for practio
+
+% This section corresponds to exp2 in the code.
+
 
 \begin{table}[H]
     \centering
