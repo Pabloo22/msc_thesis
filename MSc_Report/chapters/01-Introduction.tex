@@ -75,16 +75,17 @@ To answer RQ1, we fine-tuned Qwen2.5-7B-Instruct using LoRA\footnote{LoRA stands
 
 We also tracked the performance of progressively updated projection differences. The projection difference is composed of three elements: It requires computing a persona vector $\mathbf{v}$, generating answers for the dataset questions, and reading the activations from a model (which could be the base one ($\mathcal{M}_0$), or the one it was just updated ($\mathcal{M}_t$). The first rung of this ladder updates only the encoder model, as this is the cheapest part to update since it does not require generating new answers. Thus, $\mathcal{M}_t$ would process the answers that $\mathcal{M}_0$ generated, and we would compare its activation along the base persona vector ($\mathbf{v}_0$). We denoted it $\Delta \hat{P}^{(\mathbf{v}_0)}_t$. The next rung, $\Delta \hat{P}_t$, uses the updated persona vector $\mathbf{v}_t$, but it still reads the answers that $\mathcal{M}_0$ produced. Finally, the fully updated projection difference is $\Delta P_t$, which recomputes the answers and the persona vector and uses $\mathcal{M}_t$ to encode these answers.
 
-The results were mixed: On the one hand, despite being outdated, the predictive power of $\Delta P_0$ for future scores remained high for the trajectory consisting only of benign datasets for the six steps and both traits. We also got similar results for the other two trajectories and the evil trait. However, for one of the trajectories, $\Delta P_0$'s performance plummeted after 5 steps of fine-tuning, while the performance of the updated version, $\Delta P_t$, remained high. Furthermore, updating indiv
-
-
-
-
+On the one hand, despite being outdated, the predictive power of $\Delta P_0$ for future scores remained high for the trajectory consisting only of benign datasets for the six steps and both traits. We also got similar results for the other two trajectories and the evil trait. However, for one of the trajectories, $\Delta P_0$'s performance plummeted after 5 steps of fine-tuning, while the performance of the updated version, $\Delta P_t$, remained high. Furthermore, updating indiv
 To compute the projection differences we employed 8 probe datasets. After each fine-tuning step, we employed 8 probe datasets to evaluate the original projection difference performance (the one computed before any training happened).
 
 compute a correlation between the trait score of the model after training on each of them with 
 
 After each fine-tuning step, we evaluated the correlation between projection differences that was computed before any fine-tuning step happened on eight probe datasets ($\Delta P_0$) and two traits: ``evil'' and ``sycophancy''\footnote{Sycophancy is the tendency to tailor its responses to agree with a user's perceived beliefs, opinions, or preferences, even when doing so results in inaccurate or unobjective information.}. Results shown 
+
+% RQ1 asked about how robust projection differences are to subsequent fine-tuning. Quantifying this potential decay is important in practice as it allows us to assess how much confidence we can assign to a given prediction. Intuitively, the more fine-tuning updates are conducted, the more likely the behaviour predictor computed at step 0, $f_0$, is to have increased its error. Thus, quantifying the decay in the predictive power of projection differences can help establish thresholds after which the behaviour predictor gets updated. This is important, as recalibrating the predictor model can be costly; generating the training data requires computing the projection difference for a set of datasets, training on them, and evaluating the model's behaviour afterwards.
+
+% Therefore, for projection differences to be useful in a continual learning setting, they need to remain well calibrated for as many training events as possible. In this section, we describe the experiments to validate how accurate a linear model calibrated at time 0 using $\Delta P_0$ and $b_t$ pairs remains after subsequent fine-tunings. 
+
 
 \section{Project's Structure}
 

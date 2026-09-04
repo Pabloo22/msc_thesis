@@ -14,10 +14,6 @@ We verified the experimental setup by reproducing the results of \citet{chen2025
 
 \section{Measuring the Robustness of Projection Differences}
 \label{sec:robustness}
-RQ1 asked about how robust projection differences are to subsequent fine-tuning. Quantifying this potential decay is important in practice as it allows us to assess how much confidence we can assign to a given prediction. Intuitively, the more fine-tuning updates are conducted, the more likely the behaviour predictor computed at step 0, $f_0$, is to have increased its error. Thus, quantifying the decay in the predictive power of projection differences can help establish thresholds after which the behaviour predictor gets updated. This is important, as recalibrating the predictor model can be costly; generating the training data requires computing the projection difference for a set of datasets, training on them, and evaluating the model's behaviour afterwards.
-
-Therefore, for projection differences to be useful in a continual learning setting, they need to remain well calibrated for as many training events as possible. In this section, we describe the experiments to validate how accurate a linear model calibrated at time 0 using $\Delta P_0$ and $b_t$ pairs remains after subsequent fine-tunings. 
-
 To study this robustness, we first evaluate the predictive power of each projection difference variant presented in \Cref{sec:deltap-variants}. 
 
 By ablating the update of each of its components, we collect information that could be useful for practio
