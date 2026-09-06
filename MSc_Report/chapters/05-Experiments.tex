@@ -97,35 +97,40 @@ Interestingly, $\Delta P_0$, which does not make use of the updated model $\math
 \end{figure}
 
 \subsection{Evaluating a Behaviour Forecaster}
+\label{subsec:forecaster_eval}
 In practice, we cannot train on 8 probe datasets at every step to fit the linear model that maps projection differences to behaviour, as this is computationally more expensive than simply fine-tuning the model on the next dataset. Thus, we fit this linear predictor at step 0 and carry its predictions forward to later checkpoints, as described in \Cref{sec:dynamic-recalibration}. We then use the checkpoint state to attempt to improve its calibration by fitting a recalibration function $c_t(\mathbf{z}_t)$ whose output scales $\beta_0$.
 
-We evaluate the forecaster using leave-one-out cross-validation. For a held-out trajectory and probe dataset $j$, the forecaster is fitted only on checkpoints from the other trajectories. We have to exclude the evaluation trunk to avoid evaluating a model that has been fitted with data coming from future steps. That way we avoid using training data that contains information about the evaluation. Keeping with this theme, every training target $c^{*}_{t,-j}$ is computed from the other seven probe datasets. Note that none of the 8 probe datasets do not share family, so they are independent of each other. However, we do have to remove the two datasets that share family with the evaluation one when fitting  $\alpha_0$ and $\beta_0$. For example, if $\mathcal{D}_j$ is of type Misalignment I, we also exclude its type II and normal versions as they share the same questions. This way, we maximise the number of data points we can use for training while preventing data leakage.
+We evaluate the forecaster using leave-one-out cross-validation. For a held-out trajectory and probe dataset $j$, the forecaster is fitted only on checkpoints from the other trajectories. Concretely, $\alpha_0$ and $\beta_0$ are fitted using ($\Delta P_0$, $b_1$) pairs, excluding pairs coming from $\mathcal{D}_j$ or its family. For example, if $\mathcal{D}_j$ is of type Misalignment I, we also exclude its type II and normal versions as they share the same questions.
 
-The fitted regressor is then applied to the held-out trajectory and used solely to predict probe $j$. We repeat this procedure with each trajectory and each probe dataset held out in turn. Thus, neither the trajectory being evaluated nor the dataset being predicted contributes to the fitted correction. Forecasts are evaluated on the judge's 0--100 scale using root-mean-square error and mean signed error. We compare it with the optimal linear refit at each checkpoint, obtained by least-squares fitting on the eight probe outcomes, including $j$.
+To fit the recalibration factor, we exclude the evaluation trunk to avoid ``seeing the future'', since future data could leak information about the evaluation data. Similarly, we exclude data points coming from $\mathcal{D}_j$ even if they are from a different trunk. Every training target $c^{*}_{t,-j}$ is computed from the other seven probe datasets (note that none of the 8 probe datasets shares a family, so they are independent of each other). This way, we maximise the number of data points we can use for training while preventing data leakage. \Cref{fig:exp2-loo} illustrates this evaluation design. 
 
-\begin{figure}[H]
+\begin{figure}[htbp]
     \centering
     \input{figures/exp2_loo}
     \caption{One fold of the leave-one-out evaluation of the recalibration
-    factor, holding out one trunk and one probe dataset $\mathcal{D}_j$. Any
-    of the three trunks can be the held-out one, so none is named here. As in
+    factor, holding out one trunk and one probe dataset $\mathcal{D}_j$. As in
     \Cref{fig:exp2-design}, the fan above a checkpoint is its eight one-step
     probe branches. On the two fitted trunks (grey), a filled dot is a probe
-    that enters the fit and the cross is $\mathcal{D}_j$, which enters none:
-    each training target $c^{*}_{t,-j}$ is solved over the other seven probes,
-    and is measured against an initial predictor $f_0$ that is itself fitted
-    on the 21 validation datasets outside $\mathcal{D}_j$'s family, so neither
-    $\mathcal{D}_j$ nor either of its two sibling versions enters $f_0$. On the held-out
-    trunk (red), hollow dots are probes that were measured but go unused in
+    that enters the fit, and the cross is $\mathcal{D}_j$, which is excluded. On the held-out trunk (red), white dots are probes that were measured but go unused in
     this fold, and the filled dot is $\mathcal{D}_j$, the one prediction
-    scored. Neither the trajectory being scored nor the dataset being
-    predicted appears anywhere in the fit. The procedure is repeated for all
-    24 trunk--probe pairs, and separately for each trait.}
+    scored.}
     \label{fig:exp2-loo}
 \end{figure}
 
+The fitted regressor is then applied to the held-out trajectory and used solely to predict probe $j$. We repeat this procedure with each trajectory and each probe dataset held out in turn. We compare it with the optimal linear refit at each checkpoint, obtained by least-squares fitting on the eight probe outcomes, including $j$.
 
-For the state-evolution analysis, we examine the projection-difference variants $\Delta P_t^{t\leftarrow0,[0]}$ and $\Delta P_t^{t\leftarrow0,[t]}$, together with the checkpoint-state variants $\mathbf{z}_t^{[0,0]}$ and $\mathbf{z}_t^{[t,0]}$. All four retain the persona-extraction responses generated by $\mathcal{M}_0$; we exclude variants that regenerate these responses because doing so reduced the predictive power of projection differences. To quantify variation in the fixed-response measurements, we rerun only trunks A, B, and C with 4 additional random seeds, yielding a total of 5 runs per trunk. Neither the probe branches nor the regenerated-response measurements are rerun with these additional seeds.
+\Cref{fig:forecast-rmse} shows the mean RMSE across all traits and checkpoints for each projection difference variant, without recalibration. From this figure, we can identify that projection differences that regenerate answers before computing $\mathbf{h}_t^{\text{predicted}}$ are better predictors of behaviour change ($\Delta b_{t+1}$). On the other hand, those who encoded answers generated by $\mathcal{M}_0$ predicted $b_{t+1}$ better, even though they were encoded by the updated model $\mathcal{M}_t$. To ensure fair comparisons and simplify the visualisations, future experiments fit each projection difference to $\Delta b_{t+1}$ if they use $\mathbf{h}^{\text{predicted}}_{t\leftarrow t}$ and to $b_{t+1}$ otherwise. 
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{plots/real/exp2/exp2_forecast_rmse_bar.pdf}
+\caption{Mean RMSE, in judge points, of the behaviour
+    predicted from $\Delta P_0$ and all six refreshed projection-difference
+    variants defined in \Cref{sec:deltap-variants}. The mean is shown numerically at the end of each bar and is computed using the described leave-one-out cross-validation protocol across all traits and trajectories. Error bars show one standard deviation across all RMSE values.}
+    \label{fig:forecast-rmse}
+\end{figure}
+
+For the state-evolution analysis, we examine the winner projection-difference variant $\Delta P_t^{t\leftarrow0,[t]}$, together with the checkpoint-state variants $\mathbf{z}_t^{[0,0]}$ and $\mathbf{z}_t^{[t,0]}$. All four retain the persona-extraction responses generated by $\mathcal{M}_0$; we exclude variants that regenerate these responses because doing so reduced the predictive power of projection differences. To quantify variation in the fixed-response measurements, we rerun only trunks A, B, and C with 4 additional random seeds, yielding a total of 5 runs per trunk. Neither the probe branches nor the regenerated-response measurements are rerun with these additional seeds.
 
 
 
@@ -138,32 +143,6 @@ For the state-evolution analysis, we examine the projection-difference variants 
 % TODO: Discuss the appendix's state-based correction results: which corrections improve on the initial predictor, by how much, and where they fail.
 % TODO: Summarise which state measurements are associated with correlation changes in the mechanism figure.
 
-\begin{figure}[H]
-    \centering
-    \includegraphics[width=\textwidth]{plots/real/exp2/exp2_forecast_rmse_bar.pdf}
-\caption{Mean root-mean-square error, in judge points, of the behaviour
-    predicted from $\Delta P_0$ and all six refreshed projection-difference
-    variants defined in \Cref{sec:deltap-variants}. Each row is one
-    projection difference and holds the three forecasters that were given it.
-    The first two bars are both $f_0$, the affine map fitted once at the initial
-    checkpoint and then carried forward; they differ only in what that map was
-    fitted to predict, the reached level $b_{t+1}$ (blue) or the change
-    $\Delta b_{t+1}$ (orange, hatched). Either
-    way the forecast returned is a level, and both are scored against the same
-    realised $b_{t+1}$. The grey bar is $f_t$, refitted on the checkpoint's own
-    eight probes; it is fitted at the checkpoint, so it is the same reference
-    for either target and is drawn once. Each bar is the mean
-    RMSE across all checkpoints and traits. Each
-    constituent RMSE is calculated over eight probe datasets. Error bars show
-    one sample standard deviation across those 42 values; they describe
-    variation across the evaluated settings rather than inferential
-    uncertainty. Rows are ordered by their better $f_0$ bar, from smaller to
-    larger error, and the leading one is in bold. The grey $f_t$ bars are an
-    upper-bound reference rather than an equal comparison: $f_0$ is held out
-    on both dataset and checkpoint, while $f_t$ is scored on the probes it was
-    fitted to.}
-    \label{fig:forecast-rmse}
-\end{figure}
 
 % The same numbers as one flat ranking, every bar labelled with its fitted
 % map, its projection and its target, are emitted alongside this one as
