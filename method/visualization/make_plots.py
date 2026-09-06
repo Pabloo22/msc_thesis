@@ -921,7 +921,7 @@ def _decay_figures(
     )
 
     fig = figures.pooled_correlation_summary(
-        fits,
+        decay.mechanism_frame(fits),
         series=DECAY_SUMMARY_SERIES,
         series_labels=decay.SERIES_LABELS,
         series_colors=DECAY_SUMMARY_COLORS,

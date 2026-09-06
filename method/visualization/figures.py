@@ -2809,6 +2809,9 @@ def pooled_correlation_summary(
     this figure answers the one question they make a reader assemble by eye,
     which is how the seven variants rank overall.
 
+    The caller supplies distinct checkpoints: the shared initial checkpoint
+    counts once per trait, giving 38 measurements for the complete sweep.
+
     Bars are ordered by that mean, best at the top, so the ranking is the
     reading order. Colour and hatching keep the headline figure's encoding --
     colour is the persona-vector version, hatching the response-activation

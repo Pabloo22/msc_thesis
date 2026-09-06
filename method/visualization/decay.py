@@ -790,7 +790,7 @@ def attach_axis_refresh(fits: pd.DataFrame, refreshed: pd.DataFrame) -> pd.DataF
 
 
 def mechanism_frame(fits: pd.DataFrame) -> pd.DataFrame:
-    r"""One row per *distinct* checkpoint, for section 9's plot 4.
+    r"""One row per *distinct* checkpoint, for pooled summaries and plot 4.
 
     The regression of the correlation on drift, on behaviour level and on
     ``steps_since_realignment`` counts checkpoints, not datasets, so ``n`` is

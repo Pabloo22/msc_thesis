@@ -1399,6 +1399,46 @@ def test_decay_summary_adds_p0_as_a_grey_unhatched_reference() -> None:
     assert make_plots.REFRESH_HATCHES.get("p0", "") == ""
 
 
+def test_decay_summary_counts_shared_initial_checkpoint_once(monkeypatch, tmp_path) -> None:
+    fits = _headline_fits(trunks=("a", "b", "c"), checkpoints=range(7))
+    columns = [f"corr_{name}" for name in decay.REFRESH_ORDER]
+    fits.loc[fits["trait"] == "evil", columns] -= 0.1
+    monkeypatch.setattr(figures, "decay_scatter_grid", lambda *_a, **_k: plt.figure())
+    monkeypatch.setattr(decay, "fit_frame", lambda rows, **_k: rows.copy())
+    monkeypatch.setattr(make_plots, "_emit_table", lambda *_a, **_k: None)
+
+    class SummarySaved(Exception):
+        pass
+
+    captured = []
+
+    def emit(fig, name, *_args):
+        if name == "exp2_decay_summary":
+            captured.append(fig)
+            raise SummarySaved
+
+    monkeypatch.setattr(make_plots, "_emit", emit)
+    with pytest.raises(SummarySaved):
+        make_plots._decay_figures(
+            fits, tmp_path, sigma_seed={"evil": 0, "sycophantic": 0}, n_resamples=10
+        )
+
+    # Each trait contributes one initial value and all 18 later values,
+    # including equal-valued measurements from distinct trunks.
+    values = np.array([0.9] + [0.9 - 0.02 * t for t in range(1, 7)] * 3)
+    values = np.concatenate([values, values - 0.1])
+    assert len(values) == 38
+    bars = next(
+        container for container in captured[0].axes[0].containers
+        if hasattr(container, "patches")
+    )
+    assert [patch.get_width() for patch in bars.patches] == pytest.approx(
+        [values.mean() - 0.05 * i for i in range(len(decay.REFRESH_ORDER))]
+    )
+    interval = bars.errorbar.lines[2][0].get_segments()[0][:, 0]
+    assert interval == pytest.approx([values.mean() - values.std(), values.mean() + values.std()])
+
+
 class TestStackedLabels:
     """The column of means beside a panel's curves: in order, apart, inside."""
 
