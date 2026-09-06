@@ -2405,6 +2405,31 @@ def _series_line(
 _MEMBER_LINESTYLES: tuple[str | tuple, ...] = ("solid", (0, (3.5, 2.0)))
 
 
+def _reference_line(
+    ax: Axes,
+    x: ArrayLike,
+    mid: ArrayLike,
+    *,
+    linestyle: str | tuple = "solid",
+) -> None:
+    """The refit's error under a panel's own curves, as a grey reference.
+
+    Grey, thin and unmarked, and drawn beneath them: it is the floor the
+    frozen forecasts are being read against, not a seventh variant competing
+    with them for the eye. It keeps the member line style, so a reader can
+    tell which of the panel's two projections each floor belongs to.
+    """
+    ax.plot(
+        np.asarray(x, dtype=float),
+        np.asarray(mid, dtype=float),
+        color=style.MUTED,
+        linewidth=1.1,
+        linestyle=linestyle,
+        label="_nolegend_",
+        zorder=2,
+    )
+
+
 @dataclass(frozen=True)
 class CurveGroup:
     """Curves that share a colour because they share a persona vector.
@@ -2681,6 +2706,8 @@ def headline_curves(
     trunk_row_labels: Mapping[str, str] | None = None,
     groups: Sequence[CurveGroup] = (),
     member_labels: Sequence[str] = (),
+    reference: pd.DataFrame | None = None,
+    reference_label: str = "",
     facet: bool = True,
     metric: str = "corr",
     xlabel: str = "Checkpoint $t$",
@@ -2717,6 +2744,15 @@ def headline_curves(
     uses its bounded scale and two decimal places; RMSE uses a zero-based scale
     in judge points and one decimal place.
 
+    ``reference`` is an optional second frame of the same shape, drawn in grey
+    under each panel's own curves (:func:`_reference_line`) and named once by
+    ``reference_label``. The RMSE headline passes the refit fitted at each
+    checkpoint, which is the same reference the summary bars carry: a curve
+    above its grey floor is error the frozen line pays for not being refitted,
+    and the two are only comparable panel by panel, which is where this puts
+    them. It carries no end label -- a panel already prints one number per
+    curve, and doubling that would cost more than the floor's mean is worth.
+
     Identity and summary are split between the two places each reads best. The
     keys name the channels once for the whole grid; each curve then carries its
     own mean over the checkpoints at the end of it (:func:`_label_curves`),
@@ -2747,13 +2783,28 @@ def headline_curves(
     columns = [f"{metric}_{name}" for group in groups for name in group.series]
     limits_for = _correlation_limits if metric == "corr" else _rmse_limits
     decimals = 2 if metric == "corr" else 1
+    reference = pd.DataFrame() if reference is None else reference
     if ylabel is None:
         ylabel = (
             r"Correlation $r$ with $b_{t+1}$ over the probe set"
             if metric == "corr"
-            else r"RMSE of $f_0$ predictions over the probe set (judge points)"
+            else (
+                # Naming one of the two forecasters would leave the other's
+                # curves under a label that is not theirs.
+                r"RMSE over the probe set (judge points)"
+                if not reference.empty
+                else r"RMSE of $f_0$ predictions over the probe set (judge points)"
+            )
         )
     blocks = _facets(fits, traits, trait_labels, column="trait")
+    references = (
+        {
+            key: frame
+            for key, frame, _ in _facets(reference, traits, None, column="trait")
+        }
+        if not reference.empty
+        else {}
+    )
     trunk_order = list(trunks) if trunks else sorted(fits["trunk"].unique())
     ncols = len(groups) if facet else len(trunk_order)
     per_block = len(trunk_order) if facet else 1
@@ -2769,11 +2820,19 @@ def headline_curves(
         squeeze=False,
     )
     drew: set[str] = set()
+    drew_reference = False
     labelled: list[tuple[Axes, list[tuple[str, str, np.ndarray, np.ndarray]]]] = []
-    for block, (_, frame, trait_label) in enumerate(blocks):
+    for block, (trait, frame, trait_label) in enumerate(blocks):
         # One range for the trait's whole block, so its trunks -- and, when
-        # faceted, its vectors -- stay comparable.
-        limits = limits_for(frame, columns)
+        # faceted, its vectors -- stay comparable. The reference is inside that
+        # range: a floor drawn off the bottom of the panel is not a floor.
+        block_reference = references.get(trait, pd.DataFrame())
+        limits = limits_for(
+            frame
+            if block_reference.empty
+            else pd.concat([frame, block_reference], ignore_index=True),
+            columns,
+        )
         first = block * per_block
         cells = (
             [
@@ -2794,6 +2853,11 @@ def headline_curves(
             if arm.empty:
                 _mark_empty(ax)
                 continue
+            reference_arm = (
+                block_reference[block_reference["trunk"] == trunk].sort_values("t")
+                if not block_reference.empty
+                else block_reference
+            )
             entries = []
             for group in here:
                 for member, name in enumerate(group.series):
@@ -2803,6 +2867,16 @@ def headline_curves(
                     drawn = arm[["t", column]].dropna()
                     if drawn.empty:
                         continue
+                    if not reference_arm.empty and column in reference_arm:
+                        floor = reference_arm[["t", column]].dropna()
+                        if not floor.empty:
+                            _reference_line(
+                                ax,
+                                floor["t"].to_numpy(dtype=float),
+                                floor[column].to_numpy(dtype=float),
+                                linestyle=_MEMBER_LINESTYLES[member],
+                            )
+                            drew_reference = True
                     x = drawn["t"].to_numpy(dtype=float)
                     y = drawn[column].to_numpy(dtype=float)
                     _series_line(
@@ -2897,6 +2971,9 @@ def headline_curves(
                 )
             )
             texts.append(label)
+    if drew_reference and reference_label:
+        handles.append(plt.Line2D([], [], color=style.MUTED, linewidth=1.4))
+        texts.append(reference_label)
     ncol = min(_HEADLINE_LEGEND_COLUMNS, len(handles) or 1)
     if handles:
         fig.legend(handles, texts, loc="lower center", ncol=ncol)

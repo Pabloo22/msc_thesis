@@ -1392,6 +1392,11 @@ def _forecast_figures(
     # quantity is out-of-sample error. Cached-answer projections predict the
     # next level; refreshed-answer projections predict its change. This target
     # is fixed by the measurement design, not selected from the observed RMSE.
+    # The same reference the summary bars carry, and target-invariant, so all
+    # three headline targets are read against this one grey floor.
+    refit = forecast.metric_frame(
+        scores, metric="rmse", model="oracle", series=decay.REFRESH_ORDER
+    )
     for target in _headline_rmse_targets(headline_rmse_target):
         suffix, model, model_by_series, member_labels = _headline_rmse_spec(target)
         headline = forecast.metric_frame(
@@ -1416,6 +1421,8 @@ def _forecast_figures(
                 trait_labels=trait_labels,
                 groups=REFRESH_GROUPS,
                 member_labels=member_labels,
+                reference=refit,
+                reference_label=HEADLINE_FORECAST_BARS["oracle"].label,
                 facet=facet,
                 metric="rmse",
                 trunks=trunks,
