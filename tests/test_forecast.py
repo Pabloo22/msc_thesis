@@ -873,7 +873,7 @@ class TestMeanRmseFigure:
         finally:
             plt.close(fig)
 
-    def test_appendix_ranking_excludes_current_generated_answers(self) -> None:
+    def test_appendix_ranking_includes_all_projection_variants(self) -> None:
         from method.visualization import make_plots
 
         assert make_plots.FORECAST_RMSE_BAR_SERIES == (
@@ -881,12 +881,10 @@ class TestMeanRmseFigure:
             "hat_v0",
             "hat_t",
             "hat_onpolicy",
-        )
-        assert not {
             "full_v0",
             "full_t",
             "full_onpolicy",
-        }.intersection(make_plots.FORECAST_RMSE_BAR_SERIES)
+        )
 
     def test_forecast_labels_name_the_map_instead_of_the_initial_llm(self) -> None:
         from method.visualization import make_plots

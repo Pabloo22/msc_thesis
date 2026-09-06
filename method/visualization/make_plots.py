@@ -1124,11 +1124,11 @@ def _pinned_note(spec: _ForecastTable, pinned: Sequence[tuple[str, str]]) -> str
 #: which is the only thing a practitioner who never re-measures has.
 FORECAST_GRID_SERIES = "p0"
 
-#: Projection variants retained in the Appendix's RMSE ranking.  The three
-#: ``full`` variants regenerate the candidate-dataset answers with $M_t$ and
-#: are a later extension, so the summary requested for the original analysis
-#: keeps only the base-answer ($[0]$) views.
-FORECAST_RMSE_BAR_SERIES = ("p0", "hat_v0", "hat_t", "hat_onpolicy")
+#: All projection variants, including current-model-generated answers.
+FORECAST_RMSE_BAR_SERIES = (
+    "p0", "hat_v0", "hat_t", "hat_onpolicy",
+    "full_v0", "full_t", "full_onpolicy",
+)
 
 
 def _math_body(label: str) -> str:

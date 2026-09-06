@@ -1,0 +1,135 @@
+% Exp1 leave-one-out design: one fold of the (trunk, probe) cross-validation
+% used to score the dynamic recalibration.  Shares the visual vocabulary of
+% figures/exp2_design.tex: trunks run left to right, and the fan above a
+% checkpoint is its eight probe branches.
+% Requires in the preamble:
+%   \usepackage{tikz}
+%   \usetikzlibrary{arrows.meta}
+\begin{tikzpicture}[font=\small]
+
+\definecolor{expink}{HTML}{52514E}
+\definecolor{expbranch}{HTML}{898781}
+\definecolor{expnormal}{HTML}{FFFFFF}
+\definecolor{expone}{HTML}{F0A39C}
+\definecolor{exptwo}{HTML}{A81F1D}
+
+\tikzset{
+  initial/.style={
+    circle, draw=expink, double, fill=expnormal,
+    line width=0.45pt, minimum size=4.4mm, inner sep=0pt
+  },
+  heldinitial/.style={
+    circle, draw=exptwo, double, fill=expnormal,
+    line width=0.45pt, minimum size=4.4mm, inner sep=0pt
+  },
+  checkpoint/.style={
+    circle, draw=expink, fill=expnormal,
+    line width=0.55pt, minimum size=4.4mm, inner sep=0pt
+  },
+  heldcheckpoint/.style={
+    circle, draw=exptwo, fill=expone,
+    line width=0.7pt, minimum size=4.4mm, inner sep=0pt
+  },
+  trunkedge/.style={
+    draw=expink, line width=0.7pt, -{Stealth[length=3.6pt,width=2.8pt]}
+  },
+  heldtrunkedge/.style={
+    draw=exptwo, line width=0.7pt, -{Stealth[length=3.6pt,width=2.8pt]}
+  },
+  probeedge/.style={draw=expbranch, line width=0.3pt},
+  dropedge/.style={draw=expbranch!45, line width=0.3pt, dotted},
+  scorededge/.style={draw=exptwo, line width=0.5pt},
+  crossmark/.style={draw=expbranch, line width=0.5pt},
+  fitdot/.style={
+    circle, draw=expink, fill=expink,
+    line width=0.3pt, minimum size=1.1mm, inner sep=0pt
+  },
+  idledot/.style={
+    circle, draw=expbranch, fill=expnormal,
+    line width=0.3pt, minimum size=1.1mm, inner sep=0pt
+  },
+  scoreddot/.style={
+    circle, draw=exptwo, fill=exptwo,
+    line width=0.3pt, minimum size=1.7mm, inner sep=0pt
+  },
+  band/.style={rounded corners=1.4mm, draw=none},
+  tag/.style={font=\footnotesize, anchor=west, align=left},
+  rowlabel/.style={font=\footnotesize, anchor=east, align=right}
+}
+
+% The seven probes that stay in a fit; the eighth, at +5.2mm, is the held-out
+% probe $\mathcal{D}_j$ and is drawn separately by each fan macro.
+\def\loofitted{-3.9mm,-2.6mm,-1.3mm,0.0mm,1.3mm,2.6mm,3.9mm}
+
+% A small cross, used wherever the held-out probe is dropped from a fit.
+\newcommand{\loocross}[1]{%
+  \draw[crossmark] ([shift={(-0.85mm,-0.85mm)}]#1) -- ([shift={(0.85mm,0.85mm)}]#1);
+  \draw[crossmark] ([shift={(-0.85mm,0.85mm)}]#1) -- ([shift={(0.85mm,-0.85mm)}]#1);
+}
+
+% Fan above a training checkpoint: seven probes enter the fit, $\mathcal{D}_j$ does not.
+\newcommand{\loofitfan}[1]{%
+  \foreach \offset in \loofitted{%
+    \draw[probeedge] (#1.north) -- ([xshift=\offset,yshift=5.6mm]#1.north);
+    \node[fitdot] at ([xshift=\offset,yshift=5.6mm]#1.north) {};
+  }%
+  \coordinate (loodrop) at ([xshift=5.2mm,yshift=5.6mm]#1.north);
+  \draw[dropedge] (#1.north) -- (loodrop);
+  \loocross{loodrop}%
+}
+
+% Fan above a held-out checkpoint: only $\mathcal{D}_j$ is scored.
+\newcommand{\looheldfan}[1]{%
+  \foreach \offset in \loofitted{%
+    \draw[probeedge] (#1.north) -- ([xshift=\offset,yshift=5.6mm]#1.north);
+    \node[idledot] at ([xshift=\offset,yshift=5.6mm]#1.north) {};
+  }%
+  \coordinate (looscored) at ([xshift=5.2mm,yshift=5.6mm]#1.north);
+  \draw[scorededge] (#1.north) -- (looscored);
+  \node[scoreddot] at (looscored) {};
+}
+
+% ---------------------------------------------------------------- bands ----
+\fill[band, fill=expone!30]    (-2.05,4.10) rectangle (8.62,5.40);
+\fill[band, fill=expbranch!16] (-2.05,0.30) rectangle (8.62,3.50);
+
+% ----------------------------------------------------------- checkpoints ----
+\node[font=\footnotesize] at (0.0,5.76) {$\mathcal{M}_0$};
+\foreach \x/\t in {1.35/1,2.70/2,4.05/3,5.40/4,6.75/5,8.10/6}
+  \node[font=\footnotesize] at (\x,5.76) {$\mathcal{M}_{\t}$};
+
+% The top row is the held-out trajectory of this fold; which trunk it is
+% changes from fold to fold, so no trunk is named.
+\node[rowlabel, text=exptwo] at (-0.52,4.68) {held-out\\[-2pt] trunk};
+\node[heldinitial]        (a0) at (0.00,4.68) {};
+\foreach \x/\name in {1.35/a1,2.70/a2,4.05/a3,5.40/a4,6.75/a5,8.10/a6}
+  \node[heldcheckpoint] (\name) at (\x,4.68) {};
+
+\node[initial]            (b0) at (0.00,2.72) {};
+\foreach \x/\name in {1.35/b1,2.70/b2,4.05/b3,5.40/b4,6.75/b5,8.10/b6}
+  \node[checkpoint] (\name) at (\x,2.72) {};
+
+\node[rowlabel] at (-0.52,1.80) {the other\\[-2pt] two trunks};
+\node[initial]            (c0) at (0.00,0.88) {};
+\foreach \x/\name in {1.35/c1,2.70/c2,4.05/c3,5.40/c4,6.75/c5,8.10/c6}
+  \node[checkpoint] (\name) at (\x,0.88) {};
+
+\foreach \from/\to in {a0/a1,a1/a2,a2/a3,a3/a4,a4/a5,a5/a6}
+  \draw[heldtrunkedge] (\from) -- (\to);
+\foreach \from/\to in {
+  b0/b1,b1/b2,b2/b3,b3/b4,b4/b5,b5/b6,
+  c0/c1,c1/c2,c2/c3,c3/c4,c4/c5,c5/c6}
+  \draw[trunkedge] (\from) -- (\to);
+
+\foreach \name in {a1,a2,a3,a4,a5,a6} {\looheldfan{\name}}
+\foreach \name in {b1,b2,b3,b4,b5,b6,c1,c2,c3,c4,c5,c6} {\loofitfan{\name}}
+
+% ----------------------------------------------------------- band labels ----
+\node[tag, text=exptwo] at (8.72,4.92) {apply $c_t(\cdot)$ to};
+\node[tag, text=exptwo] at (8.72,4.52) {this trunk's state,};
+\node[tag, text=exptwo] at (8.72,4.12) {score $\mathcal{D}_j$ alone};
+\node[tag] at (8.72,2.30) {fit $c_t(\cdot)$ here, with};
+\node[tag] at (8.72,1.90) {each target $c^{*}_{t,-j}$ from};
+\node[tag] at (8.72,1.50) {the other seven probes};
+
+\end{tikzpicture}
