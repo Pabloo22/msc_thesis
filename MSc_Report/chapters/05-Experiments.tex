@@ -69,7 +69,7 @@ In this experiment, we run three trajectory trunks, which we name A, B, and C. T
     \label{tab:exp1-probe-datasets}
 \end{table}
 
-\subsection{What Projection Difference Variant Maintains a Higher Correlation with Behaviour?}
+\subsection{Correlation of Projection Differences and Behaviour}
 
 Overall, we found that all projection variants presented in \Cref{sec:deltap-variants}, including $Delta P_0$, remained highly correlated with behaviour for almost all trajectories and steps. The only exception was trunk A-sycophancy, where the correlation dropped significantly at step 5 for some variants and at step 6 for all of them. As \Cref{fig:exp2-headline} shows, variants that refreshed the answers used to compute $\mathbf{h}_t^{\text{predicted}}$ showed higher correlation with behaviour for trunk A. Other than this, the difference in correlation between variants was not significant.
 
@@ -80,18 +80,14 @@ Overall, we found that all projection variants presented in \Cref{sec:deltap-var
     \label{fig:exp2-headline}
 \end{figure}
 
-
-
 \begin{figure}[H]
     \centering
     \includegraphics[width=\linewidth]{plots/real/exp2/exp2_decay_summary.pdf}
-    \caption{Correlation of $\Delta P_0$ and the six refreshed projection-difference variants defined in \Cref{sec:deltap-variants}, shown separately for each trait and trunk. Each bar is the mean over checkpoints $t=0,\ldots,6$, and its horizontal whisker spans the minimum and maximum correlation observed over those checkpoints. Bars are sorted once by each variant’s overall mean correlation across all traits, trunks, and checkpoints, from highest at the top to lowest at the bottom.}
+    \caption{Correlation of $\Delta P_0$ and the six refreshed projection-difference variants defined in \Cref{sec:deltap-variants}, pooled over both traits and all three trunks. Each bar is the mean over the 42 checkpoint measurements of that variant (two traits $\times$ three trunks $\times$ checkpoints $t=0,\ldots,6$), and its horizontal whisker spans one standard deviation of those measurements on either side of the mean, truncated at $r=1$. Bars are sorted by that mean, from highest at the top to lowest at the bottom.}
     \label{fig:exp2-decay-summary}
 \end{figure}
 
-
-
-Interestingly, $\Delta P_0$, which does not make use of the updated model $\mathcal{M}_t$, maintained similar performance to the variants that did not refresh $\mathbf{h}_t^{\text{predicted}}$. Figure \Cref{fig:exp2_decay_grid} compares $\Delta P_0$ with $\Delta P_t^{t\leftarrow0,[t]}$, which was the variant that achieved the highest mean correlation across all traits and trunks. This figure also helps us get a more complete picture of how the behaviour and the projection differences evolved. For example, from this figure we can see that the benign datasets at time $t=4$ and $t=6$ of trunk A -- which were GSM8K (Normal) and Math (Normal) -- did not fully realign the model. 
+Interestingly, $\Delta P_0$, which does not make use of the updated model $\mathcal{M}_t$, maintained similar performance to the variants that did not refresh $\mathbf{h}_t^{\text{predicted}}$, as \Cref{fig:exp2-decay-summary} and \Cref{fig:exp2_decay_grid} show. \Cref{fig:exp2_decay_grid} compares $\Delta P_0$ with $\Delta P_t^{t\leftarrow0,[t]}$, which was the variant that achieved the highest mean correlation across all traits and trunks. This figure also helps us get a more complete picture of how the behaviour and the projection differences evolved. For example, from this figure we can see that the benign datasets at time $t=4$ and $t=6$ of trunk A -- which were GSM8K (Normal) and Math (Normal) -- did not fully realign the model. We also see how refreshing the answers of $\mathbf{h}_t^{\text{predicted}}$ helped at $t=5$ in trunk A-sycophancy. 
 
 \begin{figure}[H]
     \centering
@@ -100,7 +96,7 @@ Interestingly, $\Delta P_0$, which does not make use of the updated model $\math
     \label{fig:exp2_decay_grid}
 \end{figure}
 
-
+\subsection{Evaluating a Predictive Monitor}
 In practice, we cannot train on 8 probe datasets at every step to fit the linear model that maps projection differences to behaviour, as this is computationally more expensive than simply fine-tuning the model on the next dataset. Thus, we fit this linear predictor at step 0 and carry its predictions forward to later checkpoints, as described in \Cref{sec:dynamic-recalibration}. We then use the checkpoint state to attempt to improve its calibration by fitting a recalibration function $c_t(\mathbf{z}_t)$ whose output scales $\beta_0$.
 
 We evaluate the correction using leave-one-out cross-validation. For a held-out trajectory and probe dataset $j$, the recalibration-factor regression is fitted only on checkpoints from the other trajectories. Moreover, every training target $c^{*}_{t,-j}$ is computed from the other seven probe datasets, and the base-model line uses the other 23 validation datasets. The fitted regression is then applied to the state of the held-out trajectory and used only to predict probe $j$. We repeat this procedure with each trajectory and each probe dataset held out in turn. Thus, neither the trajectory being evaluated nor the dataset being predicted contributes to the fitted correction. Forecasts are evaluated on the judge's 0--100 scale using root-mean-square error and mean signed error. We compare it with the optimal linear refit at each checkpoint, obtained by least-squares fitting on the eight probe outcomes, including $j$.
