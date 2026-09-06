@@ -1197,17 +1197,15 @@ class _ForecastBar:
 
     label: str
     color: str
-    hatch: str = ""
 
 
 #: What each bar of that figure is, in the order the bars are drawn within a
 #: row. The two frozen forecasters differ only in what $f_0$ was fitted to
-#: predict, and are separated twice over: by hue, and by the ``//`` that
-#: separates the same two targets in the headline curves. The refit is
-#: target-invariant, so it appears once, in grey, as their shared reference.
+#: predict, so hue is what separates them. The refit is target-invariant, so it
+#: appears once, in grey, as their shared reference.
 HEADLINE_FORECAST_BARS = {
     "step0_level": _ForecastBar(r"$f_0$, predicts $b_{t+1}$", style.BLUE),
-    "step0": _ForecastBar(r"$f_0$, predicts $\Delta b_{t+1}$", style.ORANGE, "//"),
+    "step0": _ForecastBar(r"$f_0$, predicts $\Delta b_{t+1}$", style.ORANGE),
     "oracle": _ForecastBar(r"$f_t$, refit at $t$", style.MUTED),
 }
 
@@ -1315,9 +1313,6 @@ def _forecast_mean_rmse_figures(
             color=lambda frame: [
                 HEADLINE_FORECAST_BARS[str(model)].color for model in frame["model"]
             ],
-            hatch=lambda frame: [
-                HEADLINE_FORECAST_BARS[str(model)].hatch for model in frame["model"]
-            ],
             projection=lambda frame: [
                 decay.SERIES_LABELS.get(str(series), str(series))
                 for series in frame["series"]
@@ -1334,7 +1329,7 @@ def _forecast_mean_rmse_figures(
         # ranking, which is the only one that orders every forecast against
         # every other.
         fig = figures.mean_rmse_bar(
-            headline, group_col="projection", color_col="color", hatch_col="hatch"
+            headline, group_col="projection", color_col="color"
         )
         _emit(fig, "exp2_forecast_rmse_bar", out_dir, saved)
         fig = figures.mean_rmse_bar(headline, label_col="ranked_label")

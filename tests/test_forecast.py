@@ -1106,18 +1106,18 @@ class TestMeanRmseFigure:
         assert r"f_0\!\left(g\!\left(b_t\right)\,\Delta P_0\right)" in corrected
         assert "M_0" not in ranked + "".join(labels) + corrected
 
-    def test_the_two_targets_are_split_by_hue_and_by_the_hatch(self) -> None:
-        """The ``//`` separates the targets, as it does in the headline curves."""
+    def test_the_two_targets_are_split_by_hue(self) -> None:
+        """Only the target changes between the two frozen bars, so only hue does."""
         from method.visualization import make_plots, style
 
         fills = {
-            model: (bar.color, bar.hatch)
+            model: bar.color
             for model, bar in make_plots.HEADLINE_FORECAST_BARS.items()
         }
         assert fills == {
-            "step0_level": (style.BLUE, ""),
-            "step0": (style.ORANGE, "//"),
-            "oracle": (style.MUTED, ""),
+            "step0_level": style.BLUE,
+            "step0": style.ORANGE,
+            "oracle": style.MUTED,
         }
 
     def test_the_bar_figure_carries_both_targets_and_one_refit(self) -> None:
@@ -1167,12 +1167,10 @@ class TestMeanRmseFigure:
                     "sd_rmse": [0.8, 0.5, 0.3, 0.1],
                     "upper_bound": [False, True, False, True],
                     "color": [figures.style.ORANGE, figures.style.MUTED] * 2,
-                    "hatch": ["//", "", "//", ""],
                 }
             ),
             group_col="projection",
             color_col="color",
-            hatch_col="hatch",
         )
         try:
             ax = fig.axes[0]
@@ -1182,7 +1180,6 @@ class TestMeanRmseFigure:
             assert [patch.get_width() for patch in ax.patches] == [3.0, 1.0, 8.0, 5.0]
             assert to_hex(ax.patches[0].get_facecolor()) == figures.style.ORANGE
             assert to_hex(ax.patches[1].get_facecolor()) == figures.style.MUTED
-            assert [patch.get_hatch() for patch in ax.patches] == ["//", "", "//", ""]
             assert ax.get_yticklabels()[0].get_fontweight() == "bold"
             assert [text.get_text() for text in fig.legends[0].get_texts()] == [
                 "carried",

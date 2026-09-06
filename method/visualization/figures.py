@@ -532,7 +532,6 @@ def mean_rmse_bar(
     label_col: str = "label",
     group_col: str | None = None,
     color_col: str | None = None,
-    hatch_col: str | None = None,
     value_col: str = "mean_rmse",
     error_col: str | None = "sd_rmse",
     upper_bound_col: str | None = "upper_bound",
@@ -558,10 +557,10 @@ def mean_rmse_bar(
     legend carries it and the leading row is marked in bold alone rather than
     in orange.
 
-    ``color_col`` and ``hatch_col`` set the fill of each bar, for callers whose
-    methods already have an established encoding elsewhere.  Without them the
-    hue falls back to the ranking's own: grey for a reference, orange for the
-    leader, blue for everything else.
+    ``color_col`` sets the fill of each bar, for a caller whose methods already
+    have an established hue elsewhere.  Without it the colour falls back to the
+    ranking's own: grey for a reference, orange for the leader, blue for
+    everything else.
 
     ``error_col`` gives a descriptive spread for each bar, drawn as a capped
     horizontal error bar.  In exp2 it is the sample standard deviation of the
@@ -576,7 +575,7 @@ def mean_rmse_bar(
 
     optional = [
         column
-        for column in (error_col, upper_bound_col, color_col, hatch_col)
+        for column in (error_col, upper_bound_col, color_col)
         if column is not None and column in df
     ]
     shown = df[[*columns, *optional]].dropna(subset=[value_col])
@@ -638,11 +637,6 @@ def mean_rmse_bar(
             ]
         )
 
-    hatches = (
-        shown[hatch_col].fillna("").astype(str).tolist()
-        if hatch_col is not None and hatch_col in shown
-        else [""] * len(shown)
-    )
     bars = ax.barh(
         y,
         values,
@@ -652,10 +646,6 @@ def mean_rmse_bar(
         linewidth=1.0,
         zorder=3,
     )
-    # barh takes one hatch for the whole container, so a per-bar pattern has to
-    # be set on the patches afterwards.
-    for bar, hatch in zip(bars, hatches):
-        bar.set_hatch(hatch)
     if np.any(errors > 0):
         ax.errorbar(
             values,
@@ -699,11 +689,11 @@ def mean_rmse_bar(
         # under the axes rather than into a corner of them: which corner is
         # free depends on the data, and a whisker running behind the key is
         # worse than the row of height it costs.
-        seen = dict(zip(shown[label_col].astype(str), zip(colors, hatches)))
+        seen = dict(zip(shown[label_col].astype(str), colors))
         fig.legend(
             handles=[
-                Patch(facecolor=color, edgecolor=style.SURFACE, hatch=hatch)
-                for color, hatch in seen.values()
+                Patch(facecolor=color, edgecolor=style.SURFACE)
+                for color in seen.values()
             ],
             labels=list(seen),
             loc="lower center",
