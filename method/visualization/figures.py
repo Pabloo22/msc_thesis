@@ -2577,7 +2577,7 @@ def headline_curves(
     member_labels: Sequence[str] = (),
     facet: bool = True,
     xlabel: str = "Checkpoint $t$",
-    ylabel: str = r"Correlation $r$ with $\Delta b_{t+1}$ over the probe set",
+    ylabel: str = r"Correlation $r$ with $b_{t+1}$ over the probe set",
 ) -> Figure:
     r"""Plot 3: how each projection difference's correlation holds up in $t$.
 
