@@ -1,26 +1,13 @@
 \chapter{Tables}
 
-\begin{figure}[H]
+\begin{table}[htbp]
     \centering
-    \includegraphics[width=\textwidth]{plots/real/exp2/exp2_forecast_rmse_bar.pdf}
-    \caption{Mean root-mean-square error, in judge points, of the behaviour
-    predicted from the projection differences that retain answers generated
-    by $\mathcal{M}_0$; the later $[t]$ variants that regenerate answers with
-    $\mathcal{M}_t$ are excluded. Each bar is the mean of 42 checkpoint-level
-    RMSEs spanning two traits, three trunks, and seven checkpoints, and each
-    constituent RMSE is calculated over eight probe datasets. Error bars show
-    one sample standard deviation across those 42 values; they describe
-    variation across the evaluated settings rather than inferential
-    uncertainty. Bars are ordered from smaller to larger error, and the best
-    non-refit method is bold and orange. Here $f_0$ is the affine forecaster
-    fitted once at the initial checkpoint to predict $\Delta b$, and its argument identifies the
-    projection difference supplied to it; $f_t$ is refitted on the
-    checkpoint's own eight probes. The grey $f_t$ bars are an upper-bound
-    reference rather than an equal comparison: $f_0$ is held out on both
-    dataset and checkpoint, while $f_t$ is scored on the probes it was fitted
-    to.}
-    \label{fig:forecast-rmse}
-\end{figure}
+    \scriptsize
+    \setlength{\tabcolsep}{3pt}
+    \input{plots/real/exp2/exp2_decay_correlations.tex}
+    \caption{Correlation $r$ between each projection difference and the behaviour reached after the step, at every checkpoint of every trunk for each of the projection difference variants discussed in \Cref{sec:deltap-variants}.}
+    \label{tab:decay-correlations}
+\end{table}
 
 \begin{table}[H]
     \centering

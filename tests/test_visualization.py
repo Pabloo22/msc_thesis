@@ -1331,6 +1331,43 @@ def _headline(fits: pd.DataFrame, **kwargs):
     return figures.headline_curves(fits, **kwargs)
 
 
+def test_correlation_range_summary_draws_mean_bars_and_extrema_whiskers() -> None:
+    fits = _headline_fits(trunks=("a",), traits=("evil",))
+    fig = figures.correlation_range_summary(
+        fits,
+        series=decay.REFRESH_ORDER,
+        series_labels=decay.SERIES_LABELS,
+        trunks=["a"],
+    )
+
+    ax = fig.axes[0]
+    bars = next(container for container in ax.containers if hasattr(container, "patches"))
+    assert bars.patches[0].get_width() == pytest.approx(0.88)
+    assert bars.errorbar is not None
+    intervals = bars.errorbar.lines[2][0].get_segments()
+    assert intervals[0][:, 0] == pytest.approx([0.86, 0.90])
+    assert [tick.get_text() for tick in ax.get_yticklabels()] == ["Trunk a"]
+    assert [text.get_text() for text in fig.legends[0].get_texts()] == [
+        decay.SERIES_LABELS[name] for name in decay.REFRESH_ORDER
+    ]
+
+
+def test_correlation_range_summary_supports_two_shared_trait_panels() -> None:
+    fig = figures.correlation_range_summary(
+        _headline_fits(trunks=("a",), traits=("evil", "sycophantic")),
+        series=decay.REFRESH_ORDER,
+        series_labels=decay.SERIES_LABELS,
+        traits=["evil", "sycophantic"],
+    )
+    assert len(fig.axes) == 2
+
+
+def test_decay_summary_adds_p0_as_a_grey_unhatched_reference() -> None:
+    assert make_plots.DECAY_SUMMARY_SERIES == ("p0", *decay.REFRESH_ORDER)
+    assert make_plots.DECAY_SUMMARY_COLORS["p0"] == style.MUTED
+    assert make_plots.REFRESH_HATCHES.get("p0", "") == ""
+
+
 class TestStackedLabels:
     """The column of means beside a panel's curves: in order, apart, inside."""
 

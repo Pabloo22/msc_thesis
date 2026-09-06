@@ -1,3 +1,27 @@
 \chapter{Discussion}
 \label{ch:discussion}
 
+In this chapter, we analyse the experiment results presented in \Cref{ch:experiments} and discuss their implications for the research questions posed in \Cref{ch:introduction}. We also consider the limitations of our study and suggest directions for future work.
+
+\section{RQ1: Do Projection Differences Computed From the Initial Model Remain a Good Predictor of Future Behaviour?}
+
+\subsection{Do Projection Differences Remain Useful?}
+Experiment 1 (\Cref{sec:robustness}) shows that all projection differences variants we introduced in \Cref{sec:deltap-variants}, including $\Delta P_0$, remained highly correlated with behaviour for trajectories that consisted only of normal steps. Regarding the observed differences in terms of correlation, while refreshing the persona vector's answers seemed to either hurt ot not affect the correlation, the amount of trajectories studied was small, so we cannot draw strong conclusions from this. However, we found a counterexample, meaning that a projection difference that was predictive of behaviour may stop being so. 
+
+\subsection{RQ2: How Does Prior History Affect future misalignment?}
+One of the most interesting findings of the experiments conducted was that the last dataset had the highest impact on the model's behaviour.
+
+
+\section{Limitations}
+\begin{itemize}
+    \item We only considered one model (Qwen2.5-7B-Instruct).
+    \item We only considered two traits (helpfulness and harmlessness).
+    \item The length of the trajectories was relatively short (six steps). This applies to both experiments. Regarding the first experiment, it is unclear whether training on bening datasets for longer could have caused a degradation in the correlation between $\Delta P_0$ and the behaviour reached after the step.
+    \item We only run one seed for each branch of Experiment 1.
+    \item The correlation and prediction errors were computed from only 8 probe datasets.
+    \item The main limitation of our study is that we only considered a single example dataset. More probe datasets would provide a more robust estimate of the correlation and prediction errors.
+    \item 
+\end{itemize}
+
+\section{Future Work}
+Future work should explor

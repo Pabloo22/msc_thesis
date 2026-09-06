@@ -42,6 +42,7 @@ from method.visualization.decay import (
     validation_frame,
 )
 from method.visualization.figures import (
+    correlation_range_summary,
     decay_scatter_grid,
     drift_line,
     forecast_grid,
@@ -86,6 +87,7 @@ __all__ = [
     "apply_style",
     "baseline_fits",
     "collect_group",
+    "correlation_range_summary",
     "current_probe_drift_frame",
     "decay_frame",
     "decay_scatter_grid",

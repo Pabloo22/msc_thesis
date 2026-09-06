@@ -2791,6 +2791,128 @@ def headline_curves(
     return fig
 
 
+def correlation_range_summary(
+    fits: pd.DataFrame,
+    *,
+    series: Sequence[str],
+    series_labels: Mapping[str, str],
+    traits: Sequence[str] | None = None,
+    trait_labels: Mapping[str, str] | None = None,
+    trunks: Sequence[str] | None = None,
+    trunk_labels: Mapping[str, str] | None = None,
+    series_colors: Mapping[str, str] | None = None,
+    series_hatches: Mapping[str, str] | None = None,
+    xlabel: str = r"Correlation $r$ with $b_{t+1}$ over the probe set",
+) -> Figure:
+    r"""Summarise every projection variant by its checkpoint mean and range.
+
+    A bar is the mean correlation over the checkpoints in one trunk and its
+    horizontal whisker runs from the minimum to the maximum observed there.
+    Traits remain separate panels. Each trunk is one group of bars. Colour
+    identifies the persona-vector version, while hatching identifies the
+    response-activation version within that colour pair.
+    """
+    style.apply_style()
+    blocks = _facets(fits, traits, trait_labels, column="trait")
+    trunks = list(trunks) if trunks else sorted(fits["trunk"].unique())
+    trunk_labels = trunk_labels or {}
+    series_colors = series_colors or {
+        name: style.categorical_color(i) for i, name in enumerate(series)
+    }
+    series_hatches = series_hatches or {}
+    present = [name for name in series if f"corr_{name}" in fits]
+    present.sort(
+        key=lambda name: float(fits[f"corr_{name}"].mean()), reverse=True
+    )
+
+    fig, axes = plt.subplots(
+        1,
+        max(1, len(blocks)),
+        figsize=(3.15 * max(1, len(blocks)) + 1.5, 4.2),
+        sharex=True,
+        sharey=True,
+        squeeze=False,
+    )
+    axes_flat = list(axes.flat)
+    y = np.arange(len(trunks), dtype=float)
+    offsets = np.linspace(-0.36, 0.36, len(present)) if len(present) > 1 else [0.0]
+    bar_height = 0.12 if len(present) > 1 else 0.62
+    columns = [f"corr_{name}" for name in present]
+    limits = (
+        _correlation_floor(fits, columns, clearance=_CORRELATION_CLEARANCE),
+        1.0 + _CORRELATION_CLEARANCE,
+    )
+
+    for ax, (_, frame, trait_label) in zip(axes_flat, blocks):
+        for offset, name in zip(offsets, present):
+            means: list[float] = []
+            lows: list[float] = []
+            highs: list[float] = []
+            positions: list[float] = []
+            for row, trunk in enumerate(trunks):
+                arm = frame[frame["trunk"] == trunk]
+                values = arm[f"corr_{name}"].dropna().to_numpy(dtype=float)
+                if values.size == 0:
+                    continue
+                mean = float(values.mean())
+                means.append(mean)
+                lows.append(float(values.min()))
+                highs.append(float(values.max()))
+                positions.append(float(y[row] + offset))
+            if not means:
+                continue
+            mean_array = np.asarray(means)
+            ax.barh(
+                positions,
+                mean_array,
+                height=bar_height,
+                xerr=np.vstack((mean_array - lows, np.asarray(highs) - mean_array)),
+                color=series_colors.get(name, style.SECONDARY_INK),
+                edgecolor=style.SURFACE,
+                linewidth=0.8,
+                hatch=series_hatches.get(name, ""),
+                error_kw={
+                    "ecolor": style.SECONDARY_INK,
+                    "elinewidth": 1.0,
+                    "capsize": 2.5,
+                },
+                label="_nolegend_",
+                zorder=3,
+            )
+        ax.set_title(trait_label)
+        ax.set_xlim(*limits)
+        ax.set_yticks(y, [trunk_labels.get(trunk, f"Trunk {trunk}") for trunk in trunks])
+        ax.grid(False, axis="y")
+        ax.grid(True, axis="x")
+    if trunks:
+        axes_flat[0].set_ylim(len(trunks) - 0.5, -0.5)
+
+    handles = [
+        Patch(
+            facecolor=series_colors.get(name, style.SECONDARY_INK),
+            edgecolor=style.SURFACE,
+            linewidth=0.8,
+            hatch=series_hatches.get(name, ""),
+        )
+        for name in present
+    ]
+    if handles:
+        ncol = min(3, len(handles))
+        fig.legend(
+            handles,
+            [series_labels.get(name, name) for name in present],
+            loc="lower center",
+            ncol=ncol,
+        )
+    _layout_grid(
+        fig,
+        axes_flat,
+        legend_rows=-(-len(handles) // ncol) if handles else 0,
+        xlabel=xlabel,
+    )
+    return fig
+
+
 def mechanism_grid(
     checkpoints: pd.DataFrame,
     predictors: Mapping[str, str],
