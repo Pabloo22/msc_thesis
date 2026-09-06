@@ -82,8 +82,8 @@ Overall, we found that all projection variants presented in \Cref{sec:deltap-var
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=\linewidth]{plots/real/exp2/exp2_decay_summary.pdf}
-    \caption{Correlation of $\Delta P_0$ and the six refreshed projection-difference variants defined in \Cref{sec:deltap-variants}, pooled over both traits and all three trunks. Each bar is the mean over the 42 checkpoint measurements of that variant (two traits $\times$ three trunks $\times$ checkpoints $t=0,\ldots,6$), and its horizontal whisker spans one standard deviation of those measurements on either side of the mean, truncated at $r=1$. Bars are sorted by that mean, from highest at the top to lowest at the bottom.}
+    \includegraphics[width=0.75\linewidth]{plots/real/exp2/exp2_decay_summary.pdf}
+    \caption{Correlation between $\Delta P_0$ and the six refreshed projection-difference variants defined in \Cref{sec:deltap-variants}, combining both traits and all three trunks. Each bar shows the mean correlation across all checkpoints. The horizontal whisker shows one standard deviation on either side of the mean (truncated at $r=1$).}
     \label{fig:exp2-decay-summary}
 \end{figure}
 
@@ -96,25 +96,33 @@ Interestingly, $\Delta P_0$, which does not make use of the updated model $\math
     \label{fig:exp2_decay_grid}
 \end{figure}
 
-\subsection{Evaluating a Predictive Monitor}
+\subsection{Evaluating a Behaviour Forecaster}
 In practice, we cannot train on 8 probe datasets at every step to fit the linear model that maps projection differences to behaviour, as this is computationally more expensive than simply fine-tuning the model on the next dataset. Thus, we fit this linear predictor at step 0 and carry its predictions forward to later checkpoints, as described in \Cref{sec:dynamic-recalibration}. We then use the checkpoint state to attempt to improve its calibration by fitting a recalibration function $c_t(\mathbf{z}_t)$ whose output scales $\beta_0$.
 
-We evaluate the correction using leave-one-out cross-validation. For a held-out trajectory and probe dataset $j$, the recalibration-factor regression is fitted only on checkpoints from the other trajectories. Moreover, every training target $c^{*}_{t,-j}$ is computed from the other seven probe datasets, and the base-model line uses the other 23 validation datasets. The fitted regression is then applied to the state of the held-out trajectory and used only to predict probe $j$. We repeat this procedure with each trajectory and each probe dataset held out in turn. Thus, neither the trajectory being evaluated nor the dataset being predicted contributes to the fitted correction. Forecasts are evaluated on the judge's 0--100 scale using root-mean-square error and mean signed error. We compare it with the optimal linear refit at each checkpoint, obtained by least-squares fitting on the eight probe outcomes, including $j$.
+We evaluate the forecaster using leave-one-out cross-validation. For a held-out trajectory and probe dataset $j$, the recalibration-factor regression is fitted only on checkpoints from the other trajectories. Moreover, every training target $c^{*}_{t,-j}$ is computed from the other seven probe datasets, and the base-model line uses the other 23 validation datasets. The fitted regression is then applied to the held-out trajectory and used solely to predict probe $j$. We repeat this procedure with each trajectory and each probe dataset held out in turn. Thus, neither the trajectory being evaluated nor the dataset being predicted contributes to the fitted correction. Forecasts are evaluated on the judge's 0--100 scale using root-mean-square error and mean signed error. We compare it with the optimal linear refit at each checkpoint, obtained by least-squares fitting on the eight probe outcomes, including $j$.
+
+\begin{figure}[H]
+    \centering
+    \input{figures/exp2_loo}
+    \caption{One fold of the leave-one-out evaluation of the recalibration
+    factor, holding out one trunk and one probe dataset $\mathcal{D}_j$. Any
+    of the three trunks can be the held-out one, so none is named here. As in
+    \Cref{fig:exp2-design}, the fan above a checkpoint is its eight one-step
+    probe branches. On the two fitted trunks (grey), a filled dot is a probe
+    that enters the fit and the cross is $\mathcal{D}_j$, which enters none:
+    each training target $c^{*}_{t,-j}$ is solved over the other seven probes,
+    and is measured against an initial predictor $f_0$ that is itself fitted
+    on the 23 validation datasets other than $\mathcal{D}_j$. On the held-out
+    trunk (red), hollow dots are probes that were measured but go unused in
+    this fold, and the filled dot is $\mathcal{D}_j$, the one prediction
+    scored. Neither the trajectory being scored nor the dataset being
+    predicted appears anywhere in the fit. The procedure is repeated for all
+    24 trunk--probe pairs, and separately for each trait.}
+    \label{fig:exp2-loo}
+\end{figure}
+
 
 For the state-evolution analysis, we examine the projection-difference variants $\Delta P_t^{t\leftarrow0,[0]}$ and $\Delta P_t^{t\leftarrow0,[t]}$, together with the checkpoint-state variants $\mathbf{z}_t^{[0,0]}$ and $\mathbf{z}_t^{[t,0]}$. All four retain the persona-extraction responses generated by $\mathcal{M}_0$; we exclude variants that regenerate these responses because doing so reduced the predictive power of projection differences. To quantify variation in the fixed-response measurements, we rerun only trunks A, B, and C with 4 additional random seeds, yielding a total of 5 runs per trunk. Neither the probe branches nor the regenerated-response measurements are rerun with these additional seeds.
-
-\subsection{Projection-Difference Robustness}
-% TODO: Complete or remove the unfinished sentence introducing the correlation summary figure.
-% TODO: Explain what changing each component contributes, using comparisons between variants that differ in that component alone.
-Using the setup described above, we first analysed whether projection differences continue to be correlated with behaviour after each trunk fine-tuning step by measuring the correlation across the probe datasets. 
-
-
-
-\Cref{fig:exp2-decay-summary} summarises 
-
-
-
-\Cref{fig:exp2_decay_grid} shows only $\Delta P_0$ and $\Delta P_t^{t\leftarrow0,[t]}$ (orange) to keep each panel readable. We selected the latter as the refreshed variant because it achieved the highest overall mean correlation when the checkpoint means in \Cref{tab:decay-correlations} are averaged across the two traits and three trunks. \Cref{fig:exp2-decay-summary} summarises these means and the range across checkpoints for all six refreshed variants alongside $\Delta P_0$. For evil, both the initial and refreshed projection differences remain strongly correlated with behaviour across all three trunks. The sycophancy correlations are also consistently strong for trunks B and C, but for trunk A-sycophancy, refreshing the projection difference recovers the correlation at $t=5$, but not at $t=6$.
 
 
 
@@ -130,11 +138,11 @@ Using the setup described above, we first analysed whether projection difference
 \begin{figure}[H]
     \centering
     \includegraphics[width=\textwidth]{plots/real/exp2/exp2_forecast_rmse_bar.pdf}
-    \caption{Mean root-mean-square error, in judge points, of the behaviour
-    predicted from the projection differences that retain answers generated
-    by $\mathcal{M}_0$; the later $[t]$ variants that regenerate answers with
-    $\mathcal{M}_t$ are excluded. Each bar is the mean of 42 checkpoint-level
-    RMSEs spanning two traits, three trunks, and seven checkpoints, and each
+\caption{Mean root-mean-square error, in judge points, of the behaviour
+    predicted from $\Delta P_0$ and all six refreshed projection-difference
+    variants defined in \Cref{sec:deltap-variants}.
+    Each bar is the mean
+    RMSE across all checkpoints and traits. Each
     constituent RMSE is calculated over eight probe datasets. Error bars show
     one sample standard deviation across those 42 values; they describe
     variation across the evaluated settings rather than inferential
