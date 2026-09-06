@@ -920,14 +920,10 @@ def _decay_figures(
         summary=1,
     )
 
-    fig = figures.correlation_range_summary(
+    fig = figures.pooled_correlation_summary(
         fits,
         series=DECAY_SUMMARY_SERIES,
         series_labels=decay.SERIES_LABELS,
-        traits=traits,
-        trait_labels=trait_labels,
-        trunks=trunks,
-        trunk_labels={trunk: display_trunk_title(trunk) for trunk in trunks},
         series_colors=DECAY_SUMMARY_COLORS,
         series_hatches=REFRESH_HATCHES,
     )

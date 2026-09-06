@@ -1331,35 +1331,66 @@ def _headline(fits: pd.DataFrame, **kwargs):
     return figures.headline_curves(fits, **kwargs)
 
 
-def test_correlation_range_summary_draws_mean_bars_and_extrema_whiskers() -> None:
+def _pooled(fits: pd.DataFrame, **kwargs):
+    """``pooled_correlation_summary`` as ``make_plots`` calls it."""
+    kwargs.setdefault("series", decay.REFRESH_ORDER)
+    kwargs.setdefault("series_labels", decay.SERIES_LABELS)
+    return figures.pooled_correlation_summary(fits, **kwargs)
+
+
+def test_pooled_correlation_summary_draws_mean_bars_and_one_std_whiskers() -> None:
     fits = _headline_fits(trunks=("a",), traits=("evil",))
-    fig = figures.correlation_range_summary(
-        fits,
-        series=decay.REFRESH_ORDER,
-        series_labels=decay.SERIES_LABELS,
-        trunks=["a"],
-    )
+    fig = _pooled(fits)
 
     ax = fig.axes[0]
     bars = next(container for container in ax.containers if hasattr(container, "patches"))
-    assert bars.patches[0].get_width() == pytest.approx(0.88)
-    assert bars.errorbar is not None
+    assert len(bars.patches) == len(decay.REFRESH_ORDER)
+    assert bars.patches[0].get_height() == pytest.approx(0.62)
+    # 0.90, 0.88, 0.86 over the three checkpoints: mean 0.88, population std
+    # 0.02 * sqrt(2/3).
+    spread = 0.02 * (2 / 3) ** 0.5
     intervals = bars.errorbar.lines[2][0].get_segments()
-    assert intervals[0][:, 0] == pytest.approx([0.86, 0.90])
-    assert [tick.get_text() for tick in ax.get_yticklabels()] == ["Trunk a"]
-    assert [text.get_text() for text in fig.legends[0].get_texts()] == [
+    assert intervals[0][:, 0] == pytest.approx([0.88 - spread, 0.88 + spread])
+    # Best first, and the ticks name the variants, so there is no legend.
+    assert [tick.get_text() for tick in ax.get_yticklabels()] == [
         decay.SERIES_LABELS[name] for name in decay.REFRESH_ORDER
     ]
+    assert not fig.legends
 
 
-def test_correlation_range_summary_supports_two_shared_trait_panels() -> None:
-    fig = figures.correlation_range_summary(
-        _headline_fits(trunks=("a",), traits=("evil", "sycophantic")),
-        series=decay.REFRESH_ORDER,
-        series_labels=decay.SERIES_LABELS,
-        traits=["evil", "sycophantic"],
+def test_pooled_correlation_summary_clips_the_whisker_at_a_correlation_of_one() -> None:
+    """A variant near the ceiling has a standard deviation that runs past it."""
+    fits = _headline_fits(trunks=("a",), traits=("evil",), checkpoints=range(2))
+    fits[f"corr_{decay.REFRESH_ORDER[0]}"] = [1.0, 0.8]
+    fig = _pooled(fits)
+
+    ax = fig.axes[0]
+    bars = next(container for container in ax.containers if hasattr(container, "patches"))
+    top = bars.errorbar.lines[2][0].get_segments()[0][:, 0]
+    assert top == pytest.approx([0.9 - 0.1, 1.0])
+    assert ax.get_xlim()[1] == pytest.approx(1.0 + figures._CORRELATION_CLEARANCE)
+
+
+def test_pooled_correlation_summary_pools_every_trait_and_trunk() -> None:
+    """One panel of one bar per variant, whatever the sweep was split across."""
+    one_arm = _pooled(_headline_fits(trunks=("a",), traits=("evil",)))
+    whole = _pooled(_headline_fits(trunks=("a", "b"), traits=("evil", "sycophantic")))
+
+    assert len(whole.axes) == 1
+    pooled_bars = next(
+        container for container in whole.axes[0].containers
+        if hasattr(container, "patches")
     )
-    assert len(fig.axes) == 2
+    assert len(pooled_bars.patches) == len(decay.REFRESH_ORDER)
+    # Every arm carries the same checkpoint values here, so pooling them leaves
+    # the summary where a single arm puts it.
+    single = next(
+        container for container in one_arm.axes[0].containers
+        if hasattr(container, "patches")
+    )
+    assert [patch.get_width() for patch in pooled_bars.patches] == pytest.approx(
+        [patch.get_width() for patch in single.patches]
+    )
 
 
 def test_decay_summary_adds_p0_as_a_grey_unhatched_reference() -> None:

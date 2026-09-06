@@ -42,7 +42,6 @@ from method.visualization.decay import (
     validation_frame,
 )
 from method.visualization.figures import (
-    correlation_range_summary,
     decay_scatter_grid,
     drift_line,
     forecast_grid,
@@ -52,6 +51,7 @@ from method.visualization.figures import (
     mechanism_grid,
     overlay_grid,
     phase_contrast,
+    pooled_correlation_summary,
     recalibration_grid,
     scatter_metric_grid,
     scatter_projection_correlation,
@@ -87,7 +87,6 @@ __all__ = [
     "apply_style",
     "baseline_fits",
     "collect_group",
-    "correlation_range_summary",
     "current_probe_drift_frame",
     "decay_frame",
     "decay_scatter_grid",
@@ -104,6 +103,7 @@ __all__ = [
     "overlay_grid",
     "phase_contrast",
     "phase_contrast_frame",
+    "pooled_correlation_summary",
     "prediction_frame",
     "probe_drift_frame",
     "recalibration_grid",
