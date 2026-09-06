@@ -1,5 +1,5 @@
 .latex-build/
-
+notebooks/
 data/results/
 /docs/*.aux
 /docs/*latex*
@@ -16,10 +16,13 @@ trajectories/
 trajectories-mock/
 store/
 store-mock/
+store-thin/
 .notify-state.json
 unsloth_compiled_cache/
+papers/*
 plots/mock*
 plots/*
+presentation/*
 !plots/real/
 # Byte-compiled / optimized / DLL files
 __pycache__/
