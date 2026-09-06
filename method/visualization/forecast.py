@@ -19,14 +19,20 @@ What goes stale is the calibration, not the ordering, so the tables here are
 errors on the judge's own 0-100 scale (:func:`score_frame`) and never
 correlations.
 
-*No dataset predicts itself in the tables.* Nothing fitted on dataset $j$ is
-used to predict dataset $j$, and everything else that was measured is fair
-game. So the table baseline for a probe is fitted on the other 23 validation
-datasets (:func:`baseline_fits`), and a gain correction is fitted leaving out
-both the trunk it is scored on and the probe it predicts
-(:func:`_gain_forecast`). The $t = 0$ column is therefore a real held-out error
-rather than a residual, which is what makes it the right thing to read the
-later columns against.
+*No dataset predicts itself in the tables.* Nothing fitted on dataset $j$ --
+or on a sibling of it -- is used to predict dataset $j$, and everything else
+that was measured is fair game. The 24 validation datasets are 8 *families* of
+3 versions each (Normal, misaligned-I, misaligned-II), and the three versions
+of a family are edits of one corpus rather than three independent datasets, so
+holding out only $\mathcal{D}_j$ would leave two near-copies of it in the fit.
+The table baseline for a probe is therefore fitted on the 21 validation
+datasets outside its family (:func:`baseline_fits`, :func:`dataset_family`),
+and a gain correction is fitted leaving out both the trunk it is scored on and
+the probe it predicts (:func:`_gain_forecast`; the eight probes sit in eight
+distinct families, so dropping a probe already drops its whole family from the
+probe panel). The $t = 0$ column is therefore a real held-out error rather
+than a residual, which is what makes it the right thing to read the later
+columns against.
 
 The recalibration grid has a different job: it must draw one actual affine
 line rather than connect predictions from eight leave-one-out folds. Its
@@ -136,32 +142,61 @@ METRICS = ("rmse", "mae", "bias")
 
 
 #: The fold that holds nothing out: the line fitted on the whole validation
-#: fan. It is what a probe the fan never covered falls back to, since a dataset
-#: nobody fine-tuned on at $M_0$ cannot be in any fit and so cannot leak from
-#: one, and what :func:`gain_frame` uses when asked for the plain diagnostic.
+#: fan. It is what a probe whose *family* the fan never covered falls back to,
+#: since a corpus nobody fine-tuned on at $M_0$ cannot be in any fit and so
+#: cannot leak from one, and what :func:`gain_frame` uses when asked for the
+#: plain diagnostic.
 WHOLE_FAN = None
+
+#: Points a fold needs before :func:`method.visualization.metrics.linear_fit`
+#: reports a line rather than a flat one through the mean of $y$.
+MIN_FIT_POINTS = 2
+
+
+def dataset_family(dataset_id: str) -> str:
+    """``"mistake_gsm8k/misaligned_2"`` -> ``"mistake_gsm8k"``.
+
+    A dataset id names a corpus and the version of it that was fine-tuned on.
+    The three versions of one family are edits of the same prompts, so they are
+    not three independent observations of the $M_0$ law, and a leave-one-out
+    fold that drops only the exact id keeps two near-copies of the held-out
+    point in the fit. Every fold here therefore drops the family.
+
+    An id carrying no version is its own family, so a synthetic or
+    already-collapsed identifier still groups as *something*.
+    """
+    family, _, _ = dataset_id.partition("/")
+    return family
 
 
 @dataclass(frozen=True)
 class Baselines:
-    r"""$M_0$'s lines, one per (target, trait, held-out dataset).
+    r"""$M_0$'s lines, one per (target, trait, held-out dataset family).
 
     A mapping rather than a single line per trait because every line here is
-    fitted leave-one-dataset-out: see :func:`baseline_fits` for why.
+    fitted leave-one-family-out: see :func:`baseline_fits` for why.
     """
 
-    #: Keyed ``(target, trait, held-out dataset)``, with :data:`WHOLE_FAN`
-    #: standing for the fold that holds nothing out.
+    #: Keyed ``(target, trait, held-out family)``, with :data:`WHOLE_FAN`
+    #: standing for the fold that holds nothing out. The third slot is a
+    #: *family* (:func:`dataset_family`) rather than a dataset id, since all
+    #: three versions of a family share one fold; :meth:`line` takes the id and
+    #: does the collapsing, so no caller has to.
     fits: Mapping[tuple[str, str, str | None], LinearFit]
 
     def line(self, target: str, trait: str, without: str | None) -> LinearFit | None:
         """The line for predicting ``without``, or ``None`` if there is none.
 
-        Falls back to the whole-fan line where ``without`` has no fold of its
-        own, which happens when the fan never covered that dataset. Nothing
-        leaks: a dataset the fan did not measure is in no fit to begin with.
+        ``without`` is a dataset id, and the fold it selects is its whole
+        family's, so the held-out dataset's two sibling versions are out of the
+        line as well as the dataset itself.
+
+        Falls back to the whole-fan line where that family has no fold of its
+        own, which happens when the fan covered no version of it. Nothing
+        leaks: a family the fan did not measure is in no fit to begin with.
         """
-        fit = self.fits.get((target, trait, without))
+        family = None if without is None else dataset_family(without)
+        fit = self.fits.get((target, trait, family))
         if fit is not None:
             return fit
         return self.fits.get((target, trait, WHOLE_FAN))
@@ -171,12 +206,22 @@ class Baselines:
 
 
 def baseline_fits(validation: pd.DataFrame) -> Baselines:
-    r"""$M_0$'s lines, fitted leave-one-dataset-out over the validation fan.
+    r"""$M_0$'s lines, fitted leave-one-family-out over the validation fan.
 
     The fan covers all 24 datasets at the base model, 8 of which the decay
-    experiment goes on to probe (section 5). To predict dataset $j$ this fits
-    on the other 23, so $j$ is never in the line that scores it and the
-    $t = 0$ column is a real held-out error rather than an in-sample residual.
+    experiment goes on to probe (section 5). Those 24 are 8 families of 3
+    versions, and a fold drops the held-out dataset's whole family
+    (:func:`dataset_family`): to predict dataset $j$ this fits on the 21
+    datasets from the other 7 families, so neither $j$ nor either of its two
+    sibling versions is in the line that scores it and the $t = 0$ column is a
+    real held-out error rather than an in-sample residual.
+
+    Dropping the family rather than the single id is what makes that claim
+    true. The three versions of a family are the same prompts at three
+    strengths of the trait, so they are near-copies: a line fitted with
+    ``evil/normal`` and ``evil/misaligned_1`` still in it has effectively been
+    shown where ``evil/misaligned_2`` lands, and $\alpha$ and $\beta$ come out
+    tuned to the very corpus they are about to be scored on.
 
     Leave-one-out rather than a fixed probe/non-probe split, and the reason is
     consistency with the correction. A gain model reads the *other* probes'
@@ -185,8 +230,8 @@ def baseline_fits(validation: pd.DataFrame) -> Baselines:
     those same probes had never been fine-tuned on at all. Both cannot be true
     of one practitioner. Leave-one-out keeps the test point just as clean and
     states the rule once for the whole module: **nothing fitted on dataset $j$
-    is used to predict dataset $j$**, and everything else that was measured is
-    fair game.
+    or on a sibling version of it is used to predict dataset $j$**, and
+    everything else that was measured is fair game.
 
     It is also what the RQ1 question actually asks. The quantity of interest is
     how well a line fitted at $M_0$ predicts a dataset it has not seen, and
@@ -210,17 +255,26 @@ def baseline_fits(validation: pd.DataFrame) -> Baselines:
     if validation.empty:
         return Baselines(fits)
     for trait, group in validation.groupby("trait"):
-        if len(group) < 3:
+        families = group["dataset"].astype(str).map(dataset_family)
+        # The worst fold is the one dropping the largest family. A trait that
+        # cannot survive it registers *nothing*, not even the whole-fan line:
+        # Baselines.line falls back to that line, and falling back to a fit
+        # containing dataset j is the leak this function exists to prevent.
+        smallest_fold = len(group) - int(families.value_counts().max())
+        if smallest_fold < MIN_FIT_POINTS:
             logger.warning(
-                "exp2/%s: %d validation dataset(s) on disk, which leaves too "
-                "few to fit M_0's line once one is held out; the step-0 "
-                "forecasts for this trait will be blank",
+                "exp2/%s: %d validation dataset(s) on disk across %d "
+                "dataset famil(y/ies), which leaves %d once a held-out "
+                "dataset's whole family is dropped -- too few to fit M_0's "
+                "line; the step-0 forecasts for this trait will be blank",
                 trait,
                 len(group),
+                families.nunique(),
+                smallest_fold,
             )
             continue
-        for held in (WHOLE_FAN, *sorted(group["dataset"].unique())):
-            panel = group if held is WHOLE_FAN else group[group["dataset"] != held]
+        for held in (WHOLE_FAN, *sorted(families.unique())):
+            panel = group if held is WHOLE_FAN else group[families != held]
             for target in TARGETS:
                 fits[(target, str(trait), held)] = linear_fit(
                     panel["delta_p_0"], panel[target]
@@ -234,9 +288,17 @@ def nonprobe_baseline_fits(
     r"""One $M_0$ line per trait, fitted after holding out every probe.
 
     This is the baseline used by the recalibration grid.  Unlike
-    :func:`baseline_fits`, which makes one leave-one-out fold per scored probe,
-    this makes one common fit from the validation datasets outside the probe
-    set.  All plotted probe predictions therefore lie on one affine line.
+    :func:`baseline_fits`, which makes one leave-one-family-out fold per scored
+    probe, this makes one common fit from the validation datasets outside the
+    probe set.  All plotted probe predictions therefore lie on one affine line.
+
+    **Held out by id, not by family, and it has to be.** The eight probes sit
+    in eight distinct families, so dropping each probe's whole family would
+    drop all 24 datasets and leave nothing to fit. The 16 datasets this does
+    fit on therefore include the probes' sibling versions, which makes the
+    drawn line slightly kinder to the probes than the scores beside it. That is
+    tolerable only because this line is drawn and never scored: every number
+    reported anywhere comes from :func:`baseline_fits`.
 
     The table path continues to use :func:`baseline_fits`; keeping this split
     explicit prevents a visualisation requirement from changing its scores.
@@ -479,6 +541,18 @@ HEADLINE_MODELS = ("step0", "oracle")
 #: reference. The refit appears once, not twice, because it is target-invariant
 #: (see :attr:`Forecaster.target`).
 TARGET_MODELS = ("step0", "step0_level", "oracle")
+
+#: The pre-specified target for each projection variant in the RMSE headline.
+#: A cached predicted-answer representation is a measurement of where a dataset
+#: lands and is fitted directly to $b_{t+1}$. Once those answers are refreshed
+#: at $M_t$, the projection carries checkpoint-relative information and is
+#: fitted to the change $\Delta b_{t+1}$ instead. Both forecasters return a
+#: predicted level and are scored against the same realised $b_{t+1}$.
+HEADLINE_MODEL_BY_SERIES = {
+    series: model
+    for _, _, members in decay.REFRESH_GROUPS
+    for series, model in zip(members, ("step0_level", "step0"), strict=True)
+}
 
 #: The forecasters whose bias is a measurement rather than an identity: the
 #: ones carrying $M_0$'s intercept forward (see :data:`METRICS`).
@@ -893,6 +967,43 @@ def score_frame(predictions: pd.DataFrame) -> pd.DataFrame:
             }
         )
     return pd.DataFrame(records, columns=_SCORE_COLUMNS)
+
+
+def metric_frame(
+    scores: pd.DataFrame,
+    *,
+    metric: str = "rmse",
+    model: str = "step0",
+    model_by_series: Mapping[str, str] | None = None,
+    series: Sequence[str] | None = None,
+) -> pd.DataFrame:
+    r"""Put one forecast metric into wide ``<metric>_<series>`` columns.
+
+    This is the checkpoint-level shape consumed by the headline curves.  The
+    By default ``model`` is held fixed. ``model_by_series`` instead selects a
+    pre-specified forecaster for each series; this lets variants with different
+    semantic targets be compared without spending another visual channel.
+    """
+    if metric not in METRICS:
+        raise ValueError(f"unknown metric {metric!r}; expected one of {METRICS}")
+    if scores.empty:
+        return pd.DataFrame()
+    wanted = list(series) if series is not None else list(decay.SERIES)
+    candidates = scores[scores["series"].isin(wanted)]
+    if model_by_series is None:
+        kept = candidates[candidates["model"].eq(model)]
+    else:
+        selected = candidates["series"].map(model_by_series)
+        kept = candidates[candidates["model"].eq(selected)]
+    if kept.empty:
+        return pd.DataFrame()
+    wide = kept.pivot(
+        index=["trait", "trunk", "t"], columns="series", values=metric
+    ).reset_index()
+    wide.columns.name = None
+    return wide.rename(
+        columns={name: f"{metric}_{name}" for name in wanted if name in wide}
+    )
 
 
 #: The key order a score table is indexed by, outermost first. The *last* key

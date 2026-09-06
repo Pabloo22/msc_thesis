@@ -1472,14 +1472,14 @@ class TestHeadlineCurves:
     for the source of the predicted answers. Six flat hues is the encoding this
     figure had first, and no six hues can be told apart."""
 
-    def test_faceted_gives_each_vector_its_own_row_within_a_trait(self) -> None:
+    def test_faceted_gives_each_vector_its_own_column_within_a_trait(self) -> None:
         fig = _headline(
             _headline_fits(),
             traits=["sycophantic", "evil"],
             trunks=["a", "b"],
             facet=True,
         )
-        # 2 traits x 3 vectors rows, 2 trunk columns.
+        # 2 traits x 2 trunk rows x 3 vector columns.
         assert len(fig.axes) == 2 * len(decay.REFRESH_GROUPS) * 2
         assert all(len(ax.lines) == 2 for ax in fig.axes)
 
@@ -1531,7 +1531,7 @@ class TestHeadlineCurves:
         }
         assert thinned == full - {make_plots.REFRESH_GROUPS[0].color}
 
-    def test_the_trunk_names_the_column_and_the_vector_the_faceted_row(
+    def test_the_trunk_names_the_faceted_row_and_the_vector_the_column(
         self,
     ) -> None:
         fig = _headline(
@@ -1541,12 +1541,15 @@ class TestHeadlineCurves:
             trunk_labels={"a": "Trunk A", "b": "Trunk B"},
             facet=True,
         )
-        assert [ax.get_title() for ax in fig.axes[:2]] == ["Trunk A", "Trunk B"]
-        assert [ax.get_ylabel() for ax in fig.axes if ax.get_ylabel()] == [
+        assert [ax.get_title() for ax in fig.axes[:3]] == [
             group.label for group in make_plots.REFRESH_GROUPS
         ]
+        assert [ax.get_ylabel() for ax in fig.axes if ax.get_ylabel()] == [
+            "Trunk A",
+            "Trunk B",
+        ]
 
-    def test_the_trait_names_its_block_when_the_rows_are_spent_on_vectors(
+    def test_the_trait_names_its_block_when_the_rows_are_spent_on_trunks(
         self,
     ) -> None:
         """Three facts about a panel -- trait, vector, trunk -- so each takes
@@ -1589,6 +1592,23 @@ class TestHeadlineCurves:
             f"{fits[f'corr_{name}'].mean():.2f}" for name in decay.REFRESH_ORDER
         }
         assert expected <= printed
+
+    def test_rmse_uses_judge_points_a_zero_floor_and_one_decimal_labels(
+        self,
+    ) -> None:
+        fits = _headline_fits(trunks=("a",), traits=("evil",))
+        for i, name in enumerate(decay.REFRESH_ORDER):
+            fits[f"rmse_{name}"] = 10.0 + i + fits["t"]
+
+        fig = _headline(fits, facet=False, metric="rmse")
+        ax = fig.axes[0]
+        assert ax.get_ylim()[0] == pytest.approx(0.0)
+        assert ax.get_ylim()[1] > fits["rmse_full_onpolicy"].max()
+        assert {
+            f"{fits[f'rmse_{name}'].mean():.1f}"
+            for name in decay.REFRESH_ORDER
+        } <= {text.get_text() for text in ax.texts}
+        assert "judge points" in fig._supylabel.get_text()
 
     def test_a_faceted_grid_keys_only_the_channel_its_rows_do_not_name(
         self,

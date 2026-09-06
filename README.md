@@ -302,7 +302,8 @@ poetry run python -m method.visualization.make_plots --experiment exp2_decay
 This writes section 9's figures into `plots/real/exp2/`. Every one of them panels both
 traits, so nothing is emitted per trait: `exp2_validation` (plot 1, a trait per panel),
 `exp2_decay_grid` (2, a trait-and-trunk per row, a checkpoint per column), `exp2_headline`
-(3, two rows per trait), `exp2_mechanism` (4, a trait per row, a predictor per column),
+(3, correlation, trunk rows and persona-vector columns), `exp2_headline_rmse` (the same layout for
+the fixed $f_0$ predictor's RMSE), `exp2_mechanism` (4, a trait per row, a predictor per column),
 `exp2_phase_contrast` (4b, a trait per row), `exp2_drift_delta_hat_p`,
 `exp2_drift_delta_p`, and `exp2_drift_z` (plot 5, a trait per row). What they do *not*
 share across the traits is the scale,
@@ -334,6 +335,25 @@ $\Delta \hat{P}_t$, $\Delta P_t$, where a hat means the predicted answer is appr
 by $M_0$'s. A trunk a series was not measured on keeps the ones it has: the column is NaN
 there, and nothing fits, draws or keys a series it cannot see. See
 [`docs/delta_p_regen.md`](docs/delta_p_regen.md) for the notation.
+
+`exp2_headline_rmse` uses the checkpoint RMSE already produced by the forecast
+analysis. The affine $f_0$ map is fitted at the initial checkpoint with the
+scored probe held out, then kept fixed. Cached-answer projection variants are
+fitted to predict $b_{t+1}$ directly; variants that refresh the predicted-answer
+activations are fitted to predict $\Delta b_{t+1}$ and converted back to the
+reached level. Every curve is therefore scored against the realised $b_{t+1}$
+in judge points. Lower is better, and the number beside a curve is its mean
+RMSE over the available checkpoints.
+
+Choose the target policy when plotting Experiment 2:
+```bash
+poetry run python -m method.visualization.make_plots \
+  --experiment exp2_decay --headline-rmse-target matched
+```
+Use `change` to fit every variant to $\Delta b_{t+1}$, `level` to fit every
+variant directly to $b_{t+1}$, or `all` to write all three policies. The
+non-default controls are suffixed `_change` and `_level`, so they do not
+overwrite either the original correlation headline or the matched RMSE plot.
 
 ### 5. Experiment 3
 It is a seed sweep, so `--seeds` is the axis that splits it:

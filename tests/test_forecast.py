@@ -135,6 +135,62 @@ def _frames() -> tuple[pd.DataFrame, pd.DataFrame]:
     return rows, decay.validation_frame(validation)
 
 
+def synthetic_fan(
+    delta_p_0: dict[str, float], *, trait: str = "evil"
+) -> pd.DataFrame:
+    r"""A validation frame straight from a $\Delta P_0$ per dataset.
+
+    ``build_validation``'s fan covers five datasets in five *different*
+    families, which is what the rest of this file needs and exactly the case
+    that cannot tell leave-one-dataset-out from leave-one-family-out apart.
+    This builds a fan whose families the test chooses, on the same exact law
+    ($\Delta b = \mathrm{SLOPE} \times \Delta P_0$) and with the columns
+    :func:`method.visualization.decay.validation_frame` emits that
+    :func:`~method.visualization.forecast.baseline_fits` reads.
+    """
+    return pd.DataFrame(
+        [
+            {
+                "trait": trait,
+                "seed": E.EXP2_SEED,
+                "dataset": dataset,
+                "delta_p_0": value,
+                "b_t": B_0,
+                "delta_b": INTERCEPT + SLOPE * value,
+                "b_next": B_0 + INTERCEPT + SLOPE * value,
+            }
+            for dataset, value in delta_p_0.items()
+        ]
+    )
+
+
+#: Two families of three versions plus a third family, which is the smallest
+#: fan where dropping a family and dropping a dataset give different fits.
+SIBLING_FAN = {
+    "evil/normal": -1.0,
+    "evil/misaligned_1": 1.0,
+    "evil/misaligned_2": 2.0,
+    "sycophancy/normal": -2.0,
+    "sycophancy/misaligned_1": 3.0,
+    "mistake_math/misaligned_2": 4.0,
+}
+
+
+def bent_fan(bent: str = "evil/normal", by: float = 40.0) -> pd.DataFrame:
+    """:data:`SIBLING_FAN` with one dataset knocked off the law.
+
+    Every fold of a fan that lies exactly on one line recovers that line, so a
+    fan on the law cannot show *which* points a fold was fitted on. One point
+    off the line makes the folds that contain it visibly different from the
+    folds that do not, which is the whole question here.
+    """
+    fan = synthetic_fan(SIBLING_FAN)
+    off = fan["dataset"] == bent
+    fan.loc[off, "delta_b"] += by
+    fan.loc[off, "b_next"] += by
+    return fan
+
+
 # --- baseline_fits ----------------------------------------------------------
 
 
@@ -195,6 +251,60 @@ class TestBaselineFits:
         _, fan = frames
         pair = fan[fan["dataset"].isin(list(HELD_OUT)[:2])]
         assert not forecast.baseline_fits(pair)
+
+    def test_a_line_is_never_fitted_on_a_sibling_of_what_it_predicts(self) -> None:
+        """The fold drops the held-out dataset's whole family, not just its id.
+
+        The three versions of a family are one corpus at three strengths of the
+        trait, so a line that has seen ``evil/normal`` has effectively been
+        shown where ``evil/misaligned_2`` lands. Moving a sibling must leave
+        the held-out dataset's own line exactly where it was, while a line from
+        another family -- which legitimately contains that sibling -- moves.
+        """
+        before = forecast.baseline_fits(synthetic_fan(SIBLING_FAN))
+        after = forecast.baseline_fits(bent_fan("evil/normal"))
+        line = lambda fits, d: fits.line(forecast.CHANGE, "evil", d)
+        assert line(after, "evil/misaligned_2").slope == pytest.approx(
+            line(before, "evil/misaligned_2").slope
+        )
+        assert line(after, "sycophancy/normal").slope != pytest.approx(
+            line(before, "sycophancy/normal").slope
+        )
+
+    def test_the_versions_of_one_family_share_one_fold(self) -> None:
+        """All three resolve to the same line, and it is not the whole fan's."""
+        fits = forecast.baseline_fits(bent_fan("evil/normal"))
+        lines = {
+            fits.line(forecast.CHANGE, "evil", dataset)
+            for dataset in ("evil/normal", "evil/misaligned_1", "evil/misaligned_2")
+        }
+        assert len(lines) == 1
+        assert lines.pop() != fits.line(forecast.CHANGE, "evil", forecast.WHOLE_FAN)
+
+    def test_an_unmeasured_version_falls_back_to_its_family_not_the_fan(self) -> None:
+        """A version the fan skipped is still predicted by its family's fold.
+
+        The whole-fan fallback is for a family nobody fine-tuned on. A family
+        that *was* measured has a clean fold, and handing its unmeasured
+        version the whole-fan line would put the family's other versions back
+        into the line that scores it.
+        """
+        smaller = {d: v for d, v in SIBLING_FAN.items() if d != "evil/normal"}
+        fan = synthetic_fan(smaller)
+        fan.loc[fan["dataset"] == "evil/misaligned_1", ["delta_b", "b_next"]] += 40.0
+        fits = forecast.baseline_fits(fan)
+        unmeasured = fits.line(forecast.CHANGE, "evil", "evil/normal")
+        assert unmeasured == fits.line(forecast.CHANGE, "evil", "evil/misaligned_2")
+        assert unmeasured != fits.line(forecast.CHANGE, "evil", forecast.WHOLE_FAN)
+
+    def test_a_fan_of_one_family_fits_nothing(self) -> None:
+        """Dropping the only family leaves no points, so no fold is registered.
+
+        Not even the whole-fan line, which ``Baselines.line`` would otherwise
+        fall back to -- and that line contains every dataset it would score.
+        """
+        one_family = {d: v for d, v in SIBLING_FAN.items() if d.startswith("evil/")}
+        assert not forecast.baseline_fits(synthetic_fan(one_family))
 
     def test_nonprobe_fit_holds_out_the_whole_probe_set(self, frames) -> None:
         """The display line is fitted once on only the external datasets."""
@@ -440,6 +550,101 @@ class TestScoreFrame:
 
     def test_empty_predictions_give_an_empty_frame(self) -> None:
         assert forecast.score_frame(pd.DataFrame()).empty
+
+    def test_metric_frame_selects_one_model_and_pivots_the_series(self) -> None:
+        scores = pd.DataFrame(
+            [
+                {
+                    "trait": "evil",
+                    "trunk": "a",
+                    "t": 1,
+                    "series": series,
+                    "model": model,
+                    "rmse": value,
+                }
+                for series, model, value in (
+                    ("hat_t", "step0", 12.0),
+                    ("full_t", "step0", 8.0),
+                    ("hat_t", "oracle", 3.0),
+                )
+            ]
+        )
+
+        wide = forecast.metric_frame(
+            scores,
+            metric="rmse",
+            model="step0",
+            series=("hat_t", "full_t"),
+        )
+
+        assert list(wide.columns) == [
+            "trait",
+            "trunk",
+            "t",
+            "rmse_full_t",
+            "rmse_hat_t",
+        ]
+        assert wide.loc[0, "rmse_hat_t"] == pytest.approx(12.0)
+        assert wide.loc[0, "rmse_full_t"] == pytest.approx(8.0)
+
+    def test_metric_frame_rejects_an_unknown_metric(self) -> None:
+        with pytest.raises(ValueError, match="unknown metric"):
+            forecast.metric_frame(pd.DataFrame(), metric="mse")
+
+    def test_metric_frame_can_preselect_a_target_for_each_series(self) -> None:
+        scores = pd.DataFrame(
+            [
+                {
+                    "trait": "evil",
+                    "trunk": "a",
+                    "t": 1,
+                    "series": series,
+                    "model": model,
+                    "rmse": value,
+                }
+                for series, model, value in (
+                    ("hat_t", "step0", 99.0),
+                    ("hat_t", "step0_level", 12.0),
+                    ("full_t", "step0", 8.0),
+                    ("full_t", "step0_level", 99.0),
+                )
+            ]
+        )
+
+        wide = forecast.metric_frame(
+            scores,
+            model_by_series={"hat_t": "step0_level", "full_t": "step0"},
+            series=("hat_t", "full_t"),
+        )
+
+        assert wide.loc[0, "rmse_hat_t"] == pytest.approx(12.0)
+        assert wide.loc[0, "rmse_full_t"] == pytest.approx(8.0)
+
+    def test_headline_targets_follow_the_predicted_answer_source(self) -> None:
+        for _, _, (cached, refreshed) in decay.REFRESH_GROUPS:
+            assert forecast.HEADLINE_MODEL_BY_SERIES[cached] == "step0_level"
+            assert forecast.HEADLINE_MODEL_BY_SERIES[refreshed] == "step0"
+
+        from method.visualization import make_plots
+
+        assert r"$b_{t+1}$" in make_plots.HEADLINE_RMSE_MEMBER_LABELS[0]
+        assert r"$\Delta b_{t+1}$" in make_plots.HEADLINE_RMSE_MEMBER_LABELS[1]
+
+        assert make_plots._headline_rmse_targets("all") == (
+            "matched",
+            "change",
+            "level",
+        )
+        assert make_plots._headline_rmse_spec("change")[:3] == (
+            "_change",
+            "step0",
+            None,
+        )
+        assert make_plots._headline_rmse_spec("level")[:3] == (
+            "_level",
+            "step0_level",
+            None,
+        )
 
 
 # --- the gain correction ----------------------------------------------------
@@ -889,11 +1094,102 @@ class TestMeanRmseFigure:
     def test_forecast_labels_name_the_map_instead_of_the_initial_llm(self) -> None:
         from method.visualization import make_plots
 
-        headline = make_plots._headline_forecast_label("p0", "step0")
+        ranked = make_plots._headline_forecast_label("p0", "step0")
+        labels = [bar.label for bar in make_plots.HEADLINE_FORECAST_BARS.values()]
         corrected = make_plots._correction_forecast_label("step0_b", "base")
-        assert r"f_0\!\left(\Delta P_0\right)" in headline
+        assert r"f_0\!\left(\Delta P_0\right)" in ranked
+        assert labels == [
+            r"$f_0$, predicts $b_{t+1}$",
+            r"$f_0$, predicts $\Delta b_{t+1}$",
+            r"$f_t$, refit at $t$",
+        ]
         assert r"f_0\!\left(g\!\left(b_t\right)\,\Delta P_0\right)" in corrected
-        assert "M_0" not in headline + corrected
+        assert "M_0" not in ranked + "".join(labels) + corrected
+
+    def test_the_two_targets_are_split_by_hue_and_by_the_hatch(self) -> None:
+        """The ``//`` separates the targets, as it does in the headline curves."""
+        from method.visualization import make_plots, style
+
+        fills = {
+            model: (bar.color, bar.hatch)
+            for model, bar in make_plots.HEADLINE_FORECAST_BARS.items()
+        }
+        assert fills == {
+            "step0_level": (style.BLUE, ""),
+            "step0": (style.ORANGE, "//"),
+            "oracle": (style.MUTED, ""),
+        }
+
+    def test_the_bar_figure_carries_both_targets_and_one_refit(self) -> None:
+        """The refit is target-invariant, so it is fetched once, from elsewhere."""
+        from method.visualization import make_plots
+
+        index = pd.MultiIndex.from_tuples(
+            [
+                ("evil", "a", "p0", "step0"),
+                ("evil", "a", "p0", "step0_level"),
+            ],
+            names=list(forecast.BY_MODEL),
+        )
+        headline = pd.DataFrame(
+            [[2.0], [3.0]],
+            index=pd.MultiIndex.from_tuples(
+                [("evil", "a", "p0", "step0"), ("evil", "a", "p0", "oracle")],
+                names=list(forecast.BY_MODEL),
+            ),
+            columns=[0],
+        )
+        combined = make_plots._headline_rmse_table(
+            {
+                "exp2_forecast_target_rmse": pd.DataFrame([[2.0], [4.0]], index=index, columns=[0]),
+                "exp2_forecast_rmse": headline,
+            }
+        )
+        assert list(combined.index.get_level_values("model")) == [
+            "step0",
+            "step0_level",
+            "oracle",
+        ]
+
+    def test_headline_bars_are_paired_by_projection(self) -> None:
+        """The projection names the row; the two fitted maps share it."""
+        import matplotlib.pyplot as plt
+        from matplotlib.colors import to_hex
+
+        from method.visualization import figures
+
+        fig = figures.mean_rmse_bar(
+            pd.DataFrame(
+                {
+                    "projection": ["a", "a", "b", "b"],
+                    "label": ["carried", "refit", "carried", "refit"],
+                    "mean_rmse": [8.0, 5.0, 3.0, 1.0],
+                    "sd_rmse": [0.8, 0.5, 0.3, 0.1],
+                    "upper_bound": [False, True, False, True],
+                    "color": [figures.style.ORANGE, figures.style.MUTED] * 2,
+                    "hatch": ["//", "", "//", ""],
+                }
+            ),
+            group_col="projection",
+            color_col="color",
+            hatch_col="hatch",
+        )
+        try:
+            ax = fig.axes[0]
+            # Ranked by the carried-forward bar, not by the refit reference
+            # that beats it in both rows.
+            assert [tick.get_text() for tick in ax.get_yticklabels()] == ["b", "a"]
+            assert [patch.get_width() for patch in ax.patches] == [3.0, 1.0, 8.0, 5.0]
+            assert to_hex(ax.patches[0].get_facecolor()) == figures.style.ORANGE
+            assert to_hex(ax.patches[1].get_facecolor()) == figures.style.MUTED
+            assert [patch.get_hatch() for patch in ax.patches] == ["//", "", "//", ""]
+            assert ax.get_yticklabels()[0].get_fontweight() == "bold"
+            assert [text.get_text() for text in fig.legends[0].get_texts()] == [
+                "carried",
+                "refit",
+            ]
+        finally:
+            plt.close(fig)
 
 
 # --- the figure -------------------------------------------------------------

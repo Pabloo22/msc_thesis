@@ -530,6 +530,9 @@ def mean_rmse_bar(
     df: pd.DataFrame,
     *,
     label_col: str = "label",
+    group_col: str | None = None,
+    color_col: str | None = None,
+    hatch_col: str | None = None,
     value_col: str = "mean_rmse",
     error_col: str | None = "sd_rmse",
     upper_bound_col: str | None = "upper_bound",
@@ -544,29 +547,51 @@ def mean_rmse_bar(
     distinguished.  Values are written beside the bars so the figure retains
     the useful precision of the table it replaces.
 
+    ``group_col`` groups the bars instead of ranking them one at a time: each
+    of its values takes one row of the axis and holds one bar per ``label_col``
+    inside that row.  Rows are ranked by their best non-upper-bound bar; within
+    a row the methods keep the order they arrive in, so a reader compares the
+    same position from row to row.  That is the shape to use when the same few
+    methods are measured on every input, since the comparison then lives
+    *within* a row and the input is named once on the axis instead of being
+    repeated inside every method's label.  Here the hue names the method, so a
+    legend carries it and the leading row is marked in bold alone rather than
+    in orange.
+
+    ``color_col`` and ``hatch_col`` set the fill of each bar, for callers whose
+    methods already have an established encoding elsewhere.  Without them the
+    hue falls back to the ranking's own: grey for a reference, orange for the
+    leader, blue for everything else.
+
     ``error_col`` gives a descriptive spread for each bar, drawn as a capped
     horizontal error bar.  In exp2 it is the sample standard deviation of the
     checkpoint-level RMSEs across traits and trunks, not an inferential
     confidence interval.
     """
     style.apply_style()
-    required = {label_col, value_col}
-    missing = required.difference(df.columns)
+    columns = [label_col, value_col, *([group_col] if group_col else [])]
+    missing = set(columns).difference(df.columns)
     if missing:
         raise ValueError(f"missing mean-RMSE columns: {sorted(missing)}")
 
     optional = [
         column
-        for column in (error_col, upper_bound_col)
+        for column in (error_col, upper_bound_col, color_col, hatch_col)
         if column is not None and column in df
     ]
-    shown = (
-        df[[label_col, value_col, *optional]]
-        .dropna(subset=[value_col])
-        .sort_values(value_col, kind="stable")
-        .reset_index(drop=True)
+    shown = df[[*columns, *optional]].dropna(subset=[value_col])
+    upper = (
+        shown[upper_bound_col].fillna(False).astype(bool)
+        if upper_bound_col is not None and upper_bound_col in shown
+        else pd.Series(False, index=shown.index)
     )
-    height = max(2.6, 0.35 * len(shown) + 0.8)
+    shown = _rank_rmse_bars(shown.assign(_upper=upper), group_col, value_col)
+
+    height = (
+        max(2.6, 0.35 * len(shown) + 0.8)
+        if group_col is None
+        else max(2.6, 0.22 * len(shown) + 0.9) + _LEGEND_ROW_IN + _SHARED_LABEL_IN
+    )
     fig, ax = plt.subplots(figsize=(7.2, height))
     if shown.empty:
         _mark_empty(ax)
@@ -580,27 +605,57 @@ def mean_rmse_bar(
         if error_col is not None and error_col in shown
         else np.zeros_like(values)
     )
-    upper_bounds = (
-        shown[upper_bound_col].fillna(False).to_numpy(dtype=bool)
-        if upper_bound_col is not None and upper_bound_col in shown
-        else np.zeros_like(values, dtype=bool)
-    )
+    upper_bounds = shown["_upper"].to_numpy(dtype=bool)
     candidates = values[~upper_bounds]
     best_value = np.nanmin(candidates) if candidates.size else np.nanmin(values)
     best = np.isclose(values, best_value) & ~upper_bounds
-    y = np.arange(len(shown))
+
+    if group_col is None:
+        y = np.arange(len(shown), dtype=float)
+        bar_height = 0.72
+        ticks, tick_labels = y, shown[label_col].astype(str).tolist()
+        tick_is_best = best
+        colors = [
+            style.MUTED if upper_bound else style.ORANGE if leading else style.BLUE
+            for leading, upper_bound in zip(best, upper_bounds)
+        ]
+    else:
+        groups = list(dict.fromkeys(shown[group_col].astype(str)))
+        rows = shown[group_col].astype(str).map(groups.index).to_numpy(dtype=float)
+        within = shown.groupby(group_col, sort=False).cumcount().to_numpy()
+        sizes = shown[group_col].map(shown[group_col].value_counts()).to_numpy()
+        bar_height = 0.8 / int(sizes.max())
+        y = rows + (within - (sizes - 1) / 2) * bar_height
+        ticks = np.arange(len(groups), dtype=float)
+        tick_labels = groups
+        tick_is_best = np.isin(ticks, rows[best])
+        colors = (
+            shown[color_col].astype(str).tolist()
+            if color_col is not None and color_col in shown
+            else [
+                style.MUTED if upper_bound else style.BLUE
+                for upper_bound in upper_bounds
+            ]
+        )
+
+    hatches = (
+        shown[hatch_col].fillna("").astype(str).tolist()
+        if hatch_col is not None and hatch_col in shown
+        else [""] * len(shown)
+    )
     bars = ax.barh(
         y,
         values,
-        height=0.72,
-        color=[
-            style.MUTED if upper_bound else style.ORANGE if leading else style.BLUE
-            for leading, upper_bound in zip(best, upper_bounds)
-        ],
+        height=bar_height * (0.9 if group_col else 1.0),
+        color=colors,
         edgecolor=style.SURFACE,
         linewidth=1.0,
         zorder=3,
     )
+    # barh takes one hatch for the whole container, so a per-bar pattern has to
+    # be set on the patches afterwards.
+    for bar, hatch in zip(bars, hatches):
+        bar.set_hatch(hatch)
     if np.any(errors > 0):
         ax.errorbar(
             values,
@@ -612,8 +667,8 @@ def mean_rmse_bar(
             capsize=3,
             zorder=4,
         )
-    ax.set_yticks(y, labels=shown[label_col].astype(str))
-    ax.invert_yaxis()
+    ax.set_yticks(ticks, labels=tick_labels)
+    ax.set_ylim(len(tick_labels) - 0.5, -0.5)
     ax.set_xlabel(xlabel)
     ax.grid(False, axis="y")
     ax.grid(True, axis="x")
@@ -635,12 +690,59 @@ def mean_rmse_bar(
             zorder=5,
             bbox={"facecolor": style.SURFACE, "edgecolor": "none", "pad": 0.5},
         )
-    for tick, leading in zip(ax.get_yticklabels(), best):
+    for tick, leading in zip(ax.get_yticklabels(), tick_is_best):
         tick.set_color(style.INK)
         tick.set_fontweight("bold" if leading else "normal")
+    if group_col is not None:
+        # The hue is the only thing naming the method now that the row names
+        # the projection instead, so the key has to be on the figure. It goes
+        # under the axes rather than into a corner of them: which corner is
+        # free depends on the data, and a whisker running behind the key is
+        # worse than the row of height it costs.
+        seen = dict(zip(shown[label_col].astype(str), zip(colors, hatches)))
+        fig.legend(
+            handles=[
+                Patch(facecolor=color, edgecolor=style.SURFACE, hatch=hatch)
+                for color, hatch in seen.values()
+            ],
+            labels=list(seen),
+            loc="lower center",
+            ncol=len(seen),
+            frameon=False,
+        )
+        fig.tight_layout(rect=(0.0, _LEGEND_ROW_IN / height, 1.0, 1.0))
+        return fig
 
     fig.tight_layout()
     return fig
+
+
+def _rank_rmse_bars(
+    shown: pd.DataFrame, group_col: str | None, value_col: str
+) -> pd.DataFrame:
+    """Order the bars of :func:`mean_rmse_bar`, smallest error first.
+
+    Grouped bars are ordered by the best bar of their row that is not an
+    upper-bound reference, so a row's rank is set by the method actually under
+    test rather than by the reference it is measured against. A row of nothing
+    but references falls back to its own best value. Within a row the sort is
+    stable, so the methods hold the order the caller gave them and sit in the
+    same position in every row.
+    """
+    if group_col is None:
+        return shown.sort_values(value_col, kind="stable").reset_index(drop=True)
+    under_test = shown[value_col].where(~shown["_upper"])
+    rank = (
+        under_test.groupby(shown[group_col], sort=False)
+        .min()
+        .fillna(shown.groupby(group_col, sort=False)[value_col].min())
+    )
+    return (
+        shown.assign(_rank=shown[group_col].map(rank))
+        .sort_values("_rank", kind="stable")
+        .drop(columns="_rank")
+        .reset_index(drop=True)
+    )
 
 
 # --- the RQ1 decay experiment ---------------------------------------------
@@ -2369,6 +2471,19 @@ def _correlation_limits(
     return min(floor, 1.0 - _CORRELATION_SPAN) - _CORRELATION_CLEARANCE, top
 
 
+def _rmse_limits(frame: pd.DataFrame, columns: Sequence[str]) -> tuple[float, float]:
+    """The common non-negative range for one trait's RMSE panels.
+
+    RMSE is in judge points, so zero is the meaningful floor.  The small headroom
+    keeps the largest marker clear of the frame while retaining one scale across
+    every trunk and projection variant of the trait.
+    """
+    present = [frame[column].dropna() for column in columns if column in frame]
+    values = pd.concat(present) if present else pd.Series(dtype=float)
+    top = float(values.max()) if not values.empty else 1.0
+    return 0.0, max(1.0, top * 1.08)
+
+
 #: The size a curve label is printed at, in points. Small, because there is one
 #: per curve per panel and the panel is a third of a text width -- but read at
 #: the figure's printed size, not at the canvas size, which is why the grid is
@@ -2573,36 +2688,44 @@ def headline_curves(
     trait_labels: Mapping[str, str] | None = None,
     trunks: Sequence[str] | None = None,
     trunk_labels: Mapping[str, str] | None = None,
+    trunk_row_labels: Mapping[str, str] | None = None,
     groups: Sequence[CurveGroup] = (),
     member_labels: Sequence[str] = (),
     facet: bool = True,
+    metric: str = "corr",
     xlabel: str = "Checkpoint $t$",
-    ylabel: str = r"Correlation $r$ with $b_{t+1}$ over the probe set",
+    ylabel: str | None = None,
 ) -> Figure:
-    r"""Plot 3: how each projection difference's correlation holds up in $t$.
+    r"""Plot a checkpoint metric for the 3x2 projection-difference variants.
 
     The six variants are a 3x2 -- three persona vectors crossed with two
     sources of predicted answers -- and this figure draws them as one, because
     what the chapter asks of it is which *factor* a lost correlation is
     attributable to. So the two factors get two channels: colour (and, when
-    ``facet``, a row) for the vector, line style for the answers. Six flat hues
+    ``facet``, a column) for the vector, line style for the answers. Six flat hues
     is what the first version of this figure used and it was unreadable; no
     six hues would have fixed it, because six hues is the wrong encoding for a
     3x2.
 
     ``facet`` chooses the layout, and the trade is between the two comparisons:
 
-    * ``True`` gives every group its own row -- so a panel holds two curves,
+    * ``True`` gives every group its own column -- so a panel holds two curves,
       one pair, and the gap between them *is* what regenerating the answers
-      buys. Reading down a column is then the vector's contribution. The cost
+      buys. Trunks occupy the rows, so reading across one compares persona
+      vectors without changing the trajectory. The cost
       is height, and that the six are no longer in one panel to be read against
       each other at a glance.
     * ``False`` puts all six in one panel, a row per trait -- compact, and the
       whole 3x2 is read at once, at the price of six curves crossing in the
       panels where they bunch.
 
-    Either way a trunk is a column: it is the condition the variants are
-    compared under, not one of them.
+    In the faceted layout a trunk is a row and a persona vector is a column.
+    The compact overlaid layout retains one trunk per column because all three
+    persona-vector groups share each panel there.
+
+    ``metric`` selects wide columns named ``<metric>_<series>``. Correlation
+    uses its bounded scale and two decimal places; RMSE uses a zero-based scale
+    in judge points and one decimal place.
 
     Identity and summary are split between the two places each reads best. The
     keys name the channels once for the whole grid; each curve then carries its
@@ -2626,19 +2749,31 @@ def headline_curves(
     square root, not the stored number.
     """
     style.apply_style()
+    if metric not in {"corr", "rmse"}:
+        raise ValueError("headline metric must be 'corr' or 'rmse'")
     groups = list(groups)
     trunk_labels = trunk_labels or {}
-    columns = [f"corr_{name}" for group in groups for name in group.series]
+    trunk_row_labels = trunk_row_labels or trunk_labels
+    columns = [f"{metric}_{name}" for group in groups for name in group.series]
+    limits_for = _correlation_limits if metric == "corr" else _rmse_limits
+    decimals = 2 if metric == "corr" else 1
+    if ylabel is None:
+        ylabel = (
+            r"Correlation $r$ with $b_{t+1}$ over the probe set"
+            if metric == "corr"
+            else r"RMSE of $f_0$ predictions over the probe set (judge points)"
+        )
     blocks = _facets(fits, traits, trait_labels, column="trait")
-    cols = list(trunks) if trunks else sorted(fits["trunk"].unique())
-    per_block = len(groups) if facet else 1
+    trunk_order = list(trunks) if trunks else sorted(fits["trunk"].unique())
+    ncols = len(groups) if facet else len(trunk_order)
+    per_block = len(trunk_order) if facet else 1
     nrows = max(1, len(blocks) * per_block)
     row_in = _HEADLINE_FACET_ROW_IN if facet else _HEADLINE_ROW_IN
 
     fig, axes = plt.subplots(
         nrows,
-        len(cols),
-        figsize=(_HEADLINE_COLUMN_IN * len(cols) + 0.7, row_in * nrows + 0.5),
+        ncols,
+        figsize=(_HEADLINE_COLUMN_IN * ncols + 0.7, row_in * nrows + 0.5),
         sharex=True,
         sharey=False,
         squeeze=False,
@@ -2648,48 +2783,61 @@ def headline_curves(
     for block, (_, frame, trait_label) in enumerate(blocks):
         # One range for the trait's whole block, so its trunks -- and, when
         # faceted, its vectors -- stay comparable.
-        limits = _correlation_limits(frame, columns)
+        limits = limits_for(frame, columns)
         first = block * per_block
-        rows = (
-            [(first + i, (group,), group.label) for i, group in enumerate(groups)]
+        cells = (
+            [
+                (first + row, col, trunk, (group,))
+                for row, trunk in enumerate(trunk_order)
+                for col, group in enumerate(groups)
+            ]
             if facet
-            else [(first, tuple(groups), trait_label)]
+            else [
+                (first, col, trunk, tuple(groups))
+                for col, trunk in enumerate(trunk_order)
+            ]
         )
-        for row, here, row_label in rows:
-            for col, trunk in enumerate(cols):
-                ax = axes[row][col]
-                ax.set_ylim(*limits)
-                arm = frame[frame["trunk"] == trunk].sort_values("t")
-                if arm.empty:
-                    _mark_empty(ax)
-                    continue
-                entries = []
-                for group in here:
-                    for member, name in enumerate(group.series):
-                        column = f"corr_{name}"
-                        if column not in arm:
-                            continue
-                        drawn = arm[["t", column]].dropna()
-                        if drawn.empty:
-                            continue
-                        x = drawn["t"].to_numpy(dtype=float)
-                        y = drawn[column].to_numpy(dtype=float)
-                        _series_line(
-                            ax,
-                            x,
-                            y,
-                            color=group.color,
-                            linestyle=_MEMBER_LINESTYLES[member],
-                        )
-                        drew.add(name)
-                        entries.append((f"{y.mean():.2f}", group.color, x, y))
-                labelled.append((ax, entries))
-                # Zero is a level worth drawing only once the panel is wide
-                # enough to have a sign to read; on a range that never goes
-                # near it the rule would just underline the frame.
-                if limits[0] < 0.0:
-                    ax.axhline(0, color=style.BASELINE, linewidth=0.8, zorder=1)
-            axes[row][0].set_ylabel(row_label, fontsize=9)
+        for row, col, trunk, here in cells:
+            ax = axes[row][col]
+            ax.set_ylim(*limits)
+            arm = frame[frame["trunk"] == trunk].sort_values("t")
+            if arm.empty:
+                _mark_empty(ax)
+                continue
+            entries = []
+            for group in here:
+                for member, name in enumerate(group.series):
+                    column = f"{metric}_{name}"
+                    if column not in arm:
+                        continue
+                    drawn = arm[["t", column]].dropna()
+                    if drawn.empty:
+                        continue
+                    x = drawn["t"].to_numpy(dtype=float)
+                    y = drawn[column].to_numpy(dtype=float)
+                    _series_line(
+                        ax,
+                        x,
+                        y,
+                        color=group.color,
+                        linestyle=_MEMBER_LINESTYLES[member],
+                    )
+                    drew.add(name)
+                    entries.append(
+                        (f"{y.mean():.{decimals}f}", group.color, x, y)
+                    )
+            labelled.append((ax, entries))
+            # Zero is a level worth drawing only once the panel is wide enough
+            # to have a sign to read; otherwise it just underlines the frame.
+            if metric == "corr" and limits[0] < 0.0:
+                ax.axhline(0, color=style.BASELINE, linewidth=0.8, zorder=1)
+        if facet:
+            for row, trunk in enumerate(trunk_order, start=first):
+                axes[row][0].set_ylabel(
+                    trunk_row_labels.get(trunk, f"Trunk {trunk}"), fontsize=9
+                )
+        else:
+            axes[first][0].set_ylabel(trait_label, fontsize=9)
         if facet:
             # The trait names its block from the right, opposite the row names
             # on the left: three facts about a panel -- trait, vector, trunk --
@@ -2716,11 +2864,14 @@ def headline_curves(
         ],
         y=True,
     )
-    for col, trunk in enumerate(cols):
+    headings = (
+        [group.label for group in groups]
+        if facet
+        else [trunk_labels.get(trunk, f"Trunk {trunk}") for trunk in trunk_order]
+    )
+    for col, heading in enumerate(headings):
         axes[0][col].set_title(
-            trunk_labels.get(trunk, f"Trunk {trunk}"),
-            color=style.SECONDARY_INK,
-            fontsize=9,
+            heading, color=style.SECONDARY_INK, fontsize=9
         )
     # Ticks at the measured checkpoints, so the strip the labels stand in
     # below is empty rather than carrying ticks for checkpoints nobody ran.

@@ -76,7 +76,7 @@ Overall, we found that all projection variants presented in \Cref{sec:deltap-var
 \begin{figure}[H]
     \centering
     \includegraphics[width=\linewidth]{plots/real/exp2/exp2_headline.pdf}
-    \caption{Correlation at each checkpoint for the six refreshed projection-difference variants defined in \Cref{sec:deltap-variants}. Columns show driver trunks, and three-row blocks show the measured traits. Line colour and style identify the variant, and the label at the end of each curve gives its mean correlation over checkpoints.}
+    \caption{Correlation at each checkpoint for the six refreshed projection-difference variants defined in \Cref{sec:deltap-variants}. Rows show driver trunks, columns show persona-vector variants, and three-row blocks show the measured traits. Line style identifies the predicted-answer source, and the label at the end of each curve gives its mean correlation over checkpoints.}
     \label{fig:exp2-headline}
 \end{figure}
 
@@ -99,7 +99,7 @@ Interestingly, $\Delta P_0$, which does not make use of the updated model $\math
 \subsection{Evaluating a Behaviour Forecaster}
 In practice, we cannot train on 8 probe datasets at every step to fit the linear model that maps projection differences to behaviour, as this is computationally more expensive than simply fine-tuning the model on the next dataset. Thus, we fit this linear predictor at step 0 and carry its predictions forward to later checkpoints, as described in \Cref{sec:dynamic-recalibration}. We then use the checkpoint state to attempt to improve its calibration by fitting a recalibration function $c_t(\mathbf{z}_t)$ whose output scales $\beta_0$.
 
-We evaluate the forecaster using leave-one-out cross-validation. For a held-out trajectory and probe dataset $j$, the recalibration-factor regression is fitted only on checkpoints from the other trajectories. Moreover, every training target $c^{*}_{t,-j}$ is computed from the other seven probe datasets, and the base-model line uses the other 23 validation datasets. The fitted regression is then applied to the held-out trajectory and used solely to predict probe $j$. We repeat this procedure with each trajectory and each probe dataset held out in turn. Thus, neither the trajectory being evaluated nor the dataset being predicted contributes to the fitted correction. Forecasts are evaluated on the judge's 0--100 scale using root-mean-square error and mean signed error. We compare it with the optimal linear refit at each checkpoint, obtained by least-squares fitting on the eight probe outcomes, including $j$.
+We evaluate the forecaster using leave-one-out cross-validation. For a held-out trajectory and probe dataset $j$, the recalibration-factor regression is fitted only on checkpoints from the other trajectories. Moreover, every training target $c^{*}_{t,-j}$ is computed from the other seven probe datasets, and the base-model line uses the 21 validation datasets outside $\mathcal{D}_j$'s family. The 24 validation datasets are 8 families of 3 versions each (Normal, misaligned-I and misaligned-II), and the three versions of a family are edits of one corpus rather than three independent datasets; holding out only $\mathcal{D}_j$ would therefore leave two near-copies of it in the fit, and $\alpha_0$ and $\beta_0$ would be tuned to the very corpus they are about to be scored on. The fitted regression is then applied to the held-out trajectory and used solely to predict probe $j$. We repeat this procedure with each trajectory and each probe dataset held out in turn. Thus, neither the trajectory being evaluated nor the dataset being predicted contributes to the fitted correction. Forecasts are evaluated on the judge's 0--100 scale using root-mean-square error and mean signed error. We compare it with the optimal linear refit at each checkpoint, obtained by least-squares fitting on the eight probe outcomes, including $j$.
 
 \begin{figure}[H]
     \centering
@@ -112,7 +112,8 @@ We evaluate the forecaster using leave-one-out cross-validation. For a held-out 
     that enters the fit and the cross is $\mathcal{D}_j$, which enters none:
     each training target $c^{*}_{t,-j}$ is solved over the other seven probes,
     and is measured against an initial predictor $f_0$ that is itself fitted
-    on the 23 validation datasets other than $\mathcal{D}_j$. On the held-out
+    on the 21 validation datasets outside $\mathcal{D}_j$'s family, so neither
+    $\mathcal{D}_j$ nor either of its two sibling versions enters $f_0$. On the held-out
     trunk (red), hollow dots are probes that were measured but go unused in
     this fold, and the filled dot is $\mathcal{D}_j$, the one prediction
     scored. Neither the trajectory being scored nor the dataset being
@@ -140,22 +141,33 @@ For the state-evolution analysis, we examine the projection-difference variants 
     \includegraphics[width=\textwidth]{plots/real/exp2/exp2_forecast_rmse_bar.pdf}
 \caption{Mean root-mean-square error, in judge points, of the behaviour
     predicted from $\Delta P_0$ and all six refreshed projection-difference
-    variants defined in \Cref{sec:deltap-variants}.
-    Each bar is the mean
+    variants defined in \Cref{sec:deltap-variants}. Each row is one
+    projection difference and holds the three forecasters that were given it.
+    The first two bars are both $f_0$, the affine map fitted once at the initial
+    checkpoint and then carried forward; they differ only in what that map was
+    fitted to predict, the reached level $b_{t+1}$ (blue) or the change
+    $\Delta b_{t+1}$ (orange, hatched). Either
+    way the forecast returned is a level, and both are scored against the same
+    realised $b_{t+1}$. The grey bar is $f_t$, refitted on the checkpoint's own
+    eight probes; it is fitted at the checkpoint, so it is the same reference
+    for either target and is drawn once. Each bar is the mean
     RMSE across all checkpoints and traits. Each
     constituent RMSE is calculated over eight probe datasets. Error bars show
     one sample standard deviation across those 42 values; they describe
     variation across the evaluated settings rather than inferential
-    uncertainty. Bars are ordered from smaller to larger error, and the best
-    non-refit method is bold and orange. Here $f_0$ is the affine forecaster
-    fitted once at the initial checkpoint to predict $\Delta b$, and its argument identifies the
-    projection difference supplied to it; $f_t$ is refitted on the
-    checkpoint's own eight probes. The grey $f_t$ bars are an upper-bound
-    reference rather than an equal comparison: $f_0$ is held out on both
-    dataset and checkpoint, while $f_t$ is scored on the probes it was fitted
-    to.}
+    uncertainty. Rows are ordered by their better $f_0$ bar, from smaller to
+    larger error, and the leading one is in bold. The grey $f_t$ bars are an
+    upper-bound reference rather than an equal comparison: $f_0$ is held out
+    on both dataset and checkpoint, while $f_t$ is scored on the probes it was
+    fitted to.}
     \label{fig:forecast-rmse}
 \end{figure}
+
+% The same numbers as one flat ranking, every bar labelled with its fitted
+% map, its projection and its target, are emitted alongside this one as
+% plots/real/exp2/exp2_forecast_rmse_bar_ranked.pdf. That layout is the only
+% one that orders $f_0$ and $f_t$ against each other; it is twice as tall.
+% Swap the file name above to use it.
 
 \begin{figure}[H]
     \centering
@@ -173,7 +185,7 @@ For the state-evolution analysis, we examine the projection-difference variants 
     $\Delta P_0$, at every checkpoint of every trunk. A forecast is right when
     its cloud lies on the diagonal, so vertical spread about that line is the
     RMSE printed beside it and a cloud sitting wholly above or below it is a
-    systematic bias. Blue gives the leave-one-dataset-out $M_0$ predictions;
+    systematic bias. Blue gives the leave-one-family-out $M_0$ predictions;
     orange is the same probes refitted at the checkpoint. The diagonal is the
     only line drawn: a forecaster's own line is already spent placing the
     points along the horizontal axis, which is what makes the diagonal the
