@@ -76,7 +76,7 @@ Overall, we found that all projection variants presented in \Cref{sec:deltap-var
 \begin{figure}[H]
     \centering
     \includegraphics[width=\linewidth]{plots/real/exp2/exp2_headline.pdf}
-    \caption{Correlation at each checkpoint for the six refreshed projection-difference variants defined in \Cref{sec:deltap-variants}. Rows show driver trunks, columns show persona-vector variants, and three-row blocks show the measured traits. Line style identifies the predicted-answer source, and the label at the end of each curve gives its mean correlation over its respective trunk's checkpoints.}
+    \caption{Correlation at each checkpoint for the six refreshed projection-difference variants defined in \Cref{sec:deltap-variants}. Rows show driver trunks, columns show persona-vector variants employed by the projection difference, and three-row blocks show the measured traits. Line style identifies the predicted-answer source for $\mathbf{h}^{\text{predicted}}$, and the label at the end of each curve gives its mean correlation over its respective trunk's checkpoints. Each projection difference variant is constructed by combining the components given by the column and line style.}
     \label{fig:exp2-headline}
 \end{figure}
 
@@ -135,8 +135,7 @@ The fitted regressor is then applied to the held-out trajectory and used solely 
     \includegraphics[width=\linewidth]{plots/real/exp2/exp2_headline_rmse.pdf}
     \caption{RMSE, in judge points, at each checkpoint for the six refreshed
     projection-difference variants defined in \Cref{sec:deltap-variants}, using
-    the leave-one-out predictions of the map $f_0$ fitted at $\mathcal{M}_0$. The label at the end of each curve
-    gives its mean RMSE over checkpoints.}
+    the leave-one-out predictions of the map $f_0$ fitted at $\mathcal{M}_0$. The label at the end of each curve gives its mean RMSE over checkpoints. Each projection difference variant is constructed by combining the components given by the column and line style.}
     \label{fig:exp2-headline-rmse}
 \end{figure}
 
