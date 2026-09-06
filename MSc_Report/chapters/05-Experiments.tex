@@ -33,7 +33,7 @@ We verified the experimental setup by reproducing the results of \citet{chen2025
     \label{fig:exp2-design}
 \end{figure}
 
-In this experiment, we run three trajectory trunks, which we name A, B, and C. Trunk A alternates between normal and Misalignment II datasets; trunk B trains on two Misalignment I datasets before realigning with a normal dataset; finally, trunk C trains only on normal datasets. Each is composed of six fine-tuning steps. \Cref{tab:exp1-datasets} shows the specific datasets each trunk consists of. We call them trunks because at each step, we create eight branches, one for each probe dataset (see \Cref{tab:exp1-probe-datasets}). Each branch is a fine-tuning on the corresponding probe dataset. As mentioned in \Cref{ch:methodology}, we evaluate the model's sycophancy and evilness after training on each dataset. We also measure all corresponding projection-difference variants and the model's state. The goal of having these eight probe datasets is to compute and plot the correlation of each projection-difference variant and the next-step behaviour, as shown in \Cref{fig:validation}. \Cref{fig:exp2-design}
+In this experiment, we run three trajectory trunks, which we name A, B, and C. Trunk A alternates between normal and Misalignment II datasets; trunk B trains on two Misalignment I datasets before realigning with a normal dataset. Trunk C trains only on normal datasets. Each is composed of six fine-tuning steps. \Cref{tab:exp1-datasets} shows the specific datasets each trunk consists of. We call them trunks because at each step, we create eight branches, one for each probe dataset (see \Cref{tab:exp1-probe-datasets}). Each branch is a fine-tuning on the corresponding probe dataset. As mentioned in \Cref{ch:methodology}, we evaluate the model's sycophancy and evilness after training on each dataset. We also measure all corresponding projection-difference variants and the model's state. These eight probe datasets allow us to compute and plot the correlation of each projection-difference variant and the next-step behaviour (i.e., to approximate \Cref{fig:validation} but at each checkpoint). When evaluating the accuracy of the predictive model, however, we used the root mean square error (RMSE). Intuitively, the correlation measures how well a perfectly calibrated regressor would perform, whereas the RMSE is how it actually performed. If the correlation is not high, no linear predictor can achieve good performance.
 
 % TABLE: DATASETS ORDERING
 \begin{table}[H]
@@ -69,7 +69,39 @@ In this experiment, we run three trajectory trunks, which we name A, B, and C. T
     \label{tab:exp1-probe-datasets}
 \end{table}
 
-In practice, we cannot train on 8 probe datasets after every step to fit the linear model that maps projection differences to behaviour, since it is computationally more expensive than simply fine-tuning the model on the next dataset. Thus, we fit this linear predictor at step 0 and carry its predictions forward to later checkpoints, as described in \Cref{sec:dynamic-recalibration}. We then use the checkpoint state to attempt to improve its calibration by fitting a recalibration function $c_t(\mathbf{z}_t)$ whose output scales $\beta_0$.
+\subsection{What Projection Difference Variant Maintains a Higher Correlation with Behaviour?}
+
+Overall, we found that all projection variants presented in \Cref{sec:deltap-variants}, including $Delta P_0$, remained highly correlated with behaviour for almost all trajectories and steps. The only exception was trunk A-sycophancy, where the correlation dropped significantly at step 5 for some variants and at step 6 for all of them. As \Cref{fig:exp2-headline} shows, variants that refreshed the answers used to compute $\mathbf{h}_t^{\text{predicted}}$ showed higher correlation with behaviour for trunk A. Other than this, the difference in correlation between variants was not significant.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\linewidth]{plots/real/exp2/exp2_headline.pdf}
+    \caption{Correlation at each checkpoint for the six refreshed projection-difference variants defined in \Cref{sec:deltap-variants}. Columns show driver trunks, and three-row blocks show the measured traits. Line colour and style identify the variant, and the label at the end of each curve gives its mean correlation over checkpoints.}
+    \label{fig:exp2-headline}
+\end{figure}
+
+
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\linewidth]{plots/real/exp2/exp2_decay_summary.pdf}
+    \caption{Correlation of $\Delta P_0$ and the six refreshed projection-difference variants defined in \Cref{sec:deltap-variants}, shown separately for each trait and trunk. Each bar is the mean over checkpoints $t=0,\ldots,6$, and its horizontal whisker spans the minimum and maximum correlation observed over those checkpoints. Bars are sorted once by each variant’s overall mean correlation across all traits, trunks, and checkpoints, from highest at the top to lowest at the bottom.}
+    \label{fig:exp2-decay-summary}
+\end{figure}
+
+
+
+Interestingly, $\Delta P_0$, which does not make use of the updated model $\mathcal{M}_t$, maintained similar performance to the variants that did not refresh $\mathbf{h}_t^{\text{predicted}}$. Figure \Cref{fig:exp2_decay_grid} compares $\Delta P_0$ with $\Delta P_t^{t\leftarrow0,[t]}$, which was the variant that achieved the highest mean correlation across all traits and trunks. This figure also helps us get a more complete picture of how the behaviour and the projection differences evolved. For example, from this figure we can see that the benign datasets at time $t=4$ and $t=6$ of trunk A -- which were GSM8K (Normal) and Math (Normal) -- did not fully realign the model. 
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\linewidth]{plots/real/exp2/exp2_decay_grid.pdf}
+    \caption{Behaviour after probe fine-tuning, $b_{t+1}$, against $\Delta P_0$ (blue) and $\Delta P_t^{t\leftarrow0,[t]}$ (orange) at each checkpoint; the variants are defined in \Cref{sec:deltap-variants}. Columns show checkpoints and rows show driver trunks, in separate blocks for evil and sycophancy. Fitted lines are labelled with Pearson's $r$, and the horizontal black line marks $b_t$.}
+    \label{fig:exp2_decay_grid}
+\end{figure}
+
+
+In practice, we cannot train on 8 probe datasets at every step to fit the linear model that maps projection differences to behaviour, as this is computationally more expensive than simply fine-tuning the model on the next dataset. Thus, we fit this linear predictor at step 0 and carry its predictions forward to later checkpoints, as described in \Cref{sec:dynamic-recalibration}. We then use the checkpoint state to attempt to improve its calibration by fitting a recalibration function $c_t(\mathbf{z}_t)$ whose output scales $\beta_0$.
 
 We evaluate the correction using leave-one-out cross-validation. For a held-out trajectory and probe dataset $j$, the recalibration-factor regression is fitted only on checkpoints from the other trajectories. Moreover, every training target $c^{*}_{t,-j}$ is computed from the other seven probe datasets, and the base-model line uses the other 23 validation datasets. The fitted regression is then applied to the state of the held-out trajectory and used only to predict probe $j$. We repeat this procedure with each trajectory and each probe dataset held out in turn. Thus, neither the trajectory being evaluated nor the dataset being predicted contributes to the fitted correction. Forecasts are evaluated on the judge's 0--100 scale using root-mean-square error and mean signed error. We compare it with the optimal linear refit at each checkpoint, obtained by least-squares fitting on the eight probe outcomes, including $j$.
 
@@ -78,7 +110,7 @@ For the state-evolution analysis, we examine the projection-difference variants 
 \subsection{Projection-Difference Robustness}
 % TODO: Complete or remove the unfinished sentence introducing the correlation summary figure.
 % TODO: Explain what changing each component contributes, using comparisons between variants that differ in that component alone.
-Using the setup described above, we first analysed whether projection differences continue to be correlated with behaviour after each trunk fine-tuning step by measuring the correlation across the probe datasets. Overall, we found that all projection variants presented in \Cref{sec:deltap-variants}, including $Delta P_0$, remained highly correlated with behaviour for almost all trajectories and steps. The only exception was trunk A-sycophancy, where the correlation dropped significantly at step 5 for some of the variants, and for step 6 for all of them. 
+Using the setup described above, we first analysed whether projection differences continue to be correlated with behaviour after each trunk fine-tuning step by measuring the correlation across the probe datasets. 
 
 
 
@@ -88,26 +120,8 @@ Using the setup described above, we first analysed whether projection difference
 
 \Cref{fig:exp2_decay_grid} shows only $\Delta P_0$ and $\Delta P_t^{t\leftarrow0,[t]}$ (orange) to keep each panel readable. We selected the latter as the refreshed variant because it achieved the highest overall mean correlation when the checkpoint means in \Cref{tab:decay-correlations} are averaged across the two traits and three trunks. \Cref{fig:exp2-decay-summary} summarises these means and the range across checkpoints for all six refreshed variants alongside $\Delta P_0$. For evil, both the initial and refreshed projection differences remain strongly correlated with behaviour across all three trunks. The sycophancy correlations are also consistently strong for trunks B and C, but for trunk A-sycophancy, refreshing the projection difference recovers the correlation at $t=5$, but not at $t=6$.
 
-\begin{figure}[htbp]
-    \centering
-    \includegraphics[width=\linewidth]{plots/real/exp2/exp2_decay_grid.pdf}
-    \caption{Behaviour after probe fine-tuning, $b_{t+1}$, against $\Delta P_0$ (blue) and $\Delta P_t^{t\leftarrow0,[t]}$ (orange) at each checkpoint; the variants are defined in \Cref{sec:deltap-variants}. Columns show checkpoints and rows show driver trunks, in separate blocks for evil and sycophancy. Fitted lines are labelled with Pearson's $r$, and the horizontal black line marks $b_t$.}
-    \label{fig:exp2_decay_grid}
-\end{figure}
 
-\begin{figure}[H]
-    \centering
-    \includegraphics[width=\linewidth]{plots/real/exp2/exp2_decay_summary.pdf}
-    \caption{Correlation of $\Delta P_0$ and the six refreshed projection-difference variants defined in \Cref{sec:deltap-variants}, shown separately for each trait and trunk. Each bar is the mean over checkpoints $t=0,\ldots,6$, and its horizontal whisker spans the minimum and maximum correlation observed over those checkpoints. Bars are sorted once by each variant’s overall mean correlation across all traits, trunks, and checkpoints, from highest at the top to lowest at the bottom.}
-    \label{fig:exp2-decay-summary}
-\end{figure}
 
-\begin{figure}[H]
-    \centering
-    \includegraphics[width=\linewidth]{plots/real/exp2/exp2_headline.pdf}
-    \caption{Correlation at each checkpoint for the six refreshed projection-difference variants defined in \Cref{sec:deltap-variants}. Columns show driver trunks and three-row blocks show the measured traits. Line colour and style identify the variant, and the label at the end of each curve gives its mean over checkpoints.}
-    \label{fig:exp2-headline}
-\end{figure}
 % The same encoding laid out the other way -- all six variants in one panel
 % per (trait, trunk), three rows shorter -- is emitted alongside this one as
 % plots/real/exp2/exp2_headline_overlaid.pdf. Swap the file name above to use it.
