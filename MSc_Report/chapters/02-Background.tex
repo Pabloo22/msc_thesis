@@ -256,7 +256,7 @@ As we mentioned in the Introduction, \citet{qi2024finetuning} found that fine-tu
 The outcome we predict does also matter. There are several potential risks, such as compliance with harmful instructions, sycophantic behaviours, or broad misalignment. \citet{khan2026safetydriftfinetuningevidence}, evaluating 100 models accross general-purpose and domain-specific safety benchmarks, found that benign fine-tuning can cause contradictory changes in measured safety: models frequently improved on some measurements while degrading on others. Therefore, a reliable predictor in one metric may not be a reliable predictor in another. In other words, this thesis evaluates evilness and sycophancy, but those should not be taken as a complete measurement of emergent misalignment.
 
 \subsection{Activation-Based Prediction and Data Selection}
-This project follows is based on the methodology introduced by \citet{chen2025persona_vectors}, as we discussed. However, cheaper variants preserve a similar structure.
+This project follows is based on the methodology introduced by \citet{chen2025persona_vectors}, as we discussed. However, other variants preserve a parts of this structure.
 
 
 While this project uses projection differences as described in \citet{chen2025persona_vectors} for predicting emergent misalignment, other methods could be used. 

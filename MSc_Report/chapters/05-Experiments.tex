@@ -1,32 +1,26 @@
 \chapter{Experiments and Results} % 5
 \label{ch:experiments}
-% TODO: Outline how the implementation check and two experiments address RQ1 and RQ2; refer to Methodology for shared procedures.
 % Walkthrough of the experiments 
 In this chapter, we present the experiments we conducted to answer the research questions and their results. Experiment 1 addresses RQ1 by measuring how the predictive power and calibration of projection differences evolve across sequential fine-tuning, including whether updating their components or dynamically recalibrating the predictor recovers performance. Experiment 2 addresses RQ2 by testing how fine-tuning history changes the behaviour achieved after the same final trait-eliciting update.
 
-% TODO: Finish the introduction
-Quantifying the decay of projection differences determines how much confidence we can place in predictions made by a predictor calibrated on the initial model, $f_0$, and when that predictor needs to be updated. Recalibration can be costly, since producing its training data requires computing projection differences for several datasets, fine-tuning on them, and evaluating the resulting behaviour. Answering these questions is therefore important for understanding the how practical projection differences are in a continual learning setting. 
+Quantifying the decay of projection differences determines how much confidence we can place in predictions made by a predictor calibrated on the initial model, $f_0$, and when that predictor needs to be updated. Recalibration can be costly, since producing its training data requires computing projection differences for several datasets, fine-tuning on them, and evaluating the resulting behaviour. Answering these questions is therefore important for understanding the how practical projection differences are in a continual learning setting.
+
 
 \section{Implementation Validation}
 \label{sec:validation}
-% TODO: State which one-step results are reproduced and report the correlations for both traits, including any differences from the original paper.
-% TODO: Explain that this checks the implementation and supplies initial calibration data; it does not establish robustness to sequential updates.
-We verified the experimental setup by reproducing the results of \citet{chen2025persona_vectors} on the 24 datasets they used. The results are shown in \Cref{fig:validation}. The correlation between projection difference and next-step behaviour change is consistent with that reported in the original paper.
+% TODO: Make the paragraph and caption consistent about whether the plotted outcome is behaviour or behaviour change.
+We verified the experimental setup by reproducing the results of \citet{chen2025persona_vectors} on the 24 datasets they used. The results are shown in \Cref{fig:validation}. The correlation between projection difference and next-step behaviour is consistent with that reported in the original paper.
+
 \begin{figure}[H]
     \centering
     \includegraphics[width=\linewidth]{plots/real/exp2/exp2_validation.pdf}
-    \caption{Projection difference $\Delta P_0$ against next-stepbehaviour $b_1$ after fine-tuning the initial model on each of the 24 datasets, for evil (left) and sycophancy (right). Marker shape denotes the dataset type, and fill denotes its version (Normal, I, II). Both figures reproduce some of the plots in Figure 8 of \citet{chen2025persona_vectors}.}
+    \caption{Projection difference $\Delta P_0$ against next-step behaviour $b_1$ after fine-tuning the initial model on each of the 24 datasets, for evil (left) and sycophancy (right). Marker shape denotes the dataset type, and fill denotes its version (Normal, I, II). Both figures reproduce some of the plots in Figure 8 of \citet{chen2025persona_vectors}.}
     \label{fig:validation}
 \end{figure}
 
 \section{Experiment 1: Measuring the Robustness of Projection Differences}
 \label{sec:robustness}
-% TODO: Introduce the three tests of RQ1: retained correlation, accuracy of the initial predictor, and improvement from state-based recalibration.
-
-\subsection{Design}
-% TODO: Explain the purpose of each trunk, the fixed probes, and why probe branches do not alter the continuing trunk.
-% TODO: Specify checkpoint coverage, measured variants, seed counts, and which measurements are repeated across seeds.
-% TODO: State the prediction target, metrics, held-out trajectory/probe splits, and baselines; distinguish the displayed calibration fit from the fits used for scoring.
+% TODO: Specify which projection differences predict behaviour and which predict behaviour change, and how these predictions are compared on the same scale.
 \begin{figure}[H]
     \centering
     \input{figures/exp2_design}
@@ -82,9 +76,8 @@ We evaluate the correction using leave-one-out cross-validation. For a held-out 
 For the state-evolution analysis, we examine the projection-difference variants $\Delta P_t^{t\leftarrow0,[0]}$ and $\Delta P_t^{t\leftarrow0,[t]}$, together with the checkpoint-state variants $\mathbf{z}_t^{[0,0]}$ and $\mathbf{z}_t^{[t,0]}$. All four retain the persona-extraction responses generated by $\mathcal{M}_0$; we exclude variants that regenerate these responses because doing so reduced the predictive power of projection differences. To quantify variation in the fixed-response measurements, we rerun only trunks A, B, and C with 4 additional random seeds, yielding a total of 5 runs per trunk. Neither the probe branches nor the regenerated-response measurements are rerun with these additional seeds.
 
 \subsection{Projection-Difference Robustness}
-% TODO: Report how the initial projection difference's correlation changes by trait, trunk, and checkpoint, with key numerical values and failure cases.
-% TODO: Compare variants differing in one component to explain what each refresh contributes; state that the displayed variant was selected using these results.
-% TODO: Distinguish retained correlation from accurate calibration, and clarify that checkpoint ranges are not uncertainty intervals.
+% TODO: Complete or remove the unfinished sentence introducing the correlation summary figure.
+% TODO: Explain what changing each component contributes, using comparisons between variants that differ in that component alone.
 Using the setup described above, we first analysed whether projection differences continue to be correlated with behaviour after each trunk fine-tuning step by measuring the correlation across the probe datasets. Overall, we found that all projection variants presented in \Cref{sec:deltap-variants}, including $Delta P_0$, remained highly correlated with behaviour for almost all trajectories and steps. The only exception was trunk A-sycophancy, where the correlation dropped significantly at step 5 for some of the variants, and for step 6 for all of them. 
 
 
@@ -120,9 +113,9 @@ Using the setup described above, we first analysed whether projection difference
 % plots/real/exp2/exp2_headline_overlaid.pdf. Swap the file name above to use it.
 
 \subsection{Dynamic Recalibration}
-% TODO: Quantify the initial predictor's calibration drift using RMSE and mean signed error by trait and trunk, even where correlation remains high.
-% TODO: Present held-out state-based recalibration results against the initial predictor and checkpoint oracle; report improvements and failures, and identify the oracle's use of test outcomes.
-% TODO: Describe associations between state measurements and predictive performance without treating them as causal evidence or proof of held-out improvement.
+% TODO: Explain the main RMSE and bias results shown here and in the appendix, including whether strong correlation coexists with inaccurate predictions.
+% TODO: Discuss the appendix's state-based correction results: which corrections improve on the initial predictor, by how much, and where they fail.
+% TODO: Summarise which state measurements are associated with correlation changes in the mechanism figure.
 
 \begin{figure}[H]
     \centering
@@ -186,8 +179,8 @@ Using the setup described above, we first analysed whether projection difference
 
 \subsection{State Evolution}
 % TODO: Describe how projection differences and state components change after trait-eliciting and normal updates, and whether they return towards their initial values.
-% TODO: Compare the selected state variants, explain the common measurement axis and percentage normalisation, and check that captions match response provenance.
-% TODO: Report consistency and spread across the five trunk seeds, define the plotted bands, and make clear that probe outcomes were not repeated.
+% TODO: Report the comparison between the two state variants specified in the design; the current state figure describes only the fixed-response variant.
+% TODO: Describe consistency across seeds and define the plotted bands.
 
 \begin{figure}[H]
     \centering
@@ -209,10 +202,9 @@ Using the setup described above, we first analysed whether projection difference
 
 \section{Experiment 2: History Dependence}
 \label{sec:hysteresis}
-% TODO: Link RQ2 to the effects of prior misalignment, re-alignment, and benign training on the response to the same final dataset.
 \subsection{Design}
 % TODO: Specify the target datasets, normal datasets, selection of the different earlier dataset, seed counts, and completed runs.
-% TODO: Define comparisons matched on the final dataset and seed; explain how the normal-only arms control for prior training and update count.
+% TODO: Specify how runs are paired across arms by final dataset and seed.
 % TODO: State how final behaviour and final-step behaviour change are compared, how results are aggregated, and how uncertainty is measured.
 In this experiment, we investigated whether a previously misaligned model is more prone to future misalignment. Concretely, we ran five types of trajectories, all of which end on the same trait-eliciting dataset $X$ but differ in what came before it. The five types are the following:
 \begin{itemize}
