@@ -170,16 +170,36 @@ ERROR_SCALE = _Scale(1, lambda table: -table)
 BIAS_SCALE = _Scale(1, lambda table: -table.abs())
 
 
-def _leading_cells(table: pd.DataFrame, scale: _Scale = CORRELATION_SCALE) -> pd.DataFrame:
+def _key_blocks(table: pd.DataFrame) -> list[pd.Index]:
+    """The rows sharing every key but the last, as groupers over ``table``.
+
+    The last key is what varies inside a block -- the projections measured on
+    one trait and one trunk, or the forecasters made from one projection --
+    and every key above it is what the block holds fixed. Every table but the
+    recalibration sweep is bolded in these blocks (see
+    :func:`_supertable_blocks`).
+    """
+    keys = [table.index.get_level_values(i) for i in range(table.index.nlevels - 1)]
+    # A single block when there is no key left to group by, which reads the
+    # whole column -- the same rule, applied to a table with one key column.
+    return keys or [pd.Index([0] * len(table))]
+
+
+def _leading_cells(
+    table: pd.DataFrame,
+    scale: _Scale = CORRELATION_SCALE,
+    *,
+    blocks: Callable[[pd.DataFrame], list[pd.Index]] = _key_blocks,
+) -> pd.DataFrame:
     r"""Which cells lead their block, to be bolded.
 
-    A block is the rows sharing every key but the last -- the projections
-    measured on one trait and one trunk, or the forecasters made from one
-    projection -- and each column is read down it on its own, a summary column
-    included. That is the comparison the table exists to support: which row
-    does best at step $t$, given a trait and a trunk. Nothing is compared
-    across blocks, where the trait sets the scale, or along a row, where $t$
-    does.
+    A block is a set of rows compared against each other, and each column is
+    read down it on its own, a summary column included. That is the comparison
+    the table exists to support: which row does best at step $t$, given a
+    trait and a trunk. Nothing is compared across blocks, where the trait sets
+    the scale, or along a row, where $t$ does. ``blocks`` says which rows a
+    block holds; it defaults to :func:`_key_blocks`, which is the reading
+    above.
 
     What "best" means is the ``scale``'s to say, since these tables do not all
     agree: a correlation leads by being largest and an error by being smallest.
@@ -189,14 +209,13 @@ def _leading_cells(table: pd.DataFrame, scale: _Scale = CORRELATION_SCALE) -> pd
     bolded rather than an arbitrary one of them. Where a whole column of a
     block ties there is no lead to mark and none is: at $t = 0$ the four
     projections are the same measurement by construction, and bolding all four
-    would say they had won something.
+    would say they had won something. A block of a single row ties by the same
+    rule and so is never bolded, which is how a row held out of a contest is
+    held out of it (see :func:`_supertable_blocks`).
     """
-    keys = [table.index.get_level_values(i) for i in range(table.index.nlevels - 1)]
     shown = scale.rank(table.round(scale.decimals))
-    # A single block when there is no key left to group by, which reads the
-    # whole column -- the same rule, applied to a table with one key column.
-    blocks = shown.groupby(keys or [pd.Index([0] * len(shown))])
-    return shown.eq(blocks.transform("max")) & blocks.transform("nunique").gt(1)
+    grouped = shown.groupby(blocks(table))
+    return shown.eq(grouped.transform("max")) & grouped.transform("nunique").gt(1)
 
 
 def _column_spec(keys: int, values: int, summary: int = 0) -> str:
@@ -264,6 +283,7 @@ def _latex_table(
     summary: int = 0,
     scale: _Scale = CORRELATION_SCALE,
     note: str = "",
+    blocks: Callable[[pd.DataFrame], list[pd.Index]] = _key_blocks,
 ) -> str:
     r"""A ``tabular`` for the correlation table, as a fragment to ``\input``.
 
@@ -291,7 +311,8 @@ def _latex_table(
     it is a table of numbers to answer: which row is the better predictor at a
     given checkpoint. ``scale`` says how a cell is printed and which way round
     "leading" runs -- a correlation leads by being largest, an error by being
-    smallest.
+    smallest. ``blocks`` says which rows are compared against each other, for
+    a table whose contest is not the key columns' default one.
 
     ``headings`` name the key columns and ``spanner`` the block of value
     columns, which are then headed by their own labels alone. Naming the
@@ -330,7 +351,7 @@ def _latex_table(
     ]
     rows = [tuple(row_keys) for row_keys in table.index]
     spans = _key_spans(rows)
-    leaders = _leading_cells(table, scale)
+    leaders = _leading_cells(table, scale, blocks=blocks)
     previous: tuple[str, ...] = ()
     for row_keys, span, row, best in zip(
         rows, spans, table.to_numpy(), leaders.to_numpy()
@@ -371,6 +392,7 @@ def _emit_table(
     summary: int = 0,
     scale: _Scale = CORRELATION_SCALE,
     note: str = "",
+    blocks: Callable[[pd.DataFrame], list[pd.Index]] = _key_blocks,
 ) -> None:
     """Write a table both ways: ``.tex`` to typeset, ``.csv`` to read back.
 
@@ -382,7 +404,13 @@ def _emit_table(
     tex, csv = out_dir / f"{name}.tex", out_dir / f"{name}.csv"
     tex.write_text(
         _latex_table(
-            table, headings, spanner, summary=summary, scale=scale, note=note
+            table,
+            headings,
+            spanner,
+            summary=summary,
+            scale=scale,
+            note=note,
+            blocks=blocks,
         )
     )
     table.to_csv(csv)
@@ -1576,6 +1604,30 @@ def _sourced_scores(
     return pd.concat(frames, ignore_index=True)
 
 
+def _supertable_blocks(table: pd.DataFrame) -> list[pd.Index]:
+    r"""One contest per trait, run across both of $f_0$'s targets.
+
+    What the sweep is asked to settle is which forecaster to build, and the
+    target it is fitted to is part of that choice rather than something held
+    fixed while the choice is made. Bolding inside each target block would
+    answer a question nobody has -- which state to regress the gain on, given
+    that the target has already been fixed to whichever of the two is worse --
+    and would print two winners per projection where there is one. The trait
+    still separates contests, since a persona vector and a judge are per trait
+    and the errors are not on the same scale across them.
+
+    The refit is kept out by being made its own block, one row wide: it is the
+    ceiling rather than a candidate (see :func:`_supertable_rows`), and a
+    block that ties has no lead to mark (see :func:`_leading_cells`).
+    """
+    trait = table.index.get_level_values("trait")
+    target = table.index.get_level_values("target")
+    contest = pd.Index(
+        [name if name == _ANY_TARGET else "" for name in target], name="target"
+    )
+    return [trait, contest]
+
+
 def _forecast_supertable_table(
     scores: pd.DataFrame,
     out_dir: Path,
@@ -1597,8 +1649,10 @@ def _forecast_supertable_table(
         note=(
             "RMSE in judge points, averaged over trunks and checkpoints; "
             "each forecaster under both of $f_0$'s targets; "
-            "each gain regressed on the state its row names"
+            "each gain regressed on the state its row names; "
+            "bold marks the best forecaster per trait, over both targets"
         ),
+        blocks=_supertable_blocks,
     )
 
 
