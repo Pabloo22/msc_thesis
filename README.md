@@ -51,6 +51,7 @@ bash scripts/run_family.sh EXP3 LOCAL
 poetry run python -m method.visualization.make_plots --experiment exp2_decay --local
 poetry run python -m method.visualization.make_plots --experiment exp3 --local
 ```
+Note: There is a mismatch with the experiment numbers and the thesis report. The `EXP2` experiments correspond to Experiment 1 in the thesis, and `EXP3` corresponds to Experiment 2. This is because, here, we counted the validation runs as a separate experiment.
 
 These runs reproduce the workflow with reduced datasets and Qwen2.5-0.5B, not the thesis's numerical results. Figures are written to `plots/real-local/`.
 
