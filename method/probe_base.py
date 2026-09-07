@@ -1,24 +1,4 @@
-r"""Measure DeltaP at the *base* model for every dataset the experiments use.
-
-    poetry run python -m method.probe_base --seeds 0 1 2 3 4
-    poetry run python -m method.probe_base --local --backend mock
-
-The RQ1 scatter plots two series against the behaviour change a step caused:
-$\Delta \hat{P}_t$, recomputed at the checkpoint about to be trained while
-retaining $M_0$'s answers, and $\Delta P_0$, frozen at the base model. A
-trajectory only ever records $\Delta P_0$ for its
-*first* dataset -- every later step is measured at a checkpoint that has already
-moved -- so the blue series has to be measured separately. That is what this
-script does.
-
-It is deliberately not part of ``run_trajectory``: $\Delta P_0$ for a dataset
-depends only on the base model, the seed and the dataset, never on the
-trajectory. Every experiment sharing a model and seed therefore shares these
-numbers, and the content-addressed store means running this once per seed
-serves exp2 and exp3 alike.
-
-No training happens here -- only measurement of the untouched base model.
-"""
+"""Measure base-model projections for probe datasets."""
 
 from __future__ import annotations
 

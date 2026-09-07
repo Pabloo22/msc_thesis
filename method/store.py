@@ -1,20 +1,4 @@
-"""Content-addressed storage for checkpoints and measurements.
-
-The durable artifacts are LoRA adapters (small) and measurements (small); full
-merged weights are treated as a disposable cache, because any checkpoint can be
-rebuilt by replaying ``base -> merge adapter_1 -> ... -> merge adapter_t``. That
-replay is exact, not an approximation, because adapter ``t+1`` is trained on top
-of the merged result of adapter ``t``. Being disposable, merged weights are also
-the one thing here scoped per process rather than shared: each run drops the lot
-when it finishes, so two runs on one box (one per GPU) would otherwise delete
-each other's mid-step.
-
-Everything is keyed by ``weights_id``, a hash of the recipe that produced the
-weights. Two trajectories sharing a prefix therefore share adapters and
-measurements for free, and a re-invoked run resumes by finding artifacts already
-present. Presence implies completeness because every write lands via an atomic
-rename.
-"""
+"""Manage content-addressed experiment artifacts."""
 
 from __future__ import annotations
 
@@ -110,26 +94,7 @@ def training_sample_id(step: StepConfig, seed: int) -> str:
 
 @dataclasses.dataclass(frozen=True)
 class StoreSelection:
-    """Every store id one trajectory can touch, known before it runs.
-
-    Both id functions above are pure functions of the config -- ``weights_key``
-    is ``{model, seed, steps[:t]}`` and a sample id is
-    ``{dataset, version, n_examples[, seed]}`` -- so the set of artifacts a run
-    can possibly read is computable up front, without a disk or network round
-    trip and without having trained anything. That is what lets
-    :meth:`method.sync.Syncer.pull_before_run` fetch a trajectory's prefix
-    instead of the whole remote store: a box running one family then pays for
-    the artifacts that family reads rather than for every artifact any
-    experiment ever produced, which on a full store is the difference between
-    a few gigabytes and all of it -- in rental disk as much as in bandwidth.
-
-    The closure is exact rather than conservative. ``materialize`` merges
-    ``adapter_chain(cfg, t)``, i.e. steps ``1..t``; every measurement writes
-    under ``get_weights_id(cfg, t)`` or the base id ``get_weights_id(cfg, 0)``;
-    and DeltaP artifacts are keyed by a sample id but live *inside* one of those
-    checkpoints' bundles. So ``range(len(steps) + 1)`` covers every weights id
-    reachable from ``cfg``, and nothing outside these sets is ever read.
-    """
+    r"""Every store id one trajectory can touch, known before it runs."""
 
     #: Checkpoints this trajectory merges, measures, or measures relative to.
     weights_ids: frozenset[str]

@@ -1,17 +1,4 @@
-"""Build the fixed neutral probe set that h_neutral is measured over.
-
-Run once; the result is committed to disk and read by every trajectory, so all
-runs and all machines share exactly the same probe set and h_neutral stays
-comparable across steps, seeds and experiments.
-
-    poetry run python -m method.prep_neutral_prompts               # UltraChat, 500
-    poetry run python -m method.prep_neutral_prompts --source lmsys
-    poetry run python -m method.prep_neutral_prompts --local 32    # offline set
-
-The prompts must be *neutral* with respect to the trait under study. Reusing
-the trait's own eval questions would contaminate h_neutral with the very axis
-being measured, which is why this pulls from general chat data instead.
-"""
+"""Build neutral prompt sets for latent-state measurement."""
 
 from __future__ import annotations
 

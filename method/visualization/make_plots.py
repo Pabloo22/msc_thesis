@@ -1,40 +1,4 @@
-r"""Generate every figure from *real* saved trajectories and write them to disk.
-
-    poetry run python -m method.visualization.make_plots
-    poetry run python -m method.visualization.make_plots --experiment exp3
-    poetry run python -m method.visualization.make_plots --mock --local
-
-The counterpart to :mod:`method.visualization.demo`, which draws the
-trajectory-shaped figures from synthetic fixtures. Both call the same functions
-in :mod:`method.visualization.figures`; only the data source differs. Runs are
-found by asking :mod:`method.visualization.collect` which configs the registry
-says should exist -- so a partially finished sweep plots what has run and
-reports what has not, rather than silently plotting fewer seeds.
-
-exp2's figures, in the design's numbering: the validation fan (1), the decay
-scatter grid (2), the headline correlation curves and companion forecast-RMSE
-curves (3), the mechanism regression (4), the phase contrast (4b) and the paired
-drift plots (5). Its analysis lives in :mod:`method.visualization.decay`; this
-module only chooses what to draw and what to name it.
-
-Every figure panels the measured traits together and is named
-``exp2_<figure>``; nothing here is emitted once per trait (see
-:func:`build_exp2`). exp3 does the same, one figure, with the measured
-trait and the re-alignment source as two dimensions of the grid.
-
-``--local`` selects the small-model variants of each design (the ones a mock
-or laptop run produces); without it, the paper-scale configs are used. Each
-combination writes to its own directory (see :func:`default_out_dir`), so a
-mock smoke test never overwrites a paper-scale figure of the same name. Within
-that directory, each experiment family gets its own subdirectory in turn
-(``exp2``, ``exp3``), so ``--experiment exp3`` lands in
-``plots/real/exp3`` rather than mixed in with the others.
-
-Note that the figures under ``plots/`` itself are the *synthetic* ones written
-by :mod:`method.visualization.demo`. They are drawn from fixtures, not from any
-run, so they do not change when trajectories finish -- regenerate them with the
-demo module, and read real results from the per-source subdirectories.
-"""
+"""Build experiment figures and tables from collected trajectories."""
 
 from __future__ import annotations
 
@@ -197,28 +161,7 @@ def _leading_cells(
     *,
     blocks: Callable[[pd.DataFrame], list[pd.Index]] = _key_blocks,
 ) -> pd.DataFrame:
-    r"""Which cells lead their block, to be bolded.
-
-    A block is a set of rows compared against each other, and each column is
-    read down it on its own, a summary column included. That is the comparison
-    the table exists to support: which row does best at step $t$, given a
-    trait and a trunk. Nothing is compared across blocks, where the trait sets
-    the scale, or along a row, where $t$ does. ``blocks`` says which rows a
-    block holds; it defaults to :func:`_key_blocks`, which is the reading
-    above.
-
-    What "best" means is the ``scale``'s to say, since these tables do not all
-    agree: a correlation leads by being largest and an error by being smallest.
-
-    Cells are compared at the precision they are printed at, so what is bolded
-    is what a reader can see leads, and every cell tying for the lead is
-    bolded rather than an arbitrary one of them. Where a whole column of a
-    block ties there is no lead to mark and none is: at $t = 0$ the four
-    projections are the same measurement by construction, and bolding all four
-    would say they had won something. A block of a single row ties by the same
-    rule and so is never bolded, which is how a row held out of a contest is
-    held out of it (see :func:`_supertable_blocks`).
-    """
+    r"""Which cells lead their block, to be bolded."""
     shown = scale.rank(table.round(scale.decimals))
     grouped = shown.groupby(blocks(table))
     return shown.eq(grouped.transform("max")) & grouped.transform("nunique").gt(1)
@@ -291,53 +234,7 @@ def _latex_table(
     note: str = "",
     blocks: Callable[[pd.DataFrame], list[pd.Index]] = _key_blocks,
 ) -> str:
-    r"""A ``tabular`` for the correlation table, as a fragment to ``\input``.
-
-    A fragment rather than a whole ``table`` float: the caption, the label and
-    the placement are the report's to write, and a generated file that carried
-    them would have to be edited after every re-plot -- which is what generated
-    files exist not to need.
-
-    Plain ``tabular`` and ``\hline``, since the report's preamble carries no
-    ``booktabs``. It does carry ``multirow``, which is what lets a trait or a
-    trunk sit centred on the rows it covers rather than at the top of them.
-
-    Ruled where something is divided and nowhere else: one line under the
-    header, where the table stops saying what its columns are and starts
-    saying what is in them, and one at every block boundary -- each trunk, not
-    only each trait, since a trunk's four projections are what a reader
-    compares and the block is what they compare inside. No rule at the top or
-    the bottom: the surrounding float already ends the table, and a line drawn
-    where nothing is being divided is ink spent on nothing. The key columns
-    are ruled off from one another and from the values (see
-    :func:`_column_spec`).
-
-    The leading cell of each block and column is bolded (see
-    :func:`_leading_cells`), which is how the table answers in ink the question
-    it is a table of numbers to answer: which row is the better predictor at a
-    given checkpoint. ``scale`` says how a cell is printed and which way round
-    "leading" runs -- a correlation leads by being largest, an error by being
-    smallest. ``blocks`` says which rows are compared against each other, for
-    a table whose contest is not the key columns' default one.
-
-    ``headings`` name the key columns and ``spanner`` the block of value
-    columns, which are then headed by their own labels alone. Naming the
-    quantity once above them rather than in each -- ``Checkpoint $t$`` over
-    ``0 1 2`` rather than ``$t = 0$`` seven times -- is what keeps the table
-    inside the text width: a column is as wide as its widest cell, and a
-    repeated header is wider than the numbers under it.
-
-    ``note`` is a second comment line above the ``tabular``, for anything the
-    table holds fixed and therefore does not print (see
-    :func:`_without_pinned_keys`). It is where a caption-writer finds what
-    the numbers are *of*, so it belongs in the generated file rather than in
-    whatever the caller happened to log.
-
-    ``summary`` says how many of the trailing columns summarise the spanned
-    block rather than belong to it. They keep their own headings, sit outside
-    the spanner and are ruled off from it, so that ``Checkpoint $t$`` goes on
-    naming only the checkpoints (see :func:`_column_spec`).
-    """
+    r"""A ``tabular`` for the correlation table, as a fragment to ``\input``."""
     # Key columns from the index rather than from the headings: the two must
     # agree, and it is the frame that says how many keys a row has.
     keys, columns = table.index.nlevels, len(table.columns)
@@ -424,15 +321,8 @@ def _emit_table(
     logger.info("wrote %s", tex)
 
 
-# --- experiment 2: the RQ1 decay experiment --------------------------------
+# --- experiment 2: the RQ1 decay experiment -------------------------------- The two projection differences the decay grid draws, as ``decay_frame`` columns: the ends of the.
 
-#: The two projection differences the decay grid draws, as ``decay_frame``
-#: columns: the ends of the ladder, everything frozen at $M_0$ against nothing
-#: approximated. A scatter panel this size shows whether a cloud still has a
-#: line in it, and two series is as many as one can show that for; the rungs
-#: between them are read as numbers across checkpoints, which is what the
-#: correlation table beside it is (see :func:`method.visualization.decay
-#: .correlation_table`).
 DECAY_GRID_SERIES = (decay.SERIES_COLUMNS["p0"], decay.SERIES_COLUMNS["full_t"])
 
 #: The 3x2 of projection-difference variants as the headline figure draws it:
@@ -535,10 +425,7 @@ EXP2_GROUPS = (
     experiments.EXP2_ONPOLICY_REGEN,
 )
 
-#: Which checkpoint-level quantities plot 4 regresses the correlation on. Drift is what
-#: RQ1 claims causes decay; $b_t$ and the phase are the two nuisances that
-#: would otherwise explain it just as well, which is why the schedules in
-#: section 4 are varied enough to tell them apart.
+#: Checkpoint-level predictors for the correlation model.
 def mechanism_predictors(
     source: str = "base", *, include_onpolicy: bool = True
 ) -> dict[str, str]:
@@ -595,7 +482,7 @@ def _present(found: Iterable[str], order: Sequence[str]) -> list[str]:
 
 
 def _present_trunks(frame: pd.DataFrame) -> list[str]:
-    """Trunks with rows in ``frame``, in the ladder's order (section 4)."""
+    """Return present trunks in design order."""
     return _present(frame["trunk"], TRUNKS)
 
 
@@ -626,17 +513,7 @@ SEED_NOISE_SOURCES = (experiments.EXP3,)
 
 
 def _sigma_seed(collections: Mapping[str, Collection]) -> dict[str, float]:
-    r"""$\sigma_{seed}(b)$ per trait, from whichever collected family sweeps seeds.
-
-    Section 6b's noise ceiling needs the spread a single fine-tune shows when
-    it is repeated under another seed, and no run measures its own. exp3 sweeps
-    five seeds over fixed sequences, so its one-step arms estimate exactly the
-    quantity a branch contributes -- see :mod:`method.seed_noise`, which this
-    defers to rather than re-deriving.
-
-    Traits with no multi-seed arm on disk are simply absent, and the caller
-    falls back to an eval-noise-only ceiling.
-    """
+    r"""Estimate $\sigma_{seed}(b)$ per trait from multi-seed families."""
     estimates: dict[str, float] = {}
     for group in SEED_NOISE_SOURCES:
         collection = collections.get(group)
@@ -725,30 +602,7 @@ def build_exp2(
     n_resamples: int = 2000,
     headline_rmse_target: str = "matched",
 ) -> list[Path]:
-    r"""Every figure of the RQ1 decay experiment, over every measured trait.
-
-    ``collections`` holds the exp2 families keyed by group name. They are
-    passed together because the figures cross them: the decay family supplies
-    the trunks and their fans, the validation family supplies the shared
-    $t = 0$ column that the decay family deliberately does not re-emit, the
-    reseed family supplies the paired replicate plot 5 overlays, and the axis,
-    regen and on-policy families supply the re-measured projection series for
-    whichever trunks they covered.
-
-    ``sigma_seed`` maps a trait to its fine-tune seed noise. Where it is
-    missing the checkpoint fits' stored ceiling accounts for eval noise alone,
-    which makes it an upper bound on the true ceiling; the shortfall is logged
-    rather than silently absorbed.
-
-    Every figure panels both traits, none is emitted per trait. Whether
-    $\Delta P_0$ goes stale at the same rate for sycophancy and for evil is one
-    of the things the experiment is for, and it is not a comparison the reader
-    should have to make across two separately scaled figures. What each figure
-    does *not* share across the traits is its scale, except where the quantity
-    is unitless: a persona vector and a judge are per trait, so a shared
-    $\Delta P$ or $\Delta b$ axis would compare numbers that are not the same
-    number.
-    """
+    r"""Every figure of the RQ1 decay experiment, over every measured trait."""
     saved: list[Path] = []
     decay_runs = collections.get(experiments.EXP2_DECAY) or Collection(
         experiments.EXP2_DECAY
@@ -868,8 +722,7 @@ def _validation_figure(
             logger.warning(
                 "exp2/%s: no validation runs, so the t=0 fan (plot 1) and the "
                 "t=0 column of the decay grid are both unavailable. Run the "
-                "%r family first -- section 10 makes it phase 1 precisely "
-                "because it gates everything downstream",
+                "%r family first because it gates downstream plots",
                 trait,
                 experiments.EXP2_VALIDATION,
             )
@@ -884,14 +737,7 @@ def _validation_figure(
     return saved
 
 
-#: How each key level of an emitted table is written for a reader, by the name
-#: the frame gives that level.
-#:
-#: Naming is this module's job throughout: :mod:`~method.visualization.decay`
-#: and :mod:`~method.visualization.forecast` work in run ids so that their
-#: frames stay joinable, and every figure here turns those into the trait,
-#: trunk, projection and forecaster names a reader sees. A table is no
-#: different for being made of text rather than of ink.
+#: How each key level of an emitted table is written for a reader, by the name the frame gives that level.
 def _key_labels(source: str = "base") -> Mapping[str, Callable[[str], str]]:
     """The renderers, with the forecaster rows indexed by their $z_t$ source."""
     forecasters = forecast.forecaster_labels(source)
@@ -1159,30 +1005,7 @@ class _ForecastTable:
         )
 
 
-#: The tables :func:`_forecast_figures` writes, and why each is cut the way it
-#: is.
-#:
-#: The first two are the headline: how far off $M_0$'s own line is at each
-#: later checkpoint, for every projection difference it could be fed. RMSE
-#: carries the refit beside it, one row apart, because the question a reader
-#: asks of an error is "compared to what" and the refit is the answer -- it is
-#: the same probes scored by a line that was allowed to see them. Bias carries
-#: only the frozen line, because a least-squares refit has a mean residual of
-#: zero by construction and a column of $0.0$ would be arithmetic dressed as a
-#: result; with one forecaster left, the block turns over on the projection
-#: instead, which is the comparison that is left to make.
-#:
-#: The next two ask whether the free state of a checkpoint can stand in for the
-#: fan-out a refit needs, so they carry every gain correction on the one
-#: projection that has something to correct -- $\Delta P_0$, the rung nothing at
-#: $M_t$ has refreshed.
-#:
-#: The last asks what $M_0$'s line should have been fitted to predict at all:
-#: the change a step makes, or the level it lands at. It carries both targets
-#: for every rung of the ladder, adjacent, so the bolding marks the winner per
-#: projection and per checkpoint -- and the crossover is legible as a change of
-#: which row is bold when the eye reaches $\Delta P_t$. The refit is left out;
-#: it is target-invariant, and the headline table already carries it.
+#: The tables :func:`_forecast_figures` writes, and why each is cut the way it is.
 FORECAST_TABLES = (
     _ForecastTable(
         "exp2_forecast_rmse",
@@ -1388,11 +1211,7 @@ def _forecast_mean_rmse_figures(
             ],
             upper_bound=lambda frame: frame["model"] == "oracle",
         )
-        # Both layouts of the same numbers, so the chapter can swap one for the
-        # other: grouped by projection, which lets a row be read as one
-        # comparison of targets against their shared reference, and the flat
-        # ranking, which is the only one that orders every forecast against
-        # every other.
+        # Emit grouped and ranked views of the same values.
         fig = figures.mean_rmse_bar(
             headline, group_col="projection", color_col="color"
         )
@@ -1416,15 +1235,7 @@ def _forecast_mean_rmse_figures(
         _emit(fig, "exp2_forecast_correction_rmse_bar", out_dir, saved)
 
 
-#: One row of the recalibration super table: a forecaster, and which of $f_0$'s
-#: two targets it was fitted under.
-#:
-#: Both targets are carried rather than the matched one alone. The matched
-#: policy is a choice the chapter makes to keep its figures readable, not a
-#: property of the measurement, and an appendix table is where the choice
-#: should be checkable: a reader who wants to know what it cost can read the
-#: two blocks against each other. Which target wins is itself one of the
-#: things the sweep measures.
+#: One forecaster-target row in the recalibration table.
 @dataclass(frozen=True)
 class _SupertableRow:
     """A forecaster of the recalibration sweep, under one target of $f_0$."""
@@ -1455,15 +1266,7 @@ _ANY_TARGET = "Any"
 SUPERTABLE_SOURCES = (BASE_SOURCE, CURRENT_SOURCE)
 
 
-#: The states a regenerated neutral response can move, and so the only ones
-#: worth a row per source. $p$ reads the neutral answers and $q$ reads them
-#: against the persona axis, so both move when the checkpoint generates those
-#: answers itself instead of re-encoding $\mathcal{M}_0$'s, and $\mathbf{z}_t$
-#: moves with them. $\rho$ and $r$ are properties of the persona vector alone
-#: and carry no $s$ index at all (see
-#: :data:`method.visualization.labels._Z_INDEX_SLOTS`), so a second row for
-#: them would claim a variation they cannot have; $b_t$ and the refit read no
-#: neutral prompts to begin with.
+#: The states a regenerated neutral response can move, and so the only ones worth a row per source.
 _NEUTRAL_DEPENDENT = ("z", "p", "q")
 
 
@@ -1497,28 +1300,7 @@ def _state_label(name: str, *, source: str = BASE_SOURCE) -> str:
 
 
 def _supertable_rows() -> tuple[_SupertableRow, ...]:
-    r"""Every forecaster the sweep measured, under both of $f_0$'s targets.
-
-    The uncorrected forecast heads each target's block, because it is what a
-    correction has to beat and it reads nothing from the checkpoint:
-    $c_t \equiv 1$ is available for every projection, since all seven coincide
-    with $\Delta P_0$ at $t = 0$ and so share the single map $f_0$ fitted
-    there.
-
-    Both neutral-response sources are carried, not the one ``--source``
-    happened to point at. $\mathbf{z}_t^{[0,0]}$ needs forward passes over text
-    $\mathcal{M}_0$ had already generated; $\mathbf{z}_t^{[t,0]}$ needs the
-    checkpoint to generate that text itself, which is a generation pass on top.
-    Whether the extra pass buys anything is a question about the state rather
-    than about the study's default, so the table answers it rather than
-    inheriting an answer (see :func:`_state_rows`).
-
-    The refit closes the table as the ceiling rather than as a method -- it
-    needs the eight-probe fan-out whose cost is the reason the question is
-    being asked -- and sits outside both blocks rather than inside each. It
-    would win the bolding of any block it joined, which would cost the reader
-    the comparison the block exists to make.
-    """
+    r"""Every forecaster the sweep measured, under both of $f_0$'s targets."""
     states = (
         ("", r"$c_t\equiv1$", BASE_SOURCE),
         *(row for name in ("z", *decay.Z_COMPONENTS) for row in _state_rows(name)),
@@ -1535,27 +1317,7 @@ def _supertable_rows() -> tuple[_SupertableRow, ...]:
 
 
 def _supertable(scores: pd.DataFrame) -> pd.DataFrame:
-    r"""Mean RMSE per (trait, target, forecaster), one column per projection.
-
-    The checkpoint and the trunk are averaged out, which is what makes the
-    whole sweep fit on one page: their resolution is already carried by
-    ``exp2_forecast_correction_rmse``, and what this table is for is the axes
-    that one holds fixed -- every state a gain may be regressed on, under
-    either target, against every projection difference measured. The trait is
-    kept, because a persona vector and a judge are per trait and averaging
-    across them would compare numbers that are not on the same scale.
-
-    A projection no family measured is left out rather than carried empty, so
-    the table's width is the state of the sweep, and the same holds down the
-    rows: a state whose runs are not on disk scores NaN and drops its row
-    rather than printing a blank one.
-
-    ``scores`` therefore has to carry both neutral-response sources, tagged in
-    a ``source`` column (see :func:`_sourced_scores`), and the source is part
-    of the key each row is matched on: two rows can name the same forecaster
-    and differ only in which model answered the neutral prompts behind its
-    state.
-    """
+    r"""Mean RMSE per (trait, target, forecaster), one column per projection."""
     rows = _supertable_rows()
     wanted = {(row.model, row.source): row for row in rows}
     kept = scores[
@@ -1705,12 +1467,7 @@ def _forecast_figures(
     scores = forecast.score_frame(predictions)
     tables: dict[str, pd.DataFrame] = {}
 
-    # The headline keeps the correlation figure's 3x2 visual grammar, but its
-    # quantity is out-of-sample error. Cached-answer projections predict the
-    # next level; refreshed-answer projections predict its change. This target
-    # is fixed by the measurement design, not selected from the observed RMSE.
-    # The same reference the summary bars carry, and target-invariant, so all
-    # three headline targets are read against this one grey floor.
+    # The headline keeps the correlation figure's 3x2 visual grammar, but its quantity is out-of-sample error.
     refit = forecast.metric_frame(
         scores, metric="rmse", model="oracle", series=decay.REFRESH_ORDER
     )

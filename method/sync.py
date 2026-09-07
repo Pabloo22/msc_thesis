@@ -1,92 +1,4 @@
-"""Push/pull the content-addressed store to a shared remote.
-
-The experiments run on ephemeral rental GPUs, so nothing on a box's local disk
-survives the box. This module gives every machine a common back-end (Google
-Drive, S3/R2/B2, or a mounted path) that the durable artifacts are pushed to and
-pulled from, so that
-
-* a box starting a trajectory that shares a prefix with one another box already
-  ran finds those adapters as ordinary local cache hits instead of retraining
-  them (:func:`pull_before_run`), and
-* the small artifacts a run produces outlive the box that produced it
-  (:func:`push_after_run`, plus an eager :meth:`Syncer.push_adapter` so a spot
-  preemption mid-run loses at most the step in flight).
-
-Design constraints inherited from :mod:`method.store`:
-
-* **One object per artifact.** Adapters and per-checkpoint measurements are
-  *directories* of many small files; a plain file-by-file mirror both drowns in
-  per-file request overhead (brutal on Drive's rate limit) and could expose a
-  half-uploaded artifact, breaking the "presence implies completeness"
-  invariant the store relies on. Each such directory is therefore packed into a
-  single tar named by its content-addressed id, and a remote object only becomes
-  visible once its upload finishes -- the remote analogue of the local
-  ``os.replace`` in :func:`method.store.atomic_dir`.
-* **Immutable ids skip cheaply.** Adapters and training samples are pure
-  functions of their id, so once uploaded they never change: push skips them if
-  the remote object already exists, decided against one listing per kind
-  (:meth:`Syncer._remote_names`) rather than a round trip per artifact.
-  Measurement and trajectory bundles *grow* (a second trait adds files; a
-  re-run rewrites a run dir), so presence proves nothing about them and they
-  are instead skipped only when unchanged since this box last pushed them
-  (:class:`PushLedger`), last-writer-wins otherwise -- where "unchanged" means
-  unchanged in the bytes that matter, not in the mtimes a re-run stamps on them
-  (:func:`_run_dir_signature`).
-* **Mutable artifacts merge on pull, never replace.** The same growth that
-  defeats a presence check on push defeats it on pull: a measurement bundle
-  accumulates a trait, a probe dataset and an h_neutral source at a time, so two
-  boxes routinely hold different subsets of one id with neither a superset. A
-  pull that replaced the local directory would delete whichever measurements
-  this box had produced but not yet pushed, and one that skipped on directory
-  existence -- as this did -- meant a box never learned what another had
-  measured, so divergent copies of a checkpoint never reconciled. Each mutable
-  archive therefore carries a sidecar index of its contents
-  (:func:`_paths_index`, :func:`_hashed_index`), consulted for kilobytes before
-  deciding whether the archive is worth fetching, and only the parts this box
-  lacks are copied in (:func:`_merge_from_tar`).
-* **One archive per artifact is coarse, and that has a cost.** Because a bundle
-  is a single remote object, touching any file in it re-uploads all of it --
-  rewriting a 200-byte ``behavior.json`` ships the hidden-state tensors beside
-  it. That is why ``push-runs`` exists as a separate CLI action. Splitting the
-  archive along the axes a bundle actually grows on (per trait, per probe key)
-  would remove the problem rather than route around it; it would also make each
-  piece effectively immutable, and so retire most of the index machinery above.
-  Reading has an escape hatch in the meantime:
-  :meth:`Syncer.extract_measurement_files` keeps a few members out of an
-  archive without landing it, and :meth:`Syncer.pick_measurement_files` fetches
-  those members without transferring the rest of it either. Writing has none.
-* **Push one artifact at a time.** Every ``push_*`` entry point below covers a
-  single artifact, so a run ships each one the moment it lands in the store
-  rather than banking a trajectory's worth of GPU hours until the end. The
-  sweeps (:meth:`Syncer.push_store`, :meth:`Syncer.push_after_run`) are built
-  from those calls and serve as a backstop; the ledger is what stops the
-  backstop from re-uploading what the eager calls already sent.
-* **Mock artifacts never sync.** ``store-mock`` deliberately shares ids with the
-  real store; syncing it would let synthetic adapters poison real boxes.
-  :func:`Syncer.from_env` refuses any root whose name ends in ``-mock``.
-* **A remote that blinks must not kill a run.** The network between a rental box
-  and a bucket is the least reliable part of this system and the least important
-  one: every artifact is already durable on local disk before it is offered to a
-  transport. Failures are therefore absorbed twice over -- retried inside
-  :class:`RcloneTransport`, then recorded rather than raised by
-  :class:`Syncer` -- so a blip costs a retry instead of a trajectory's GPU
-  hours. What could not be shipped is left in :attr:`Syncer.unsynced` for the
-  caller to report; see :func:`format_unsynced`.
-
-The commands that can be run are:
-
-- ``poetry run python -m method.sync push``
-- ``poetry run python -m method.sync pull``
-- ``poetry run python -m method.sync push-runs``
-- ``poetry run python -m method.sync push-adapter <id>``
-- ``poetry run python -m method.sync push-measurements <id>``
-- ``poetry run python -m method.sync push-sample <id>``
-- ``poetry run python -m method.sync pull-run <id>``
-
-Regarding the force flag: a push that overwrites a remote object is always a deliberate decision, so the CLI requires ``--force`` to be passed. The syncer itself does not, because it is used by the trajectory runner and the sweeps, which have no way to know whether the remote is authoritative or not -- they just want to ship what they produced. The CLI is strict about failures, because its only job is the transfer; the trajectory runner is not, because its only job is the GPU hours, and a blip on the network should not throw them away.
-
-
-"""
+"""Synchronise experiment artifacts with local or rclone remotes."""
 
 from __future__ import annotations
 
@@ -115,25 +27,11 @@ logger = logging.getLogger(__name__)
 #: "no remote"; every entry point then runs purely against local disk.
 REMOTE_ENV = "MSC_STORE_REMOTE"
 
-#: How many times one rclone invocation is attempted, and the first gap between
-#: attempts (doubling thereafter: 5s, 10s, 20s -- ~35s of patience in total).
-#:
-#: rclone has a retry budget of its own, but a shallower one than it looks:
-#: ``--retries`` defaults to 3 while ``--retries-sleep`` defaults to *zero*, so
-#: all three attempts fire within milliseconds of each other. That absorbs a
-#: dropped packet and nothing slower. These attempts sit outside the process
-#: with a real, growing sleep between them, so a remote that is briefly away --
-#: a box's network settling after boot, a provider blip, an expired token being
-#: refreshed -- is waited out instead of reported as a failure.
+#: How many times one rclone invocation is attempted, and the first gap between attempts (doubling thereafter: 5s, 10s, 20s -- ~35s of patience in total).
 _ATTEMPTS = 4
 _BACKOFF_SECONDS = 5.0
 
-#: How much of an archive one ranged read pulls back. Sized a little above the
-#: 400KB tensors a sparse pull collects, so the window that carries one of them
-#: usually carries the header of the member after it too and the walk costs one
-#: request per artifact rather than two. Bigger wastes bytes at the head of
-#: every huge member it steps over; smaller spends a round trip to find out
-#: what it just read. See :func:`_walk_ranged`.
+#: How much of an archive one ranged read pulls back.
 RANGE_WINDOW = 1 << 20
 
 #: rclone exit codes meaning "it is not there". A legitimate answer to listing
@@ -142,12 +40,7 @@ RANGE_WINDOW = 1 << 20
 #: front of each skip check.
 _ABSENT_EXITS = frozenset({3, 4})
 
-#: Exit codes worth another attempt: 5 is rclone's own "temporary error, one
-#: that more retries might fix", and 2 is the uncategorised bucket that
-#: connection resets and truncated transfers land in. Everything else fails the
-#: same way however often it is tried -- 1 is a usage or config error (a
-#: missing ``rclone.conf`` section reports 1), 6 is explicitly no-retry, 7 is
-#: fatal -- so those are raised on the first attempt rather than slept over.
+#: Exit codes worth another attempt: 5 is rclone's own "temporary error, one that more retries might fix", and 2 is the uncategorised bucket that connection resets and truncated.
 _RETRYABLE_EXITS = frozenset({2, 5})
 
 
@@ -300,13 +193,7 @@ class RcloneTransport(Transport):
             self._run(["copyto", self._target(relpath), str(scratch)])
 
     def list_names(self, reldir: str) -> list[str]:
-        # An absent directory is empty -- the normal state of a remote nothing
-        # has been pushed to yet. Any *other* failure raises, because the two
-        # are otherwise the same empty list, and a pull that mistook an
-        # unreachable remote for an empty one would silently skip every
-        # artifact it exists to fetch and retrain a prefix that was already up
-        # there. That is the expensive failure this whole module exists to
-        # prevent, and it is the one that used to be invisible.
+        # An absent directory is empty -- the normal state of a remote nothing has been pushed to yet.
         result = self._run(
             ["lsf", "--files-only", self._target(reldir)], absent_ok=True
         )
@@ -431,28 +318,7 @@ def make_transport(remote: str) -> Transport:
 
 
 def _tar_dir(src: Path, dest_tar: Path) -> None:
-    """Pack ``src``'s contents into ``dest_tar`` (uncompressed).
-
-    Uncompressed on purpose: adapter weights (safetensors) and hidden-state
-    tensors (.pt) are already dense, so compression buys almost nothing for real
-    CPU cost. Members are stored relative to ``src`` so extraction rebuilds the
-    directory. ``dest_tar`` is written via a temp file so a listing of its
-    parent never sees a partial tar.
-
-    ``dereference=True`` because run dirs symlink their inputs into the store
-    (``train_step1.jsonl`` -> ``../../store/training_samples/<hash>.jsonl``).
-    Those targets sit outside the directory being packed, so stored as links
-    they leave the archive incomplete: it resolves only next to a store that
-    already holds the same ids, and a plotting box has no store at all. Storing
-    the pointed-at bytes instead makes each archive stand on its own, which is
-    the point of shipping one object per artifact.
-
-    ``recursive=False`` because ``rglob`` already yields every descendant. Left
-    at its default, ``add`` walks each directory member's subtree *as well*, so
-    a file landed in the archive once per ancestor directory plus once for
-    itself -- tripling a measurement bundle's ``<kind>/<hash>/tensor.pt`` files
-    and inflating every upload ~3x.
-    """
+    r"""Pack ``src``'s contents into ``dest_tar`` (uncompressed)."""
     with atomic_file(dest_tar) as scratch:
         with tarfile.open(scratch, "w", dereference=True) as tar:
             for path in sorted(src.rglob("*")):
@@ -560,29 +426,7 @@ def _walk_ranged(
     wanted: Callable[[str], bool],
     window: int,
 ) -> list[str]:
-    """Copy the wanted members out of a remote archive, by seeking through it.
-
-    A tar has no directory: the only way to find a member is to read a header,
-    learn from it how long that member's data is, and step over the data to the
-    next header. Done over a stream that means reading the whole object. Done
-    over ranged reads it means transferring the headers, the members that were
-    asked for, and nothing else -- which for a bundle whose bulk is per-sample
-    tensors nobody wants is two orders of magnitude less than the archive.
-
-    Each request pulls a ``window`` of bytes rather than one 512-byte header,
-    because the two are the same price: what costs is the round trip, not the
-    kilobytes. A window sized a little above the artifacts being collected
-    usually arrives holding a wanted member's data *and* the header of whatever
-    follows it, so a run of small files is walked at roughly one request each
-    and a huge one costs a single request to identify and step over.
-
-    Parsing is :mod:`tarfile`'s, on a buffer rather than a socket, so PAX
-    extended headers (which every member here carries, since Python writes
-    float mtimes) and long-name records are handled by the same code that wrote
-    them. A window that ends mid-header just raises ``ReadError``; the walk
-    re-anchors on the last member it fully understood and asks again from
-    there.
-    """
+    r"""Copy the wanted members out of a remote archive, by seeking through it."""
     kept: list[str] = []
     position = 0
     while True:
@@ -677,23 +521,8 @@ def _copy_wanted(
     return kept
 
 
-# --------------------------------------------------------------------------- #
 # Index sidecars: what a mutable archive contains, without downloading it.
-# --------------------------------------------------------------------------- #
 
-#: Files a run directory rewrites on every invocation without changing what the
-#: run *is*: ``timings.jsonl`` gains a row per stage even when every one of them
-#: was a cache hit.
-#:
-#: This set governs *both* halves of a run dir's sync, and they must not drift
-#: apart. :func:`_run_dir_signature` skips these files so timing noise does not
-#: re-upload a whole archive, which means the remote tar can hold an older copy
-#: of them indefinitely; :func:`_hashed_index` and :func:`_parse_index`
-#: therefore skip them too, so no index ever advertises a version of them the
-#: tar beside it was never re-uploaded to contain. An index that promised one
-#: sent every puller to fetch the whole archive, merge bytes that still
-#: disagreed with the index, and arrive back where it started -- on every pull,
-#: forever.
 _VOLATILE_RUN_FILES = frozenset({STAGE_LOG})
 
 #: Suffix of the sidecar object pushed beside each mutable ``<id>.tar``.
@@ -824,33 +653,7 @@ def _safe_extractall(tar: tarfile.TarFile, dest: Path) -> None:
 
 
 class PushLedger:
-    """Records the on-disk state of every mutable artifact this box has pushed.
-
-    Immutable artifacts need no such record: their id *is* their content, so a
-    single ``exists`` call on the remote settles whether the upload can be
-    skipped. Measurement bundles and run dirs have no such property -- they
-    grow a trait, a probe or a rewritten ``trajectory.json`` at a time -- so
-    presence proves only that *some* version is up there, and the only safe
-    thing to do on its own is re-upload every time.
-
-    That re-upload is what makes a repeated push expensive: it costs the full
-    bytes of every bundle in the store whether or not anything changed. The
-    ledger removes it by remembering a cheap signature of each artifact under
-    the remote path it was pushed as; a later push recomputes the signature and
-    uploads only on a mismatch. Repeated pushes then cost what actually changed
-    instead of what the store contains.
-
-    It is deliberately local, per-box state rather than a remote manifest: the
-    question it answers is "did *I* already upload exactly these bytes", which
-    needs no request to answer and is exactly what the caller is deciding. The
-    trade is that deleting objects from the remote behind its back leaves it
-    claiming an upload that no longer exists -- ``push --force`` (or deleting
-    the ledger directory) is the way back.
-
-    Scoped per remote by :meth:`for_transport`, because "already uploaded" is
-    only ever true of one destination: pointing ``MSC_STORE_REMOTE`` at a
-    second back-end must start from an empty record, not inherit the first's.
-    """
+    r"""Records the on-disk state of every mutable artifact this box has pushed."""
 
     def __init__(self, root: Path) -> None:
         self.root = root
@@ -915,35 +718,7 @@ def _file_signature(path: Path) -> str:
 
 
 def _run_dir_signature(path: Path) -> str:
-    """Digest of a run directory's payload: its contents, minus the timing log.
-
-    Content-based where :func:`_dir_signature` is stat-based, and blind to
-    ``timings.jsonl`` where that one sees every file, because a run directory
-    is rewritten whether or not anything about the trajectory changed. Re-running
-    a fully cached trajectory writes a byte-identical ``trajectory.json`` through
-    :func:`method.store.atomic_file` -- a fresh inode, so a new mtime -- and
-    appends a timing row for each stage it skipped. A stat digest calls both a
-    change, so the end-of-run push re-tarred and re-uploaded the whole run every
-    time: the one real transfer such a run made, spending tens of seconds on
-    bytes the remote already had -- and a sweep re-enters a shared prefix once
-    per seed and per trait.
-
-    Hashing bytes is affordable here in a way it is not for a measurement
-    bundle: a run directory is a small JSON plus one symlink per step into the
-    content-addressed training samples -- megabytes, against the hundreds a
-    bundle of hidden-state tensors runs to.
-
-    The trade is that timing rows from a run whose payload did not change stay
-    on the box until something about that run does change. They are
-    diagnostics, the numbers the collector reads all live in
-    ``trajectory.json``, and the rows in question are precisely the ones that
-    timed cache hits.
-
-    Skipping them here is what forces :func:`_hashed_index` to skip them too:
-    an archive this declines to re-upload keeps whatever copy of them it was
-    built with, so indexing them would advertise bytes the tar does not hold.
-    See :data:`_VOLATILE_RUN_FILES`.
-    """
+    r"""Digest of a run directory's payload: its contents, minus the timing log."""
     digest = hashlib.sha256()
     for item in sorted(path.rglob("*")):
         # ``is_file`` follows symlinks, so a step's link into the store hashes
@@ -1210,28 +985,7 @@ class Syncer:
     # --- pull (remote -> local) ----------------------------------------- #
 
     def pull_before_run(self, selection: StoreSelection | None = None) -> None:
-        """Fetch the reusable prefix so ``has_adapter`` hits work locally.
-
-        Pulls the adapters, training samples and measurement bundles present on
-        the remote but missing locally. This is what turns "another box already
-        trained this prefix" into an ordinary local cache hit inside
-        :func:`method.run_trajectory.run`.
-
-        ``selection`` restricts that to the ids one trajectory can actually
-        read (:meth:`method.store.StoreSelection.for_config`), and callers that
-        have a config should always pass one. Unfiltered, this fetches the
-        entire remote store -- every adapter and every hidden-state bundle any
-        experiment ever produced -- before the first trajectory starts. That is
-        tens of gigabytes to run a family whose closure is a handful, and the
-        bytes cost rental *disk* for the life of the box, not just bandwidth
-        once. Deferring them is free: the ids are content-addressed, so a later
-        family pulling its own prefix gets exactly what this would have
-        prefetched.
-
-        ``None`` keeps the unfiltered sweep, for the CLI at the bottom of this
-        module, which is asked to warm a box without knowing what will run on
-        it.
-        """
+        r"""Fetch the reusable prefix so ``has_adapter`` hits work locally."""
         sample_names = (
             None
             if selection is None
@@ -1290,12 +1044,7 @@ class Syncer:
             _AXIS_REFRESH, self.trajectories / "axis_refresh", sign=_file_signature
         )
 
-    # --- reading a few files out of a whole bundle ----------------------- #
-    #
-    # The escape hatch from the granularity the module docstring calls coarse:
-    # a bundle is one remote object, so a box that wants one 400KB tensor out
-    # of it is quoted the whole archive. These three let it pay for the bytes
-    # rather than for the disk -- the archive is read, but never stored.
+    # --- reading a few files out of a whole bundle ----------------------- # The escape hatch from the granularity the module docstring calls coarse: a bundle is one remote object, so.
 
     def remote_measurement_ids(self) -> set[str]:
         """Checkpoint ids the remote holds a measurement bundle for."""
@@ -1555,40 +1304,7 @@ class Syncer:
         index: Callable[[Path], str] | None = None,
         wanted: frozenset[str] | None = None,
     ) -> None:
-        """Fetch what the remote holds under ``reldir`` and this box does not.
-
-        ``wanted`` restricts the sweep to those artifact ids (a tar's name
-        minus its suffix); ``None`` takes everything the remote lists. Applied
-        before any per-artifact request, so a skipped id costs nothing at all
-        -- not even the index round trip a present-but-mutable artifact makes.
-
-        Three cases among the ids that survive that filter, because the
-        artifacts differ in what "already have it" can mean:
-
-        *Absent locally.* Downloaded whole, whatever the kind.
-
-        *Immutable and present* (adapters, keyed by ``present``, and training
-        samples). Presence is proof: the id determines the bytes, so there is
-        nothing a re-fetch could add.
-
-        *Mutable and present* (measurement bundles, run directories). Presence
-        proves nothing -- these grow a trait, a probe or a rewritten
-        ``trajectory.json`` at a time, and two boxes routinely hold different
-        subsets of the same id. This used to skip them, which is why a box that
-        had ever touched a checkpoint never learned what another box measured
-        on it, and why divergent copies never reconciled. Now the sidecar index
-        is consulted (kilobytes) and the archive fetched only when it names
-        paths this box is missing or, for a hashed index, has stale.
-
-        An archive with no sidecar is left alone rather than guessed at: it
-        predates indexing, and the next push of it writes one (see
-        :meth:`_ensure_index`).
-
-        Guarded per artifact rather than per sweep, so one object that cannot
-        be fetched costs only itself: the rest of the prefix still lands, and
-        the run still starts from as much cached work as the remote would give
-        up.
-        """
+        r"""Fetch what the remote holds under ``reldir`` and this box does not."""
         names = self._list(reldir)
         available = set(names)
         for name in names:
@@ -1644,12 +1360,7 @@ class Syncer:
             with _scratch_file(suffix=".tar") as tmp:
                 self.transport.download(relpath, tmp)
                 _merge_from_tar(tmp, local, stale)
-            # Deliberately *not* recorded in the ledger. A merged directory is a
-            # superset of the remote archive, not a copy of it: the extra files
-            # are this box's own measurements, which may never have been pushed.
-            # Recording the merged signature here would tell the next push that
-            # this id is already up to date and strand them locally forever --
-            # the mirror image of the pull bug this whole path exists to fix.
+            # Deliberately *not* recorded in the ledger.
             logger.info("merged %d file(s) from %s", len(stale), relpath)
 
     def _record_pull(
@@ -1846,13 +1557,7 @@ def main() -> None:
             # dirs. Sweeping it here also means a store with no runs still gets
             # pushed.
             syncer.push_store()
-        # ``push-runs`` skips that sweep, because a measurement bundle is one
-        # remote object: touching any file in it re-uploads all of it, tensors
-        # included. Rewriting a 200-byte behavior.json (see
-        # :mod:`method.backfill_se`) therefore costs the whole bundle, and
-        # across a store that is tens of gigabytes for a change that belongs
-        # entirely to ``trajectory.json``. See the module docstring's note on
-        # archive granularity for the underlying limitation.
+        # ``push-runs`` skips that sweep, because a measurement bundle is one remote object: touching any file in it re-uploads all of it, tensors included.
         for run_dir in sorted(
             p for p in syncer.trajectories.glob("*_seed*") if p.is_dir()
         ):

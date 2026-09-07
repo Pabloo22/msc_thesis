@@ -1,77 +1,4 @@
-"""Convert ``z``'s ``p`` and ``q`` from scalar projections to cosines.
-
-    poetry run python -m method.backfill_latent_cosine --dry-run
-    poetry run python -m method.backfill_latent_cosine
-    poetry run python -m method.backfill_latent_cosine --mock
-
-:func:`method.latent.compute_latent` now normalises by the activation as well
-as by the persona vector, so ``p`` and ``q`` are cosines on ``[-1, 1]`` instead
-of lengths on whatever scale the hidden states happen to live at. Two layers of
-already-computed values do not know that:
-
-1. the store's ``latent.json``, handled by renaming the artifact (see
-   :data:`method.steps.Artifacts.LATENT_JSON`) so the old file is never served
-   under the new meaning;
-2. the ``"z"`` blocks copied into each run's ``trajectory.json``, which is what
-   every figure actually reads;
-3. the ``latents`` recorded in each ``trajectories/anchor_noise/*.json``, plus
-   the ``spread`` and ``against_drift`` tables derived from them.
-
-This script handles 2 and 3.
-
-**A rescale, not a re-derivation.** The two conventions differ by exactly one
-factor -- ``cos = proj / ||h_neutral||`` -- so the whole conversion is a
-division by a number read from one 417KB tensor per checkpoint. Rebuilding
-``z`` from ``v_0``, ``v_t`` and ``h`` instead would also silently re-anchor
-every run onto whichever ``v_0`` the store holds *now*, and exp3 is known to
-sit on several distinct base measurements (``method.visualization.latent_audit``
-exists to find exactly that). Dividing preserves the anchor each value was
-recorded against, so this changes the units and nothing else.
-
-``rho`` and ``r`` are untouched: ``rho`` was always a cosine and ``r`` is a
-length of the persona vector, neither of which involves ``h_neutral``. So is
-every DeltaP field -- if any of those move, something is wrong.
-
-The one thing that is *not* a rescale is the anchor-noise summary's derived
-tables, which are recomputed from the converted rows; see
-:func:`convert_anchor_noise` for why a rescale would not have been equivalent
-there, and why this is also cheaper than re-running the sweep.
-
-**The divisor is looked up before it is loaded.** Since
-:mod:`method.backfill_h_norm`, a converted ``z`` block carries the very number
-it was divided by (:data:`method.latent.H_NORM`), and that number is a property
-of a *checkpoint* -- ``||h_neutral_t||`` at the trajectory's layer -- not of the
-run that happened to record it. A trunk's checkpoints are shared by every run
-built on the same prefix, so a run that arrives late is almost always asking for
-a norm some sibling already published. :func:`index_recorded_norms` harvests
-those into a lookup consulted before the store, and the block being converted
-gains the field on the way through, which keeps the index growing rather than
-merely being read. Only a checkpoint no run has recorded a norm for falls back
-to reading its tensor.
-
-That is what lets this run on a plotting box: 230GB of adapters and hidden
-states exist to *produce* the norms, and once produced they are a float per
-checkpoint sitting in files that box already syncs. Two runs disagreeing about
-one checkpoint's norm means they sit on different measurements of it -- the
-exp3 anchor split again -- so that key is dropped from the index rather than
-resolved by a coin flip, and the store decides.
-
-**``trajectory.json`` is the output; the store is only a fallback input.** Same
-reasoning as :mod:`method.backfill_se`: where the index cannot answer, run this
-wherever the store lives, sync ``trajectories/`` back, and no analysis machine
-needs the store again. A checkpoint that neither the index nor *this* machine's
-store can price is reported and left alone, never guessed at.
-
-**Runs that land after a pass are the normal case, not an anomaly.** A sweep
-converts what is on one box's disk at one moment; the remote is the union of
-several boxes, and a trunk still training when the sweep ran is pushed hours
-later by a process whose code predates the change. The marker makes re-running
-cheap, so re-run it after every pull rather than treating it as one-time.
-
-Idempotent: each run carries a ``"z_convention"`` marker (see
-:data:`method.latent.CONVENTION`), so a converted run is skipped and a partial
-pass can be resumed after syncing more of the store.
-"""
+"""Convert stored latent projections p and q to cosines."""
 
 from __future__ import annotations
 
@@ -98,13 +25,7 @@ logger = logging.getLogger("backfill_latent_cosine")
 #: The ``z`` fields this rescales. ``rho`` and ``r`` are already scale-free.
 NORMALIZED = ("p", "q")
 
-#: How closely two records of one checkpoint's norm must agree to count as the
-#: same measurement. Two runs filled from the same tensor agree bit for bit --
-#: both take ``float(tensor[layer].float().norm())`` -- so this is slack for
-#: JSON round-tripping, not for measurement noise. Anything looser would paper
-#: over the case this tolerance exists to catch: two genuinely different
-#: measurements of one weights_id, which differ in the third digit, not the
-#: fifteenth.
+#: How closely two records of one checkpoint's norm must agree to count as the same measurement.
 NORM_AGREEMENT = 1e-9
 
 
@@ -385,27 +306,7 @@ def convert_anchor_noise(
     recorded: RecordedNorms | None = None,
     dry_run: bool = False,
 ) -> None:
-    """Rescale one ``anchor_noise`` summary and re-derive its tables.
-
-    The summary holds a flat ``latents`` list -- one row per (trait, checkpoint,
-    replicate) -- and two tables derived from it. Each row needs the norm of the
-    activation *its own replicate* drew, not the checkpoint's production one:
-    that a replicate re-derives ``h_neutral`` from scratch is the whole point of
-    the sweep.
-
-    The derived tables are recomputed rather than rescaled. ``spread`` would
-    almost survive a rescale, but ``against_drift`` divides a noise level by a
-    *drift* -- a difference between two checkpoints' levels -- and each of those
-    levels is divided by a different ``||h||``. A few percent of growth in
-    ``||h||`` across a trunk moves that difference by tens of percent, so the
-    ratios have to be re-derived from the converted rows or they quietly stop
-    matching the figures they are quoted against.
-
-    Re-deriving here rather than re-running :func:`method.anchor_noise.measure`
-    is not just convenience: that function materialises every checkpoint before
-    it looks at anything, and evicts it afterwards, so a re-run replays a merge
-    chain per checkpoint to recompute arithmetic that takes microseconds.
-    """
+    r"""Rescale one ``anchor_noise`` summary and re-derive its tables."""
     payload = json.loads(path.read_text(encoding="utf-8"))
     if payload.get("z_convention", LEGACY_CONVENTION) == CONVENTION:
         report.already += 1

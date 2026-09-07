@@ -92,29 +92,7 @@ def bootstrap_fit(
     level: float = 0.95,
     seed: int = 0,
 ) -> FitInterval:
-    r"""Fit ``y ~ x`` and bootstrap the uncertainty in its slope and correlation.
-
-    Points are resampled with replacement as *units*, which for the RQ1 decay
-    curves means resampling the probe datasets: a checkpoint's correlation
-    rests on eight of them, and the question the interval answers is how much
-    of it is the particular eight that were chosen (the "probe-set sampling"
-    row of the noise budget).
-
-    Percentile interval rather than normal-theory, because $r$ lives on
-    $[-1, 1]$ and its sampling distribution against eight points is neither
-    symmetric nor anywhere near Gaussian near the ends.
-
-    The correlation is taken per resample rather than by transforming an
-    interval on $R^2$. The two agree only while every resample fits the same
-    sign: a percentile interval is equivariant under a *monotone* transform,
-    and $r \mapsto r^2$ stops being one as soon as some draw slopes the other
-    way -- exactly the case where the sign is the thing worth reporting.
-
-    Resamples where every drawn ``x`` (or every drawn ``y``) is identical are
-    dropped rather than scored: a duplicated point carries no fit, and counting
-    it as $r = 0$ would pull the interval toward zero by an artifact of the
-    resampling. :attr:`FitInterval.n_usable` reports how many survived.
-    """
+    r"""Fit ``y ~ x`` and bootstrap the uncertainty in its slope and correlation."""
     x_arr = np.asarray(x, dtype=float)
     y_arr = np.asarray(y, dtype=float)
     fit = linear_fit(x_arr, y_arr)

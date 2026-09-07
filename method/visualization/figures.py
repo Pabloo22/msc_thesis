@@ -1,12 +1,4 @@
-r"""Figure-generating functions for the sequential fine-tuning experiments
-(proposal Section "Experiments and Plots").
-
-Every function takes plain arrays / DataFrames and returns a
-:class:`matplotlib.figure.Figure` -- never a :class:`~.schema.Trajectory`
-directly -- so the same code plots real measurements (once experiments have
-run) and :mod:`method.visualization.synthetic` fixtures identically. Save the
-result with :func:`method.visualization.style.save_figure`.
-"""
+r"""Figures for sequential fine-tuning experiments."""
 
 from __future__ import annotations
 
@@ -45,18 +37,8 @@ from method.visualization.metrics import (
 import matplotlib.pyplot as plt  # noqa: E402  (backend fixed by style import above)
 
 
-#: The judge's own range. Every behaviour score in this project is a 0-100
-#: judge average, so a panel showing one is drawn on the whole of it rather
-#: than on the part its data happens to occupy. These are the ticks: what the
-#: axis claims to span.
+#: Behaviour-score ticks and padded limits.
 BEHAVIOUR_TICKS = (0.0, 20.0, 40.0, 60.0, 80.0, 100.0)
-
-#: ...and these are the limits it is actually drawn to. The margin is
-#: clearance, not range: a probe scoring 0 is common (an aligned model on an
-#: evil judge) and a mark centred on the spine would be sliced in half by it,
-#: which reads as a smaller, differently-shaped mark rather than as a point at
-#: the floor. Padding the axis fixes that without letting a mark escape its own
-#: panel, which is what turning clipping off would do in a grid this dense.
 BEHAVIOUR_LIMITS = (-5.0, 105.0)
 
 def _fit_line_x(x: np.ndarray) -> np.ndarray:
@@ -78,17 +60,7 @@ def _scatter_marks(
     edge: str | None = None,
     zorder: int = 3,
 ) -> None:
-    """Scatter one mark per dataset: shape for the family, fill for the version.
-
-    Grouped by shape because a scatter call takes a single marker, so eight
-    families are eight calls over disjoint index sets rather than one call.
-
-    ``edge`` overrides the version outline for every point, which is what a
-    figure already using colour for something else passes: the decay grid
-    rings its marks in the projection series' hue, so a mark carries its
-    dataset in shape and fill while colour still separates $\\Delta P_0$ from
-    $\\Delta P_t$.
-    """
+    """Scatter datasets by family shape and version fill."""
     marks = [style.dataset_mark(d) for d in datasets]
     for marker in dict.fromkeys(mark.marker for mark in marks):
         at = [i for i, mark in enumerate(marks) if mark.marker == marker]
@@ -99,8 +71,7 @@ def _scatter_marks(
             s=size,
             facecolor=[marks[i].face for i in at],
             edgecolor=edge if edge else [marks[i].edge for i in at],
-            # Heavier when the outline is doing double duty as a series
-            # identity, which it has to carry at a glance across a panel grid.
+            # Emphasise outlines used as series identifiers.
             linewidth=1.2 if edge else 0.9,
             zorder=zorder,
         )
@@ -119,23 +90,7 @@ def _scatter_with_fit(
     mark_edge: str | None = None,
     line: bool = True,
 ) -> LinearFit:
-    """One scatter series plus its least-squares line, labelled with its $r$.
-
-    ``line=False`` scatters the points and returns the fit without drawing it,
-    for a panel where that line is already on the axes for another reason.
-
-    ``yerr`` draws the per-point error bar section 6a makes available for every
-    $\\Delta b$: it is what separates a point that sits off the line because the
-    model really moved differently from one that sits off it because its eval
-    was imprecise. Bars that are all zero (or all missing) are skipped rather
-    than drawn as flat caps, since a run measured with one generation per
-    question has no within-question spread to report.
-
-    ``datasets`` names the ``dataset/version`` behind each point, which turns
-    the marks into the per-dataset shapes and fills of :func:`_scatter_marks`.
-    ``color`` then applies to the fit line and the error bars only -- and to
-    the mark outlines when ``mark_edge`` asks for it.
-    """
+    """Draw a scatter series and optional least-squares line."""
     x_arr = np.asarray(x, dtype=float)
     y_arr = np.asarray(y, dtype=float)
     fit = linear_fit(x_arr, y_arr)
@@ -349,54 +304,7 @@ def hysteresis_bar(
     reference_label: str | None = None,
     ylabel: str = r"Trait score $b_T$",
 ) -> Figure:
-    r"""RQ2 hysteresis bar chart: is a realigned model easier to re-misalign?
-
-    One column per dataset, one bar per ``condition`` within a panel, and one
-    row per value of ``row_col`` -- the measured trait crossed with the trait
-    whose Normal data did the re-aligning, in the figure this draws for exp3.
-    Error bars show the std across seeds.
-
-    The four combinations belong in one figure because the reading is the
-    comparison between them: whether re-aligning on a *different* trait's
-    Normal data leaves the same residue as re-aligning on the target's own is
-    the control that separates hysteresis from a dataset artefact, and it is
-    not a comparison the reader should have to make across four separately
-    scaled figures.
-
-    ``row_scales`` says which rows are the same quantity and so share a y-axis
-    -- the two re-alignment sources for one measured trait -- because the
-    traits are not: they are different judges on different behaviours, and one
-    trait topping out at a third of the other's range would spend two thirds of
-    its panels on empty space.
-
-    ``reference`` may be one line for the figure or one per row, since $b_0$ is
-    a property of the trait being measured.
-
-    Bars are *levels*, not deltas. ``value_col`` defaults to the trait score
-    each arm ends at, and ``reference`` draws a dashed line at $M_0$'s own
-    score, so a bar's height above that line is $b_T - b_0$ -- a quantity every
-    arm shares an origin for. Plotting the last step's $\Delta b$ instead would
-    measure each arm from its own floor: an arm re-aligned down to 10 that
-    climbs back to 50 would score below a baseline that went straight to 50,
-    despite ending in the same place.
-
-    ``start_col`` adds a tick across each bar at the score the final step
-    started from ($b_{T-1}$). It is what separates the two readings a level
-    alone leaves ambiguous -- an arm that ends low because it moved little
-    (plasticity loss) from one that ends low because it started low.
-
-    ``dataset_col`` is expected to hold internal ``dataset/version``
-    identifiers (e.g. ``"mistake_gsm8k/misaligned_2"``); panels are headed with
-    :func:`~method.visualization.labels.display_dataset_name` (e.g. ``"GSM8K
-    (Mistake II)"``) unless overridden per-dataset via ``dataset_labels``.
-
-    Each arm is named on its own tick by its training schedule -- ``$X\,N\,X$``
-    and so on, see
-    :data:`~method.visualization.labels.HYSTERESIS_CONDITION_SEQUENCES` -- so
-    the legend is left to carry only the two things that have no tick of their
-    own: the base-model reference and the start-of-final-step marks. Colour
-    still separates the arms, but nothing is encoded in colour alone.
-    """
+    r"""RQ2 hysteresis bar chart: is a realigned model easier to re-misalign?"""
     style.apply_style()
     if condition_labels is None:
         condition_labels = [
@@ -410,12 +318,7 @@ def hysteresis_bar(
     x = np.arange(len(conditions))
     width = 0.72
 
-    # One panel per dataset rather than one group of bars per dataset. Grouping
-    # left every arm's identity in its colour, because a group has one tick
-    # between it and its neighbour and five arm names will not fit there;
-    # faceting gives each arm a tick of its own and costs only width.
-    # 0.52in per bar keeps the schedule labels from touching, and the cap stops
-    # a large dataset pool producing an unprintable figure.
+    # One panel per dataset rather than one group of bars per dataset.
     width_in = min(11.0, max(4.0, (0.52 * len(conditions) + 0.5) * len(datasets) + 0.8))
     fig, axes = plt.subplots(
         len(panels),
@@ -568,32 +471,7 @@ def training_curve_grid(
     dataset_labels: Mapping[str, str] | None = None,
     band_label: str = r"Mean $\pm$ 1 SD across training runs",
 ) -> Figure:
-    r"""What each arm's *final* fine-tuning run did, quantity by quantity.
-
-    One column per dataset that final step trained on, one row per quantity in
-    ``rows`` -- the training loss and the gradient norm, in the exp3 figure --
-    and one line per arm within a panel.
-
-    The two rows belong in one figure because the reading is the contrast
-    between them. A lower entry loss on its own would say only that the repeat
-    arm starts nearer to fitting the data, which is compatible with it catching
-    up and ending in the same place; the loss row shows that it does catch up.
-    What does not close is the gradient row, and it is distance travelled in
-    weight space, not final loss, that a smaller behavioural change requires.
-    Splitting the two across figures would leave that comparison to the reader's
-    memory.
-
-    Columns share an x-axis and nothing else. Each dataset's run is a different
-    length (one epoch over a different number of examples), so there is no
-    shared step axis to draw them on, and the loss of one dataset is not
-    comparable with the loss of another -- a shared y-axis would spend a panel
-    on empty space to say so.
-
-    ``conditions`` selects and orders the arms; it defaults to all five, but
-    exp3 draws the three whose final step sits at the same depth in the chain,
-    since a lower entry loss can otherwise be read as depth rather than as
-    having met the data before.
-    """
+    r"""What each arm's *final* fine-tuning run did, quantity by quantity."""
     style.apply_style()
     dataset_labels = dataset_labels or {}
     datasets = list(datasets) if datasets else list(dict.fromkeys(df[dataset_col]))
@@ -676,36 +554,7 @@ def mean_rmse_bar(
     upper_bound_col: str | None = "upper_bound",
     xlabel: str = "Mean RMSE in judge points",
 ) -> Figure:
-    """A compact ranking of methods by mean out-of-sample error.
-
-    Bars are sorted from the smallest error at the top to the largest at the
-    bottom.  Upper-bound references are grey; among the remaining methods the
-    leading bar is orange and bold while every other bar is blue.  The ordering
-    and direct labels therefore carry the result even when the hues cannot be
-    distinguished.  Values are written beside the bars so the figure retains
-    the useful precision of the table it replaces.
-
-    ``group_col`` groups the bars instead of ranking them one at a time: each
-    of its values takes one row of the axis and holds one bar per ``label_col``
-    inside that row.  Rows are ranked by their best non-upper-bound bar; within
-    a row the methods keep the order they arrive in, so a reader compares the
-    same position from row to row.  That is the shape to use when the same few
-    methods are measured on every input, since the comparison then lives
-    *within* a row and the input is named once on the axis instead of being
-    repeated inside every method's label.  Here the hue names the method, so a
-    legend carries it and the leading row is marked in bold alone rather than
-    in orange.
-
-    ``color_col`` sets the fill of each bar, for a caller whose methods already
-    have an established hue elsewhere.  Without it the colour falls back to the
-    ranking's own: grey for a reference, orange for the leader, blue for
-    everything else.
-
-    ``error_col`` gives a descriptive spread for each bar, drawn as a capped
-    horizontal error bar.  In exp2 it is the sample standard deviation of the
-    checkpoint-level RMSEs across traits and trunks, not an inferential
-    confidence interval.
-    """
+    r"""A compact ranking of methods by mean out-of-sample error."""
     style.apply_style()
     columns = [label_col, value_col, *([group_col] if group_col else [])]
     missing = set(columns).difference(df.columns)
@@ -1181,26 +1030,7 @@ def scatter_validation(
     xlabel: str = r"Projection difference $\Delta P_0$",
     ylabel: str = r"Behaviour change $\Delta b_1$",
 ) -> Figure:
-    r"""Plot 1: the $t = 0$ validation fan over all 24 datasets, one trait per panel.
-
-    One point per dataset fine-tuned straight from $M_0$, reproducing Figure 8
-    of the persona-vectors paper. This is the pipeline's gate, not part of the
-    decay analysis: it is drawn over 24 datasets while the decay curve is drawn
-    over the 8 probes, and correlation estimates are sensitive enough to range
-    restriction and to ``n`` that comparing the two would manufacture a decay
-    out of nothing (section 5).
-
-    The traits share a figure but not a scale. Each is a different persona
-    vector and a different judge, so $\Delta P$ and $\Delta b$ mean different
-    things across panels and a shared axis would invite reading one trait's
-    spread against the other's; what the panels do share is the encoding, so
-    the mark key is stated once for the figure.
-
-    One fitted series per panel, so its statistics are annotated in the panel
-    rather than put in a legend, and the legend keys the *encoding* -- shape
-    per family, fill per version -- which is what makes a 24-point scatter
-    readable without 24 entries.
-    """
+    r"""Plot the $t=0$ validation fan, one trait per panel."""
     style.apply_style()
     traits = list(traits) if traits else sorted(df["trait"].unique())
     trait_labels = trait_labels or {}
@@ -1262,12 +1092,7 @@ class _DecaySeries:
         return f"${self.symbol}$"
 
 
-#: The series a decay panel can hold, in the order they are layered. Each is a
-#: different rule for what may be current at $M_t$ -- the axis, the encoder,
-#: the prediction -- so they share the panel and differ only in hue. A series
-#: whose column is missing or incomplete for a panel is skipped there (see
-#: :func:`_panel_series`), which is what lets one grid mix a trunk that was
-#: re-measured with two that were not.
+#: The series a decay panel can hold, in the order they are layered.
 _DECAY_SERIES: tuple[_DecaySeries, ...] = (
     _DecaySeries("delta_p_0", DELTA_P_BASE, style.BLUE),
     _DecaySeries(
@@ -1337,25 +1162,14 @@ _MARK_RADIUS = 4.0
 #: between two of them and call the line missed.
 _CURVE_SAMPLES = 40
 
-#: What a position pays for each thing it would print over. A mark is a
-#: measurement and the panel exists to show it; a fit line is thin and a reader
-#: follows it past a number without losing it; a rule spans the panel, so it
-#: can be picked up again either side; a label already printed cannot be
-#: overlapped at all. Leaving the panel is not costed but forbidden, and the
-#: price here only orders the fallback for a label with nowhere clear to go.
+#: What a position pays for each thing it would print over.
 _COST_MARK = 12.0
 _COST_CURVE = 3.0
 _COST_RULE = 4.0
 _COST_TAKEN = 100.0
 _COST_OFF_PANEL = 500.0
 
-#: ...and what it pays for getting there: a step along its own line, a
-#: text-height of clearance off it, hanging under the line rather than over it,
-#: and running forward off the line's end rather than back along it. All are
-#: cheap next to hiding a mark, which is the point of the search -- a label
-#: anywhere near a line still names that line, so moving is nearly free and
-#: hiding data is not -- and they are ordered so that, all else equal, a label
-#: sits at the end of its line, over it, reading back into the panel.
+#: ...and what it pays for getting there: a step along its own line, a text-height of clearance off it, hanging under the line rather than over it, and running forward off the line's.
 _COST_STEP = 0.4
 _COST_AWAY = 1.5
 _COST_UNDER = 1.0
@@ -1594,43 +1408,7 @@ def _label_fits(
     rules: Sequence[float] = (),
     fontsize: float = 7.0,
 ) -> None:
-    r"""Print each fit's $r$ beside the line it was measured from.
-
-    Direct labelling in place of a per-panel key. A key makes the reader carry
-    a colour from a corner of the panel over to a line to find out which fit a
-    number belongs to, and at this grid's panel size a three-entry stack of
-    them takes more of the panel than the data does. A label against its own
-    line is read where the line is looked at, and it is what lets the text drop
-    the series name and print $r$ alone: position says which line the number
-    belongs to, with colour repeating it.
-
-    Where along the line is chosen by looking at what is already drawn in the
-    panel. Every position on the line is costed by what its label would cover
-    there -- marks first, then the other fits and any rule in ``rules`` -- plus
-    a little for how far it sits from the line's upper end, and the cheapest
-    wins. Moving costs almost nothing next to hiding a point, so a label takes
-    the end of its line when that corner is clear and slides down into the
-    panel's empty half when it is not, which is the whole reason to search
-    rather than to anchor: which corner of a decay panel is empty changes from
-    trunk to trunk and checkpoint to checkpoint, and there are forty-two of
-    them.
-
-    ``entries`` are ``(text, colour, x, fit)``, one per drawn series, sharing
-    ``ax``. A series of fewer than two points has no line to label and is
-    skipped, matching :func:`_scatter_with_fit`, which draws none. Labels are
-    placed in turn and never overlap: a series that agrees with one already
-    placed -- $\Delta P_0$ and $\Delta P_t$ agreeing is what an unaged trunk
-    looks like -- finds its line's best spots taken and moves along it.
-
-    ``rules`` are heights the panel has drawn a line across its whole width at.
-    A rule is read along its length, so a number parked on it costs more than
-    the same number anywhere else in the panel, though less than a hidden mark:
-    a rule interrupted is still a rule.
-
-    Call this only once the grid has been laid out. Everything here is measured
-    off the panel as it stands, and a panel that has still to be fitted around
-    a legend is not the shape the label will be printed in.
-    """
+    r"""Print each fit's $r$ beside the line it was measured from."""
     labels = [
         _fit_label(text, color, np.asarray(x, dtype=float), fit)
         for text, color, x, fit in entries
@@ -1700,12 +1478,7 @@ def _label_fits(
             fontsize=fontsize,
             color=label.color,
             zorder=5,
-            # A label can end up over the data even so -- a crowded panel has
-            # no clear spot, only a cheapest one -- and a marker behind it
-            # costs a digit. The patch is the chart surface itself, so it reads
-            # as clearance rather than as a box, and mostly rather than fully
-            # opaque: enough to keep the digits off a marker's outline, not so
-            # much that it erases the marker.
+            # A label can end up over the data even so -- a crowded panel has no clear spot, only a cheapest one -- and a marker behind it costs a digit.
             bbox={
                 "facecolor": style.SURFACE,
                 "edgecolor": "none",
@@ -1727,71 +1500,7 @@ def decay_scatter_grid(
     xlabel: str = r"Projection difference $\Delta P$",
     ylabel: str = r"Behaviour after the step, $b_{t+1}$",
 ) -> Figure:
-    r"""Plot 2: one scatter panel per ``(trait, trunk, checkpoint)``.
-
-    Rows are trunks and columns checkpoints, so a row reads as one trajectory
-    ageing and a column as three trajectories at the same depth; the traits
-    stack as blocks of rows. Each panel holds the ``K`` probe datasets once per
-    series it has a complete column for -- against the frozen $\Delta P_0$ in
-    blue, $\Delta \hat{P}_t$ in green, and, where it was measured,
-    $\Delta P_t$ in orange (:data:`_DECAY_SERIES`) -- and each fit's $r$ printed
-    beside the line it was measured from (:func:`_label_fits`). The hypothesis
-    is visible as the blue fit flattening left-to-right while the others do
-    not.
-
-    ``series`` picks which of :data:`_DECAY_SERIES` a panel may draw, by
-    column; the default is every one the frame has measured. A scatter panel
-    this size shows a relationship rather than a number -- whether the cloud
-    still has a line in it -- and it takes two series to show one going stale
-    while another does not. The rungs between them are read as numbers, across
-    checkpoints, which is a table's job and not a 1.75-inch panel's: pass the
-    two ends of the ladder here and tabulate the rest.
-
-    Panels need not all carry the same series. $\Delta P_t$ costs a generation
-    pass per checkpoint, so on a partly measured sweep its column is complete
-    for some trunks and not others. That asymmetry is the point of drawing them
-    in one grid rather than two: the trunk that was re-measured is read in
-    place, against the same axes and the same probes as the trunks that were
-    not.
-
-    The y axis is the behaviour the step actually reached, $b_{t+1}$, with the
-    level it started from, $b_t$, drawn as a black rule across the panel. That
-    is $\Delta b_{t+1}$ shifted by a constant -- $b_t$ is one number per panel,
-    so every fit here has the slope and correlation the differences would give
-    -- but it puts the prediction on the judge's own scale, where a reader can
-    see how far above or below the starting level a probe landed and how much
-    of the axis a whole panel's spread covers. On differences those are both
-    inferences from a number the figure no longer shows.
-
-    Correlation rather than $R^2$ because the panels are read against each
-    other by eye: $r$ carries the sign of the relationship, and it falls off
-    linearly rather than quadratically as the frozen projection goes stale, so
-    the decay down a row is legible at the sizes this grid leaves per panel.
-
-    The y axis is pinned to the judge's full $[0, 100]$ on every panel, trait
-    blocks included (with a margin below and above it -- see
-    :data:`BEHAVIOUR_LIMITS`). It is the one axis here whose bounds are a
-    property of the instrument rather than of the data: both judges score out
-    of 100, so the range is already the same range, and fixing it means the
-    height of a mark means one thing everywhere in the figure -- a trunk that
-    ends up near the ceiling looks near the ceiling, instead of filling its
-    panel the way a trunk that never left the floor also would.
-
-    $\Delta P$ is shared within a trait and not across (see
-    :func:`_share_blocks`). Within one, panels on their own scales would let a
-    flattening slope and a shrinking spread look identical, which is the one
-    confusion this figure exists to prevent; across two, $\Delta P$ is read
-    against a different persona vector, so a shared scale would compare
-    quantities that are not the same quantity.
-
-    The steps-since-re-alignment note above each panel is the phase of section
-    4, marked per panel rather than per column because the three schedules put
-    their re-alignments at different depths, so the phase of column ``t``
-    differs by row.
-
-    The ``t = 0`` column repeats across rows by construction: all three trunks
-    branch from $M_0$, which is measured once.
-    """
+    r"""Plot 2: one scatter panel per ``(trait, trunk, checkpoint)``."""
     style.apply_style()
     trunks = list(trunks) if trunks else sorted(df["trunk"].unique())
     checkpoints = (
@@ -1964,13 +1673,7 @@ def decay_scatter_grid(
     return fig
 
 
-#: A hue per forecaster, keyed as :data:`method.visualization.forecast
-#: .FORECASTERS` names them. Colour is the only channel separating the models
-#: in a forecast panel -- the marks already spend shape and fill on the dataset
-#: -- so the frozen line takes the same blue $\Delta P_0$ wears in the decay
-#: grid, and the refit the same orange $\Delta P_t$ does: in both figures those
-#: two are "what you measured at $M_0$" against "what the checkpoint would
-#: really say".
+#: Forecaster colours keyed by model name.
 FORECAST_COLORS = {
     "step0": style.BLUE,
     "step0_level": style.BLUE,
@@ -2032,67 +1735,7 @@ def forecast_grid(
     xlabel: str = r"Predicted behaviour after the step, $\hat{b}_{t+1}$",
     ylabel: str = r"Behaviour after the step, $b_{t+1}$",
 ) -> Figure:
-    r"""Predicted against actual, one panel per ``(trait, trunk, checkpoint)``.
-
-    The out-of-sample counterpart of :func:`decay_scatter_grid`, laid out the
-    same way -- rows are trunks under trait blocks, columns are checkpoints --
-    so the two can be read against each other panel for panel. What changes is
-    the x axis. There it is the projection difference, and the question is
-    whether the cloud still has a line in it; here it is what a forecaster
-    *predicted*, and the question is whether the cloud still sits on the
-    diagonal.
-
-    That swap is the point. A correlation cannot see a frozen predictor going
-    stale -- applying a fixed line to $\Delta P$ leaves $r$ exactly where it
-    was -- so the decay grid draws a relationship that survives while the
-    predictions built on it drift off the identity line panel by panel. Here
-    the drift is the distance from that line: vertical spread is the error
-    the table reports as ``rmse``, and a cloud sitting wholly above or below is
-    the systematic offset it reports as ``bias``.
-
-    ``models`` picks which forecasters share a panel, by name, in the order
-    given; ``model_labels``, ``model_colors`` and ``model_glosses`` name and
-    colour them (:data:`FORECAST_COLORS` by default). Two is the readable
-    limit at this panel size, and the pair worth drawing is the frozen line
-    against the refit: what a practitioner has, against what the same probes
-    would have given had refitting been free.
-
-    No cloud carries a fitted line. A forecaster's own line maps $\Delta P$ to
-    a prediction and is already spent, in full, on placing the points along the
-    x axis, so the only line these axes want is the diagonal every forecast is
-    read against -- and the distance from it is the error the label reports.
-    The line a panel *could* draw is a calibration, fitted here by regressing
-    what happened on what was predicted, and it is left out: for a refitted
-    forecaster it is the identity exactly (least squares makes fitted values
-    and residuals orthogonal), and for a frozen one it is a second line in the
-    forecaster's own colour that reads as the forecaster itself. Both belong to
-    :func:`recalibration_grid`, whose x axis is the quantity a forecaster is a
-    function of and where a line therefore means something.
-
-    The diagonal is the only line in a panel. A forecaster's own line maps
-    $\Delta P$ to a prediction and is already spent, in full, on placing the
-    points along the x axis -- on these axes it *is* the diagonal, which is why
-    the diagonal is what a forecaster is read against, and why a second line
-    through the cloud would be a fit the figure is not making a claim about.
-
-    The RMSE is printed beside each cloud (:func:`_label_fits`), to no
-    decimals: it is a distance on a 0-100 judge scale, and the panel is there
-    to be read as a picture with a number attached rather than the other way
-    round.
-
-    Both axes are the judge's own $[0, 100]$ on every panel, and they are the
-    same axis -- a prediction and a measurement of the same quantity. ``df`` is
-    :func:`method.visualization.forecast.prediction_frame`, whose
-    ``predicted_b_next`` is the predicted change added back onto the level the
-    checkpoint started from: nothing is *scored* on that scale (the shift is
-    constant within a panel, so it cancels), but it is the scale a reader can
-    put a ruler against.
-
-    ``series_label`` names the projection difference the forecasts were made
-    from, for the legend. One grid draws one series: the models are already
-    spending the colour channel, and which projection is being forecast is a
-    property of the whole figure rather than of a panel.
-    """
+    r"""Predicted against actual, one panel per ``(trait, trunk, checkpoint)``."""
     style.apply_style()
     trunks = list(trunks) if trunks else sorted(df["trunk"].unique())
     checkpoints = (
@@ -2262,44 +1905,7 @@ def recalibration_grid(
     xlabel: str = r"Projection difference $\Delta P$",
     ylabel: str = r"Behaviour after the step, $b_{t+1}$",
 ) -> Figure:
-    r"""What recalibrating at $M_t$ would buy, on the decay grid's own axes.
-
-    The same axes as :func:`decay_scatter_grid` -- projection difference
-    across, behaviour reached up -- and the same eight probes in each panel.
-    What differs is that the cloud is drawn *once* and the panel carries two
-    **lines** through it: the one fitted at $M_0$ and carried forward, and the
-    one refitted on this checkpoint. The vertical distance between them is what
-    not recalibrating costs, in judge points, read off directly.
-
-    This is the picture :func:`forecast_grid` cannot draw. There the x axis is
-    already the prediction, so a forecaster's line has been spent placing the
-    points and only the identity line is left to compare against. Here the x
-    axis is the quantity a forecaster is a function *of*, so both lines are on
-    the axes at once and the question -- how far apart are they, and where --
-    is answered by looking.
-
-    The refitted line is fitted on the very points it is drawn through, so it
-    is not a method anyone could run: refitting needs the fan-out whose cost is
-    the reason for the question. It is the bound the frozen line is read
-    against, and the gap is an upper bound on what any recalibration could
-    recover.
-
-    Both lines come straight from ``df``, which is
-    :func:`method.visualization.forecast.prediction_frame`: every forecaster
-    here is affine in $\Delta P$, so its predictions plotted against the
-    projection *are* its line, exactly, and there is nothing to re-fit in a
-    figure. A corrected forecaster rescales $\Delta P$ by one number per
-    checkpoint, which leaves it affine and so leaves it a line.
-
-    The y axis is the behaviour reached, with the level the checkpoint started
-    from drawn as a black rule -- the same convention, and the same reason, as
-    :func:`decay_scatter_grid`: a point above the rule is a step that made the
-    model *more* of the trait. Each line is labelled with its RMSE about the
-    points (:func:`_label_fits`).
-
-    ``series_label`` names the projection difference on the x axis. It is not
-    repeated as a legend title: the axis already states what was fitted.
-    """
+    r"""What recalibrating at $M_t$ would buy, on the decay grid's own axes."""
     style.apply_style()
     trunks = list(trunks) if trunks else sorted(df["trunk"].unique())
     checkpoints = (
@@ -2535,12 +2141,7 @@ def _series_line(
     )
 
 
-#: The line style each member of a curve group takes, in the order the group
-#: lists them. Solid first, because the first member is always the cheaper
-#: measurement -- the answers $M_0$ has already generated -- and the dashed one
-#: is what refreshing them buys. A group with a third member would need a third
-#: style here; the ``.get``-free indexing is deliberate, so that would fail
-#: loudly rather than draw two curves identically.
+#: The line style each member of a curve group takes, in the order the group lists them.
 _MEMBER_LINESTYLES: tuple[str | tuple, ...] = ("solid", (0, (3.5, 2.0)))
 
 
@@ -2586,13 +2187,7 @@ class CurveGroup:
     series: tuple[str, ...]
 
 
-#: The step a correlation panel's floor is rounded down to, the clearance left
-#: outside the range, and the least a panel may span.
-#:
-#: The span floor is what stops a block whose curves all sit within a hundredth
-#: of each other -- the control trunk, which is meant to look like nothing
-#: happening -- from being magnified until that hundredth fills the panel and
-#: reads as a decay.
+#: The step a correlation panel's floor is rounded down to, the clearance left outside the range, and the least a panel may span.
 _CORRELATION_STEP = 0.1
 _CORRELATION_CLEARANCE = 0.02
 _CORRELATION_SPAN = 0.35
@@ -2655,13 +2250,7 @@ _CURVE_LABEL_MARGIN = 1.5
 _CURVE_LABEL_GAP = 1.1
 _CURVE_LABEL_PAD = 1.2
 
-#: Panel size for the headline grid, in inches. A faceted row holds two curves
-#: and needs only enough height to separate them; an overlaid row holds six and
-#: needs the room to keep their end labels apart.
-#:
-#: The faceted row is also sized by the page: six of them plus a caption has to
-#: fit the text block once the figure is scaled to the line width, and at much
-#: over 1.2 inches it does not.
+#: Panel size for the headline grid, in inches.
 _HEADLINE_COLUMN_IN = 2.15
 _HEADLINE_ROW_IN = 2.25
 _HEADLINE_FACET_ROW_IN = 1.15
@@ -2754,28 +2343,7 @@ def _label_curves(
     *,
     fontsize: float = _CURVE_LABEL_SIZE,
 ) -> None:
-    r"""Print a value against each curve, in a column past the end of the panel.
-
-    What each curve *is* comes from the figure's keys and its row; what this
-    adds is the number the text quotes about it, put where the curve is rather
-    than in a table the reader has to hold the curve in mind while finding.
-    Keeping the two apart is what makes both fit: a variant's name is a
-    mathtext symbol that would fill a small panel several times over, while
-    ``0.86`` is four characters and sits in a strip the panel can spare.
-
-    ``entries`` are ``(text, colour, x, y)``, one per drawn curve, sharing
-    ``ax``. Each label sits level with the end of its own curve, pushed apart
-    from its neighbours only as far as it has to be (:func:`_stacked`), and
-    joined back to that end by a hairline in its own colour. The leader is what
-    makes the column work where the curves bunch: in a control trunk they can
-    all end within a hundredth of each other, and then only the leaders say
-    which label is whose.
-
-    Call this only once the grid has been laid out and the strip has been made
-    (:func:`_label_strip`). Everything here is measured off the panel as it
-    stands, and a panel still to be fitted around its labels is not the shape
-    they will be printed in.
-    """
+    r"""Print a value against each curve, in a column past the end of the panel."""
     panel = _Panel.of(ax)
     labels = [
         _CurveLabel(
@@ -2852,66 +2420,9 @@ def headline_curves(
     xlabel: str = "Checkpoint $t$",
     ylabel: str | None = None,
 ) -> Figure:
-    r"""Plot a checkpoint metric for the 3x2 projection-difference variants.
+    r"""Plot checkpoint metrics for the 3x2 projection variants.
 
-    The six variants are a 3x2 -- three persona vectors crossed with two
-    sources of predicted answers -- and this figure draws them as one, because
-    what the chapter asks of it is which *factor* a lost correlation is
-    attributable to. So the two factors get two channels: colour (and, when
-    ``facet``, a column) for the vector, line style for the answers. Six flat hues
-    is what the first version of this figure used and it was unreadable; no
-    six hues would have fixed it, because six hues is the wrong encoding for a
-    3x2.
-
-    ``facet`` chooses the layout, and the trade is between the two comparisons:
-
-    * ``True`` gives every group its own column -- so a panel holds two curves,
-      one pair, and the gap between them *is* what regenerating the answers
-      buys. Trunks occupy the rows, so reading across one compares persona
-      vectors without changing the trajectory. The cost
-      is height, and that the six are no longer in one panel to be read against
-      each other at a glance.
-    * ``False`` puts all six in one panel, a row per trait -- compact, and the
-      whole 3x2 is read at once, at the price of six curves crossing in the
-      panels where they bunch.
-
-    In the faceted layout a trunk is a row and a persona vector is a column.
-    The compact overlaid layout retains one trunk per column because all three
-    persona-vector groups share each panel there.
-
-    ``metric`` selects wide columns named ``<metric>_<series>``. Correlation
-    uses its bounded scale and two decimal places; RMSE uses a zero-based scale
-    in judge points and one decimal place.
-
-    ``reference`` is an optional second frame of the same shape, drawn in grey
-    under each panel's own curves (:func:`_reference_line`) and named once by
-    ``reference_label``. The RMSE headline passes the refit fitted at each
-    checkpoint, which is the same reference the summary bars carry: a curve
-    above its grey floor is error the frozen line pays for not being refitted,
-    and the two are only comparable panel by panel, which is where this puts
-    them. It carries no end label -- a panel already prints one number per
-    curve, and doubling that would cost more than the floor's mean is worth.
-
-    Identity and summary are split between the two places each reads best. The
-    keys name the channels once for the whole grid; each curve then carries its
-    own mean over the checkpoints at the end of it (:func:`_label_curves`),
-    because that number is per panel and is the one the text quotes.
-
-    The slope this figure used to carry on a second row has gone: a slope in
-    trait points per unit $\Delta P$ is not comparable between two traits, or
-    between two variants whose persona vectors differ, which is exactly what a
-    shared panel invites. ``exp2_decay_correlations`` reports it instead.
-
-    Nor does it draw the bootstrap intervals ``fit_frame`` computes. Eight
-    probe datasets per checkpoint make them wide, and a band per curve buries
-    the curves the figure exists to show. The intervals are still computed and
-    still in the frame; the honest place for a sample this small is a sentence
-    in the text saying so, not a wash of shading over every panel.
-
-    This panel no longer draws the $R^2_{max}$ noise ceiling either; see
-    ``docs/r2_max.md`` for what it means and where to find it instead. Note it
-    is a variance ratio, so the ceiling on the correlation drawn here is its
-    square root, not the stored number.
+    ``facet`` separates vector groups; ``metric`` accepts ``corr`` or ``rmse``.
     """
     style.apply_style()
     if metric not in {"corr", "rmse"}:
@@ -3254,31 +2765,7 @@ def mechanism_grid(
     ylabel: str = r"Correlation $r$ of $\Delta P_0$ at that checkpoint",
     max_columns: int = 3,
 ) -> Figure:
-    r"""Plot 4: the checkpoint-level regression of the correlation on what moved.
-
-    ``predictors`` maps a column to its display label -- the drift components
-    $\rho$ and $r$, the current behaviour level $b_t$, and
-    ``steps_since_realignment``. A panel fits $r$ against one of them over
-    every checkpoint of one trait, a block of rows is a trait, and colour
-    identifies which trunk a checkpoint came from. Predictors wrap after
-    ``max_columns`` so adding the regenerated-axis variants does not shrink six
-    panels into one unreadably wide row.
-
-    This is the level-2 analysis, so a point is a *checkpoint*, not a probe
-    dataset: the eight probes at a checkpoint were already spent producing the
-    single $r$ plotted here. Dense sampling is what makes the panel
-    populated at all -- measuring every ``t`` gives 19 rows where measuring
-    ``t`` in ``{0, 2, 4, 6}`` would give 10 -- and the varied schedules are
-    what stop drift and behaviour level from moving together, which is the
-    condition for their contributions to be separable.
-
-    Every panel shares one y-axis, unlike the other grids here: the
-    correlation is unitless and bounded, so it is the one quantity in this set
-    that means the same thing for both traits. The x-axes are not shared, in either direction
-    -- the columns are different quantities, and a rotation that runs over
-    $[0.88, 1]$ for one trait and $[0.97, 1]$ for the other would have the
-    tighter trait's whole spread squeezed into a corner.
-    """
+    r"""Plot 4: the checkpoint-level regression of the correlation on what moved."""
     style.apply_style()
     trunk_labels = trunk_labels or {}
     trunk_colors = trunk_colors or {}
@@ -3337,12 +2824,7 @@ def mechanism_grid(
                 )
             entries = [(rf"$r$ = {fit.corr:.2f}", style.INK)]
             if index == 0:
-                # Every panel of a row regresses the same checkpoints, so ``n``
-                # belongs to the row rather than to a panel -- stated once, in
-                # the one the eye reaches first, since it is what stops the
-                # level-2 count from being read as the level-1 one (a point
-                # here is a checkpoint, not a probe dataset). Once per row and
-                # not once per figure, because each trait has its own ``n``.
+                # Every panel of a row regresses the same checkpoints, so ``n`` belongs to the row rather than to a panel -- stated once, in the one the eye reaches first, since it is what stops.
                 entries.append(
                     (rf"$n$ = {len(frame)} checkpoints", style.SECONDARY_INK)
                 )
@@ -3377,12 +2859,7 @@ _SERIES_HATCHES: dict[str, str] = {
     "full_t": "xxxx",
 }
 
-#: Bar geometry per re-alignment step, in x-axis units. Two bars per series
-#: (before, after), and the gap *within* a pair is narrower than the gap
-#: between pairs, so the eye groups before/after together and reads each
-#: series as its own cluster. :data:`_BAR_SPAN` is what the whole group is
-#: then scaled to occupy, which is what keeps a third series from colliding
-#: with the neighbouring step's bars.
+#: Bar geometry per re-alignment step, in x-axis units.
 _PAIR_GAP = 0.20
 _SERIES_GAP = 0.24
 _BAR_SPAN = 0.82
@@ -3417,30 +2894,7 @@ def phase_contrast(
     trunk_colors: Mapping[str, str] | None = None,
     ylabel: str = r"Correlation $r$ over the probe set",
 ) -> Figure:
-    r"""Plot 4b: what one re-alignment step does to predictive accuracy.
-
-    Each pair of checkpoints straddles a single Normal driver, with the trunk
-    and the probe set held fixed, so the vertical distance between a step's
-    bars is attributable to that one step -- unlike a difference read off the
-    trend in ``t``, which also carries everything else that accumulated in
-    between.
-
-    Drawn as adjacent before/after bars rather than a bar of the difference so
-    that the *level* stays visible: a drop from 0.9 to 0.6 and one from 0.4 to
-    0.1 are the same difference and very different findings. $\Delta P_0$ and
-    $\Delta \hat{P}_t$ sit side by side within the same step -- offset just enough
-    not to touch -- rather than in their own panel, so the control comparison
-    (does $\Delta \hat{P}_t$ move by the same amount?) is a glance sideways instead
-    of a glance across the figure.
-
-    One column per trait, on one shared pair of axes: $r$ is unitless and
-    every column is read against the same list of re-alignment steps, so a
-    step whose fit collapses for one trait and holds for the other is a
-    difference the grid shows directly. The x positions come from the whole
-    frame rather than from each column, so a pair that only one trait has
-    measured leaves a gap instead of shifting that column's steps out of line
-    with the other's.
-    """
+    r"""Plot 4b: what one re-alignment step does to predictive accuracy."""
     style.apply_style()
     series = list(series)
     series_labels = series_labels or {}
@@ -3663,40 +3117,7 @@ def overlay_grid(
     band_label: str = r"Mean $\pm$ 1 SD",
     sharey: bool = False,
 ) -> Figure:
-    r"""Plot 5: how a quantity drifts over ``t``, panelled by row and column.
-
-    ``panels`` maps a ``(row, col)`` pair of display labels to that panel's
-    series. ``bands`` maps those labels to a symmetric spread around each
-    line, while ``replicates`` maps them to individual reseeded runs. A panel's
-    halves need not carry the same labels: probe-free seeds reach the latent
-    columns and not the $\Delta \hat{P}_t$ ones.
-
-    Replicates are drawn dashed in the colour of the series they replicate, so
-    the comparison rides one colour assignment however many seeds land and
-    costs no extra hue. Bands use the matching series colour and describe a
-    caller-provided spread around its solid line. In the latent grid that is
-    the between-seed SD, not measurement error; every seed reads the same
-    cached $t = 0$ anchor, so the band does not include the common-mode anchor
-    term that :mod:`method.anchor_noise` estimates separately.
-
-    ``marks`` identifies each series as a dataset rather than by a hue of its
-    own. Eight probes would otherwise take all eight categorical slots, leaving
-    nothing for anything else and making the reader learn an arbitrary
-    dataset-to-colour map; shape-per-family plus the version ramp is
-    self-describing and leaves the hues free.
-
-    ``sharey`` is for a grid whose panels are one quantity in one unit -- the
-    $\Delta \hat{P}_t$ percentages, where the point is that the traits and trunks
-    drift by different amounts, and unshared axes would rescale that difference
-    away. The latent grid must leave it off: its columns are different
-    quantities ($\rho$ starts at 1, $r$ at the persona vector's norm), and even
-    within a column the two traits have their own vectors, so a shared axis
-    would squash one trait's drift into the gap between the two norms.
-
-    No measurement-error bars: section 8 establishes that $\Delta \hat{P}_t$ and
-    $z_t$ involve no sampling -- fixed prompts, fixed responses, forward passes
-    only. A seed-spread band instead quantifies training-run variation.
-    """
+    r"""Plot panelled trajectories, optional reseeds, and spread bands."""
     style.apply_style()
     replicates = replicates or {}
     bands = bands or {}

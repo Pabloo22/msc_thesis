@@ -1,30 +1,4 @@
-"""Compute response-average hidden states for fixed prompt/answer pairs.
-
-One worker covers every activation measurement in the pipeline, because they
-are all the same operation on different text:
-
-* ``h_neutral`` -- neutral probe prompts with their answers
-* the target term of DeltaP -- training prompts with their target answers
-* the predicted term of DeltaP -- training prompts with M_0's own answers
-
-Averaging over *response* tokens matches how ``generate_vec.py`` builds the
-persona vector (``*_response_avg_diff.pt``), so activations and vectors live in
-the same space and their dot product is meaningful. Tokenization mirrors the
-vendored code exactly: the concatenated ``prompt + answer`` is re-encoded and
-the boundary sits at ``len(encode(prompt))``.
-
-Samples are processed in right-padded batches. Right padding keeps every real
-token at its unbatched position (default position ids are a plain ``arange``),
-and the response slice is taken per sample from its own true lengths, so
-padded positions never enter any mean; batching changes throughput, not
-values. That invariant is what lets :func:`plan_batches` group samples by
-length rather than by position -- rows are written back to their input slots,
-so DeltaP still subtracts them from another file's row-by-row.
-
-Run as its own process so only one model occupies the GPU at a time:
-
-    python -m method._hidden_worker --model P --input X.jsonl --layer L --out D
-"""
+"""Extract response hidden states in an isolated worker process."""
 
 from __future__ import annotations
 
@@ -38,13 +12,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from method.utils import TORCH_FREE_FRACTION, require_cuda, wait_for_free_vram
 
-#: Padded tokens per forward pass. ``output_hidden_states`` keeps all L+1
-#: layers of the batch resident at once, so the peak is set by
-#: ``rows x padded width``, not by rows alone: at 7B (29 x 3584 x 2 bytes per
-#: token, plus ~3 x 18944 x 2 for the MLP intermediates the forward holds
-#: live) a padded token costs ~0.31MB, which puts 12288 of them at ~3.8GB on
-#: top of the ~15.2GB of weights. That leaves headroom on a 24GB card for the
-#: allocator's own slack, which is the margin an all-long batch used to spend.
+#: Padded tokens per forward pass.
 DEFAULT_MAX_BATCH_TOKENS = 12288
 
 
@@ -173,13 +141,7 @@ def response_avg_hidden(
             input_ids=input_ids.to(model.device),
             attention_mask=attention_mask.to(model.device),
             output_hidden_states=True,
-            # Only ``out.hidden_states`` is read below, but a causal-LM head
-            # otherwise projects *every* position to the 152k-token vocabulary
-            # on the way there: batch 8 x ~1.8k tokens x 152064 x 2 bytes is
-            # ~4GiB per forward, allocated and discarded unread. That is what
-            # pushes a 7B bf16 model past 24GB on the longer datasets, since it
-            # lands on top of the ~2.8GiB of hidden states actually wanted.
-            # Keeping one position is the smallest slice the forward accepts.
+            # Only ``out.hidden_states`` is read below, but a causal-LM head otherwise projects *every* position to the 152k-token vocabulary on the way there: batch 8 x ~1.8k tokens x 152064 x.
             logits_to_keep=1,
         )
         for j, i in enumerate(batch):

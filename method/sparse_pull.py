@@ -1,78 +1,4 @@
-r"""Fetch a few named files out of the remote's whole-bundle archives.
-
-    poetry run python -m method.sparse_pull --dry-run
-    poetry run python -m method.sparse_pull
-    poetry run python -m method.sparse_pull --trunk a --jobs 4
-    poetry run python -m method.sparse_pull --stage-dir /var/tmp --jobs 1
-
-**The problem.** :mod:`method.sync` ships one tar per artifact, and its own
-design notes call that granularity coarse. Reading is where it bites hardest.
-Recomputing a projection difference on another axis needs three tensors per
-checkpoint that are all already measured -- the target activations, the
-predicted activations, and a persona vector -- and every one of them is a
-``mean_by_layer.pt`` of about 400KB. They sit inside a measurement bundle whose
-bulk is the per-sample ``samples_layer<L>.pt`` tensors beside them, 175MB
-apiece. Across the 19 checkpoints of the three exp2 trunks that is ~300MB of
-wanted bytes inside ~63GB of archive -- measured at 2.9GB for the leanest
-checkpoint and 6.0GB for the base -- so a 200x overhead, on more disk than a
-laptop has to spare.
-
-**What this does about it.** A tar has no directory, so a member can only be
-found by reading a header, learning how long that member is, and stepping over
-its data to the next header. Over a stream that means reading the whole object.
-Over *ranged* reads it means transferring the headers, the members asked for,
-and nothing else -- which is what :data:`FetchMode.RANGED`, the default, does
-(:meth:`method.sync.Syncer.pick_measurement_files`). ~300MB moves instead of
-~63GB, and the archive is never stored: peak disk is what was kept.
-
-The two whole-archive modes remain, and matter. :data:`FetchMode.STREAM` reads
-each object end to end through a pipe and keeps the members going past
-(:meth:`method.sync.Syncer.extract_measurement_files`); it is the reference the
-ranged walk is checked against, and the fallback for a backend that cannot
-serve byte ranges. :data:`FetchMode.STAGE` is the literal version -- download
-the archive, extract, delete it -- for a transport whose streaming misbehaves;
-it needs room for one bundle per job.
-
-Which is cheaper depends on what the remote is slow at. Streaming pays for
-bytes: measured against this project's R2 bucket at ~2MB/s on one connection,
-all 19 checkpoints is ~9 hours. The ranged walk pays for round trips instead --
-~1s per request, ~100 of them per bundle -- so it is minutes rather than hours
-here, but it would lose to streaming on a remote with a fast pipe and a slow
-answer. Both divide by ``--jobs``: the ~2MB/s is a per-connection cap and not
-the link, since a second concurrent stream ran at the same speed rather than
-splitting the first's.
-
-**Two things make it cheap to re-run, and one makes it checkable.** Each bundle
-carries a sidecar index naming its contents, so a checkpoint whose wanted files
-are all already here is skipped for kilobytes rather than gigabytes; and within
-an archive that is read, a member already on disk is not fetched again. An
-interrupted sweep therefore resumes where it stopped, and a second run costs
-one index per checkpoint. That same index is then read back against what
-arrived: a header walk is the one mode here that could go quietly wrong -- it
-trusts each member's declared length to find the next header -- so a file the
-index named and the fetch did not produce is reported as an error rather than
-mistaken for a bundle that had less in it.
-
-**What the means can and cannot answer.** :func:`method.latent.project` is
-linear in the activations, so the *mean* projection difference is
-``project(mean h_target) - project(mean h_pred)`` exactly -- the number a
-DeltaP series plots, recovered from two 400KB files instead of two 175MB ones.
-Its *spread* is not: ``std``, the percentiles and ``n`` in a ``delta_p_*.json``
-are properties of the per-sample rows, and no combination of the means gives
-them. A recomputed series that needs error bars needs the per-sample tensors,
-which is the 63GB this module exists to avoid; pass ``--include
-'delta_p_*/*/samples_layer*.pt'`` if that is what is wanted.
-
-**Why the files do not land in the real store by default.** A bundle here is
-deliberately partial, and :mod:`method.sync` tolerates partial bundles on the
-way in but not on the way out: ``push`` re-tars a local measurement directory
-whole and last-writer-wins on the remote, so a box holding 8MB of a 3.3GB
-bundle would replace the remote's copy with its own and take the per-sample
-tensors -- GPU hours, not bytes -- down with it. The thin copy therefore gets a
-store root of its own, which nothing pushes, and is read with
-``Store(Path("store-thin"))``. ``--into-real-store`` overrides that for a box
-where the trade is understood.
-"""
+"""Pull selected remote artifacts without materialising full bundles."""
 
 from __future__ import annotations
 
@@ -93,26 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 class FetchMode(StrEnum):
-    """How much of an archive is read to get a few files out of it.
-
-    ``RANGED``
-        Walk the archive's headers over ranged reads and transfer only the
-        members wanted -- ~300MB across the 19 checkpoints instead of ~63GB.
-        The default, and the only one whose cost is proportional to what is
-        being collected. Needs a backend that serves byte ranges (R2, S3, B2,
-        Drive, a mounted path) and pays a round trip per member, so it is the
-        wrong choice on a remote that is slow to answer rather than slow to
-        send.
-    ``STREAM``
-        Read the whole archive through a pipe and keep the members that go
-        past. Transfers everything; stores nothing but what was kept. The
-        fallback when a backend cannot serve ranges, and the reference the
-        ranged walk is checked against.
-    ``STAGE``
-        Download each archive to ``--stage-dir``, extract, delete it. Needs
-        room for one bundle per job. For a transport whose streaming
-        misbehaves.
-    """
+    r"""How much of an archive is read to get a few files out of it."""
 
     RANGED = "ranged"
     STREAM = "stream"

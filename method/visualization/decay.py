@@ -25,73 +25,11 @@ from method.visualization.metrics import bootstrap_fit
 
 logger = logging.getLogger(__name__)
 
-#: The two roles a decay run plays, as written into its ``role`` label by
-#: :func:`method.experiments.build_exp2_decay_configs`. A trunk is measured at
-#: every checkpoint and advances the trajectory; a branch is one fine-tune off
-#: a trunk checkpoint, scored once and discarded.
+#: Decay-run roles written by the experiment builder.
 TRUNK_ROLE = "trunk"
 BRANCH_ROLE = "branch"
 
-#: The projection differences the figures pair: $\Delta P_0$, then the 2x2 of
-#: what may be refreshed at $M_t$ -- the axis, the answers, either, both.
-#:
-#: Written $\Delta P_t^{a\leftarrow g,[p]}$, one index per independent
-#: choice: the **subscript** is the checkpoint whose activations the candidate
-#: dataset is read with, $a\leftarrow g$ names the persona vector it is
-#: projected onto (encoded by $M_a$, extracted from responses $M_g$ generated),
-#: and $p$ is the checkpoint that generated the predicted responses the targets
-#: are differenced against. Five of the seven series hold $g = 0$: the
-#: extraction text is $M_0$'s in all of those, and the two that refresh it need
-#: the vector :mod:`method.axis_refresh` draws.
-#:
-#: ``p0``
-#:     $\Delta P_0$, everything read at $M_0$. This is the quantity the
-#:     persona-vectors paper computes, and the chapter's shorthand for
-#:     $\Delta P_0^{0\leftarrow0,[0]}$: at $t = 0$ the current model *is*
-#:     $M_0$, so no index has anything to resolve.
-#: ``hat_v0``
-#:     $\Delta P_t^{0\leftarrow0,[0]}$, the checkpoint's activations against
-#:     the base model's axis. Free to measure -- the activations do not depend
-#:     on the axis -- and it is what separates the persona direction rotating
-#:     from the representation drifting.
-#: ``hat_t``
-#:     $\Delta P_t^{t\leftarrow0,[0]}$, axis and encoder current, answers
-#:     still $M_0$'s. The quantity whose staleness is RQ1.
-#: ``full_v0``
-#:     $\Delta P_t^{0\leftarrow0,[t]}$, the checkpoint answering for itself
-#:     but projected onto the base model's axis. Free wherever ``full_t`` has
-#:     been measured, for the same reason ``hat_v0`` is free wherever ``hat_t``
-#:     has.
-#: ``full_t``
-#:     $\Delta P_t^{t\leftarrow0,[t]}$, nothing held at $M_0$ but the
-#:     extraction text.
-#: ``hat_onpolicy``
-#:     $\Delta P_t^{t\leftarrow t,[0]}$, the axis re-drawn from text the
-#:     checkpoint generated for itself, answers still $M_0$'s. Against
-#:     ``hat_t`` it isolates the freeze: same encoder, same answers, and the
-#:     only difference is whose responses the persona vector was extracted
-#:     from.
-#: ``full_onpolicy``
-#:     $\Delta P_t^{t\leftarrow t,[t]}$, nothing held at $M_0$ at all. The
-#:     quantity the persona-vectors paper's own procedure would report at
-#:     $M_t$.
-#:
-#: The six past ``p0`` are a 3x2 -- the axis at $v^{(0)}$, re-encoded, or
-#: re-drawn, crossed with answers current or not (see
-#: :class:`method.config.DeltaPView`) -- which is what lets a reader attribute
-#: a gap to one factor: reading down a column moves the axis alone and across a
-#: row moves the answers alone.
-#:
-#: All but ``hat_t`` need a family of their own to measure, so their columns
-#: are NaN wherever that family did not run -- which every consumer here treats
-#: as "not measured", never as zero.
-#:
-#: The keys and the columns in :data:`SERIES_COLUMNS` keep the older ``hat``
-#: spelling, which the maths has since dropped: ``hat`` marks the *answers*
-#: held at $M_0$ ($p = 0$) and ``v0`` the *axis* held there ($a = 0$). They are
-#: identifiers rather than notation -- renaming them would rewrite every frame
-#: column and every stored table key for no gain in the figures -- but no name
-#: is a prefix of another, so the two halves still read off the label.
+#: Projection variants, including the baseline and the 3x2 refresh grid.
 SERIES = (
     "p0",
     "hat_v0",
@@ -111,17 +49,7 @@ SERIES_LABELS = {
     "full_onpolicy": (f"${delta_p_symbol(axis='t', generator='t', predicted='t')}$"),
 }
 
-#: The 3x2 of :data:`SERIES` past ``p0``, grouped by the persona vector the
-#: projection is taken onto and ordered by how far that vector has moved from
-#: $M_0$'s: held at $v_{0\leftarrow0}$, re-encoded at the checkpoint,
-#: re-extracted from the checkpoint's own responses. Within a group the cached
-#: answers come before the regenerated ones.
-#:
-#: Grouped rather than flat because the six are two factors, not six
-#: categories, and every figure that draws them has to say which factor a gap
-#: belongs to. The group is what the headline figure gives a colour and a row
-#: to (:data:`method.visualization.style.VECTOR_RAMP`); the position within it
-#: is what the figure gives a line style to.
+#: Projection variants grouped by persona-vector source.
 REFRESH_GROUPS = (
     ("v0", f"${persona_vector_symbol('0', '0')}$", ("hat_v0", "full_v0")),
     ("t", f"${persona_vector_symbol('t', '0')}$", ("hat_t", "full_t")),
@@ -132,25 +60,13 @@ REFRESH_GROUPS = (
     ),
 )
 
-#: What the members of a group are, in their order: the activations the
-#: candidate dataset's responses are differenced against, named by which model
-#: generated the responses behind them. One label per position, so a figure can
-#: key the channel without knowing the series names.
-#:
-#: Named for the activation rather than for "the answers" because answers are
-#: generated on both sides of this contrast and on the persona vector's side as
-#: well -- $\mathbf{v}_{t\leftarrow t}$ is extracted from responses the
-#: checkpoint generated too. What actually separates the two members of a group
-#: is which activations the projection is taken of, and the arrow says it
-#: exactly: read at $M_t$, off text $M_0$ or $M_t$ generated.
+#: Activation labels within each refresh group.
 PREDICTED_LABELS = (
     f"${activation_symbol('t', '0')}$",
     f"${activation_symbol('t', 't')}$",
 )
 
-#: The same six flattened, which is the order a reader meets them in: down the
-#: vectors, and within each of those across the answers. :data:`SERIES` keeps
-#: its own order, which is the one every table and frame is built in.
+#: Flattened refresh-group order.
 REFRESH_ORDER = tuple(
     name for _, _, members in REFRESH_GROUPS for name in members
 )
@@ -169,21 +85,7 @@ SERIES_COLUMNS = {
 #: Latent components in display order.
 Z_COMPONENTS = ("p", "q", "rho", "r")
 
-#: How each coordinate is spelled lives in
-#: :func:`method.visualization.labels.z_component_symbol`, because the spelling
-#: now depends on which model generated the responses behind it and this module
-#: has no opinion about that -- it reports whichever source it was asked for.
-
-#: What :func:`latent_frame` carries per checkpoint: z_t and the activation
-#: length ``p`` and ``q`` were divided by.
-#:
-#: ``h_norm`` is deliberately not in :data:`Z_COMPONENTS`. It is recorded beside
-#: z_t rather than being part of it (see :data:`method.latent.H_NORM`), and that
-#: tuple is what the mechanism regression builds its drift predictors from --
-#: adding a raw length there would quietly give the fit a fifth predictor in
-#: units none of the other four are in. Here it is a series to plot next to
-#: them: the one thing that says whether a falling $p$ is the neutral state
-#: turning off the persona axis or merely growing in unrelated directions.
+#: Latent components plus activation norm.
 LATENT_COLUMNS = (*Z_COMPONENTS, H_NORM)
 
 
@@ -435,58 +337,9 @@ def decay_frame(
     stat: str = "mean",
     source: str = "base",
 ) -> pd.DataFrame:
-    r"""One row per ``(trunk, t, probe)``: the unit of analysis of section 3.
+    r"""Return one row per measured ``(trunk, t, probe)`` endpoint.
 
-    Each row pairs a projection difference with the behaviour change it was
-    meant to predict, so the ``K`` rows sharing a ``(trunk, t)`` are one scatter
-    panel of section 9's plot 2 and one fitted correlation of its plot 3.
-
-    Both projection differences travel together. ``delta_p_0`` is read from the
-    trunk's own $t = 0$ probe measurement and ``delta_p_hat_t`` from checkpoint
-    ``t``; they are the blue and orange series of every decay scatter, and the
-    whole hypothesis is that the first decays while the second does not.
-
-    Every column carrying ``hat`` is one whose predicted term is still $M_0$'s
-    cached answers -- ``delta_p_hat_t`` is $\Delta \hat{P}_t$, *not* the
-    quantity the update actually faces. That one is ``delta_p_full_t``, and it
-    arrives only through ``remeasured`` (see :data:`SERIES_COLUMNS`).
-
-    ``validation`` supplies the ``t = 0`` branch endpoints, which the decay
-    family does not emit: all three trunks share $M_0$, so fanning out from it
-    three times over would train the same eight models three times. Those rows
-    are duplicated across trunks here, which is exactly what section 9's plot 2
-    expects -- "the ``t = 0`` column is identical across rows because $M_0$ is
-    shared".
-
-    ``remeasured`` supplies the other five: the same probes at the same
-    checkpoints, read against the base model's axis
-    (:func:`method.experiments.build_exp2_axis_configs`), with the checkpoint
-    answering the prompts itself
-    (:func:`method.experiments.build_exp2_regen_configs`), with both at once
-    (:func:`method.experiments.build_exp2_v0regen_configs`), and against the
-    axis the checkpoint drew from its own extraction text, once per source of
-    answers (:func:`method.experiments.build_exp2_onpolicy_configs` and
-    :func:`method.experiments.build_exp2_onpolicy_regen_configs`). They are
-    joined in
-    rather than read from the trunk because they are *re-measurements* of
-    trunks that already exist, each paid for by its own family. A row no such
-    family covered keeps a NaN, which is the distinction the columns have to
-    preserve -- "not measured here" is not "measured and small" -- so
-    :func:`fit_frame` declines to fit a series it cannot see.
-
-    ``neutral`` supplies $z_t$ where the decay trunks cannot: they answer the
-    neutral prompts with $M_0$ only, so under ``source="current"`` their own
-    ``z`` is empty and the state corrections have no features to regress on.
-    The ``exp2_hregen`` family re-took that one measurement at the checkpoint
-    (:func:`method.experiments.build_exp2_hregen_configs`) and is merged in per
-    trunk by :func:`_with_latent`, which replaces the latent series and nothing
-    else.
-
-    Rows whose branch never ran are dropped rather than carried as NaN: a
-    partly-finished fan should narrow the scatter it can draw, not poison the
-    variance of the one it can. The reseed trunk therefore contributes no rows
-    at all (it has no branches by design) and reaches the figures through
-    :func:`probe_drift_frame` and :func:`latent_frame` instead.
+    Missing branches are omitted; unmeasured projection variants remain NaN.
     """
     trunks = _with_latent(
         trunk_series(decay.runs, stat=stat, source=source),
@@ -549,18 +402,7 @@ def decay_frame(
 def _noise_ceiling(
     group: pd.DataFrame, sigma_seed: float
 ) -> tuple[float, float, float]:
-    r"""``(observed variance, mean noise variance, R^2_max)`` for one scatter.
-
-    Section 6b: noise in $\Delta b$ cannot be explained by $\Delta P$, so it
-    caps the attainable $R^2$ whatever the predictor. Drawing the decay curve
-    without this line confuses "the probe went stale" -- a finding -- with
-    "the scatter was mostly noise all along", which is not.
-
-    ``sigma_seed`` is averaged in per point because the eval terms are
-    heteroscedastic by design: near the floor or ceiling of the 0-100 scale a
-    question's generations agree exactly, while mid-range the model is
-    genuinely bimodal.
-    """
+    r"""Return observed variance, mean noise variance, and $R^2_{max}$."""
     observed = float(group["delta_b"].var(ddof=1))
     noise = float(
         np.mean(
@@ -583,30 +425,7 @@ def fit_frame(
     level: float = 0.95,
     seed: int = 0,
 ) -> pd.DataFrame:
-    r"""Collapse each ``(trunk, t)`` scatter to one row: its fit and its ceiling.
-
-    Every series in :data:`SERIES` is fitted, because section 9 reads them
-    against each other: $\Delta P_0$ falling *while* $\Delta \hat{P}_t$ holds
-    is staleness, and both falling together is signal running out. $\Delta P_t$
-    settles what is left over -- if refreshing the prediction as well as the
-    axis does not recover the fit, what the frozen series lost was not a stale
-    prediction. It is fitted only where it was measured (see
-    :func:`_series_fit`).
-
-    Slope is reported beside the correlation rather than folded into it.
-    Staleness can appear as attenuation -- the ordering across probe datasets
-    stays right while the magnitude shrinks -- which leaves $r$ high and the
-    slope low, and the two imply different fixes.
-
-    The goodness of fit is carried as the signed correlation, which is what
-    every figure of section 9 plots. ``r2_max`` stays in $R^2$ units because it
-    is a variance ratio and is not drawn on any of them; take its square root
-    before comparing it against a correlation (see ``docs/r2_max.md``).
-
-    ``sigma_seed`` is the fine-tune seed noise from :mod:`method.seed_noise`.
-    Left at zero the ceiling accounts for eval noise only and is therefore an
-    upper bound on the true ceiling; the caller should say which it plotted.
-    """
+    r"""Collapse each ``(trunk, t)`` scatter to fitted series and a ceiling."""
     if rows.empty:
         return pd.DataFrame(columns=_FIT_COLUMNS)
 
@@ -708,27 +527,7 @@ CORRELATION_TABLE_KEYS = ("trait", "trunk", "series")
 def correlation_table(
     fits: pd.DataFrame, *, series: Sequence[str] | None = None
 ) -> pd.DataFrame:
-    r"""$r$ per ``(trait, trunk, series)``, one column per checkpoint.
-
-    The tabular half of section 9's plot 2. A scatter panel shows a
-    *relationship* -- whether the cloud still has a line in it -- and two
-    series is as many as one 1.75-inch panel can show that for. The rungs of
-    the ladder between them are not read as clouds at all but as numbers across
-    checkpoints, which is a table's job: every measured series at every step,
-    at the precision the text quotes rather than the precision a reader can
-    take off an axis.
-
-    So the grid draws the two ends of the ladder and this tabulates all of it,
-    the two drawn ones included -- a reader comparing a middle rung against
-    them should not have to read one number off a table and the other off a
-    panel.
-
-    ``series`` selects which of :data:`SERIES` to carry, defaulting to every
-    one with a fit anywhere in ``fits``. A series measured on some checkpoints
-    and not others keeps its row, with a gap where it was not measured: which
-    cells are missing is itself the state of the sweep, and blanking the row
-    would hide it.
-    """
+    r"""Return $r$ by trait, trunk, series, and checkpoint."""
     wanted = list(series) if series is not None else list(SERIES)
     columns = {
         f"corr_{name}": name
@@ -822,20 +621,7 @@ def mechanism_frame(fits: pd.DataFrame) -> pd.DataFrame:
 def realignment_pairs(
     drivers: Sequence[StepConfig],
 ) -> list[tuple[int, int]]:
-    r"""Checkpoint pairs straddling a re-alignment step, as section 4b defines them.
-
-    A pair is ``(t, t+1)`` where the driver applied between them is a Normal
-    dataset *and* the model entered it with misalignment to undo -- i.e. its
-    ``steps_since_realignment`` is above zero. Trunk A's ``X N X N X N`` gives
-    ``(1,2), (3,4), (5,6)`` and trunk B's ``X X N X X N`` gives ``(2,3), (5,6)``,
-    matching the section verbatim.
-
-    The second clause is what excludes trunk C. Every one of its drivers is
-    Normal, so the first clause alone would call all six of its steps
-    re-alignments -- but a step that re-aligns a model which was never
-    misaligned isolates nothing, and reporting the resulting $\Delta r$ beside
-    A's and B's would invite reading noise as a null result.
-    """
+    r"""Return checkpoint pairs crossing a corrective normal-data step."""
     since = experiments.steps_since_realignment(drivers)
     return [
         (t, t + 1)
@@ -847,20 +633,7 @@ def realignment_pairs(
 def phase_contrast_frame(
     fits: pd.DataFrame, trunk_drivers: Mapping[str, Sequence[StepConfig]] | None = None
 ) -> pd.DataFrame:
-    r"""Section 9's plot 4b: the fit immediately before and after each re-alignment.
-
-    Trunk and probe set are held fixed within a pair and exactly one known
-    driver separates the two checkpoints, so the difference isolates what a
-    single re-alignment step does to predictive accuracy -- rather than the
-    trend over ``t``, which confounds it with everything else that accumulated.
-
-    Every series is carried. $\Delta P_0$ answers "does re-aligning the model
-    restore the *stale* probe's accuracy", which is the emergent-re-alignment
-    question; $\Delta \hat{P}_t$ and $\Delta P_t$ are the controls -- if they
-    move by the same amount, what changed is the scatter, not the staleness. A series
-    that was not measured on a trunk carries NaN through to its bars, which go
-    undrawn rather than reading as no change.
-    """
+    r"""Compare fits immediately before and after each re-alignment."""
     drivers = experiments.EXP2_TRUNKS if trunk_drivers is None else trunk_drivers
     if fits.empty:
         return pd.DataFrame(columns=_PHASE_COLUMNS)
@@ -1016,26 +789,7 @@ def current_probe_drift_frame(
 def latent_frame(
     runs: Iterable[Run], *, stat: str = "mean", source: str = "base"
 ) -> pd.DataFrame:
-    r"""Per-checkpoint $z_t$, $b_t$ and phase for every trunk, including reseeds.
-
-    The other half of section 9's plot 5, and the drift axis the mechanism
-    regression is read against. Kept in raw units: $\rho$ starts at 1 and $r$ at
-    the persona vector's norm, but $p$ and $q$ start at essentially zero on the
-    base model, and a "% of step 0" reading of those is division by noise.
-
-    Carries ``h_norm`` alongside the four (see :data:`LATENT_COLUMNS`), NaN for
-    a checkpoint measured before it was recorded and never backfilled --
-    :mod:`method.backfill_h_norm` fills those in where the store lives, and
-    until it has, the plot drops those seeds rather than drawing a short line.
-
-    Runs that do not carry ``source`` are dropped before indexing, because one
-    trunk can be measured by two families under one ``z`` source each -- the
-    decay trunk answers the neutral prompts with $M_0$ and the ``exp2_hregen``
-    trunk with $M_t$ (:func:`method.experiments.build_exp2_hregen_configs`).
-    They share a ``(trait, trunk, seed)`` key, so without this the first one
-    seen wins it and the frame comes back empty for whichever source that run
-    does not hold.
-    """
+    r"""Return per-checkpoint latent state, behaviour, and phase."""
     rows = []
     carrying = [run for run in runs if run.trajectory.has_latent(source)]
     for (trait, trunk, seed), series in sorted(

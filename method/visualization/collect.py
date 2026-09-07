@@ -1,23 +1,4 @@
-r"""Gather saved ``trajectory.json`` runs into plot-ready tidy frames.
-
-The unit here is a :class:`Run`: one ``TrajectoryConfig`` from
-:mod:`method.experiments` paired with the measurements that config produced on
-disk. Collection is driven by the *registry*, not by globbing
-``trajectories/``, for three reasons:
-
-* the design factors a bar chart groups by (condition, target dataset,
-  re-alignment trait) live on the config as ``labels``, set where the builder
-  already knows them -- recovering them by parsing a run directory name is
-  ambiguous, since dataset names themselves contain underscores;
-* enumerating the configs that *should* exist is what makes a run that has not
-  happened yet distinguishable from one that is not part of the experiment, so
-  a half-finished sweep plots what it has and says what it is missing;
-
-The staleness check guards the one failure mode this design introduces: if a
-config is edited after its runs were saved, the code-as-manifest assumption
-quietly breaks. Comparing the final ``weights_id`` on disk against the one the
-current config hashes to catches exactly that.
-"""
+"""Load trajectory artifacts into plotting frames."""
 
 from __future__ import annotations
 
@@ -276,27 +257,7 @@ def collect_all(
 def delta_p_0_lookup(
     runs: Iterable[Run], *, stat: str = "mean"
 ) -> dict[tuple[str, int], dict[str, float]]:
-    r"""Per-(trait, seed) map of ``dataset/version`` -> $\Delta P_0$.
-
-    $\Delta P_0$ is by definition measured against the base model, so only a
-    run's ``t=0`` record can supply one, and it supplies it for exactly one
-    dataset: the one that run trains on first. Pooling across *all* experiment
-    families therefore covers more datasets than any single family does --
-    every hysteresis baseline contributes its own.
-
-    Keyed by (trait, seed) rather than flattened because the base checkpoint
-    is measured independently per seed (``weights_key`` includes seed even at
-    ``t=0``), so each seed has its own $v_0$ and its own $\Delta P_0$. Pairing
-    a seed's $\Delta \hat{P}_t$ against another seed's $\Delta P_0$ would inject
-    measurement noise into the very correlation being tested.
-
-    Three sources are merged, in increasing order of coverage: the dataset a
-    run's *first* step trains on, anything that run probed at ``t=0``, and the
-    dedicated sweep written by :mod:`method.probe_base`, which measures every
-    dataset the experiments use. They are measurements of the same quantity, so
-    where they overlap they agree; the sweep is applied last simply because it
-    is the one guaranteed to be complete.
-    """
+    r"""Per-(trait, seed) map of ``dataset/version`` -> $\Delta P_0$."""
     lookup: dict[tuple[str, int], dict[str, float]] = defaultdict(dict)
     for run in runs:
         first = run.trajectory.steps[0]
@@ -518,41 +479,7 @@ def projection_frame(
 def seed_noise_frame(
     collection: Collection, *, source: str = "base"
 ) -> pd.DataFrame:
-    r"""Across-seed spread of every measured quantity, per arm and checkpoint.
-
-    The design asks whether the latent trajectory $z_t = (p, q, \rho, r)$ is
-    stable when a trajectory is re-run under a different fine-tuning seed. That
-    question is usually answered with a dedicated paired replicate, but any
-    family that already sweeps seeds over a *fixed* step sequence answers it
-    for free -- and exp3 sweeps five.
-
-    Grouping is by ``(config name, trait, t)``. The config name excludes the
-    seed by construction (it is a separate field, see
-    :func:`method.experiments.build_hysteresis_configs`), so one group is
-    exactly "the same recipe under every seed that has finished".
-
-    Reads only the run directories, never the store: $b$ and $z$ are both
-    recorded in ``trajectory.json``, so this runs on a laptop holding no
-    adapters or activations.
-
-    Safe on a partly-finished sweep, which is the normal case while a family is
-    still running. ``n_seeds`` records how many runs each row actually saw and
-    ``sd`` is ``NaN`` where that is below two, so an arm with one seed is
-    visibly unestimated rather than silently reported as having zero noise.
-
-    Note $t = 0$ is expected to show exactly zero spread:
-    :meth:`method.config.TrajectoryConfig.weights_key` normalises the seed away
-    at the base checkpoint, so every seed reads one shared measurement of one
-    shared model. A non-zero value there means something is wrong upstream, so
-    the row is kept rather than filtered out.
-
-    ``checkpoints`` identifies the actual weights each row summarises, so rows
-    that are the same measurement under two names can be collapsed downstream.
-    They arise legitimately: exp3's ``diff`` arms start on another arm's
-    dataset, so by content addressing their early checkpoints *are* that arm's
-    checkpoints. Averaging over such rows as though they were independent would
-    overstate how many distinct fine-tunes an estimate rests on.
-    """
+    r"""Across-seed spread of every measured quantity, per arm and checkpoint."""
     grouped: dict[tuple[str, str, int], dict[str, list[float]]] = defaultdict(
         lambda: defaultdict(list)
     )
@@ -591,36 +518,7 @@ def seed_noise_frame(
 
 
 def hysteresis_frame(collection: Collection) -> pd.DataFrame:
-    r"""RQ2 hysteresis rows: where each run's trajectory ends, and from where.
-
-    One row per run, with ``condition`` taken straight from the config label
-    (``baseline`` / ``normal1`` / ``normal2`` / ``same`` / ``diff``). Every exp3
-    condition ends with a step onto the same target dataset, so the arms differ
-    only in what the model had already been trained on.
-
-    Four behaviour columns, because the comparison needs all four to be honest:
-
-    ``behavior``
-        $b_T$, where the arm ended up. This is what the bars plot, against a
-        reference line at $b_0$ -- so the height above that line reads as
-        $b_T - b_0$, i.e. measured against $M_0$.
-    ``behavior_base``
-        $b_0$, $M_0$'s score. One value per (trait, base model): ``weights_key``
-        normalises the seed away at $t=0$, so every seed reads the same
-        measurement of the same base checkpoint.
-    ``behavior_before``
-        $b_{T-1}$, the floor the final step started from. What distinguishes
-        "this arm barely moved" from "this arm started high".
-    ``delta_behavior``
-        $b_T - b_{T-1}$. Retained because "how far did this step move the
-        model" is the plasticity question, but it must not be read as a level:
-        arms enter their final step from different floors.
-
-    Baseline runs carry no ``realign_trait`` (they have no re-alignment step,
-    so one baseline serves every realign trait); they are emitted once per
-    realign trait present in ``collection`` so that a per-realign-trait figure
-    always has its reference bar.
-    """
+    r"""RQ2 hysteresis rows: where each run's trajectory ends, and from where."""
     realign_traits = collection.values("realign_trait")
     rows = []
     for run in collection.runs:

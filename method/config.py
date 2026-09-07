@@ -59,38 +59,7 @@ class DeltaPMode(StrEnum):
 
 
 class PredictedSource(StrEnum):
-    r"""Whose answers stand in for "what the model would have said" in DeltaP.
-
-    DeltaP subtracts the projection of a *predicted* answer from that of the
-    training set's *target* answer, so it needs a prediction to subtract. The
-    two settings differ in which model produced it, and they are two different
-    questions:
-
-    ``BASE``
-        $M_0$'s answers, generated once and re-read verbatim by every
-        checkpoint. Holds the text fixed, so movement in the series is the
-        model's representation moving and nothing else -- the same rule
-        :class:`HNeutralSource` ``BASE`` applies to ``h_neutral``. This gives
-        $\Delta P_0$ at $t = 0$ and $\Delta \hat{P}_t$ thereafter: at $t$ the
-        axis $v^{(t)}$ and the encoder are current, but the prediction is stale.
-    ``CURRENT``
-        Each $M_t$ answers the training prompts itself, so the predicted term
-        is what the checkpoint would actually say. This is the projection
-        difference the update really faces, written $\Delta P_t$.
-    ``BOTH``
-        Computes each and stores them side by side, turning the choice into a
-        measurement.
-
-    ``CURRENT`` costs a generation pass over the training prompts at *every*
-    checkpoint, where ``BASE`` pays for one at $t = 0$ and then only forward
-    passes -- which is why ``BASE`` is the default and the recomputed variant
-    is scoped to one trunk (see
-    :func:`method.experiments.build_exp2_regen_configs`).
-
-    At $t = 0$ the two coincide by construction: the current model *is* $M_0$.
-    Both paths resolve to the same cached answers there, so the recomputed
-    series starts from $\Delta P_0$ rather than from an independent draw.
-    """
+    r"""Whose answers stand in for "what the model would have said" in DeltaP."""
 
     BASE = "base"
     CURRENT = "current"
@@ -105,46 +74,7 @@ class PredictedSource(StrEnum):
 
 
 class ProjectionAxis(StrEnum):
-    r"""Which persona vector the projection difference is taken along.
-
-    ``CURRENT``
-        $v^{(t)}$, the vector extracted from the checkpoint being measured.
-        What every DeltaP in this project has always used, and therefore the
-        default.
-    ``BASE``
-        $v^{(0)}$, the vector extracted from $M_0$, projected against the
-        *current* checkpoint's activations.
-    ``ONPOLICY``
-        $v^{(t \\leftarrow t)}$, extracted from persona texts the checkpoint
-        generated for itself. ``CURRENT`` freezes the extraction *text* at
-        $M_0$'s and only re-encodes it, so it is not the vector the
-        persona-vectors paper's own procedure would produce at $M_t$; this is.
-    ``BOTH``
-        ``CURRENT`` and ``BASE`` side by side. Not ``ONPOLICY``, which costs a
-        whole extraction draw rather than a re-projection and is therefore
-        always asked for by name.
-
-    ``BASE`` exists because axis and encoder otherwise move together. DeltaP at
-    checkpoint $t$ refreshes the vector and the activations at once, so the
-    decay from $\Delta P_0$ to $\Delta \hat{P}_t$ confounds two causes: the persona
-    direction rotating (which $\rho_t$ measures) and the representation
-    drifting. Holding the axis at $v^{(0)}$ while the encoder moves separates
-    them -- it is the DeltaP analogue of $p_t$ in $z_t$, which projects
-    ``h_neutral`` at $t$ onto $v^{(0)}$ for exactly this reason.
-
-    Costs nothing. The activations a checkpoint's DeltaP is taken over are
-    cached per checkpoint and dataset and do not depend on the axis, so this
-    re-reads tensors that already exist and projects them onto another vector.
-    No generation, no forward pass -- see
-    :func:`method.experiments.build_exp2_axis_configs`.
-
-    ``ONPOLICY`` costs nothing *once* :mod:`method.axis_refresh` has drawn the
-    vector, which is a full extraction draw per checkpoint and trait. That
-    sweep exists to ask whether the freeze still yields the right ruler; this
-    setting asks the separate question it declines to answer, whether the
-    freeze changes a prediction -- see
-    :func:`method.experiments.build_exp2_onpolicy_configs`.
-    """
+    r"""Which persona vector the projection difference is taken along."""
 
     CURRENT = "current"
     BASE = "base"
@@ -161,51 +91,7 @@ class ProjectionAxis(StrEnum):
 
 @dataclass(frozen=True, kw_only=True)
 class DeltaPView:
-    r"""One projection difference: which axis, and whose predicted answers.
-
-    The two settings are independent knobs, and each can be held at $M_0$ or
-    refreshed at $M_t$, so the views form a 2x2 with $\Delta P_0$ as the corner
-    they all start from:
-
-    ====================================  =====================  =========  =========
-    view                                  axis                   encoder    answers
-    ====================================  =====================  =========  =========
-    default, at $t = 0$                   $v^{(0)}$              $M_0$      $M_0$
-    ``axis=BASE``                         $v^{(0)}$              $M_t$      $M_0$
-    default                               $v^{(t)}$              $M_t$      $M_0$
-    ``axis=ONPOLICY``                     $v^{(t\\leftarrow t)}$  $M_t$      $M_0$
-    ``axis=BASE, predicted=CURRENT``      $v^{(0)}$              $M_t$      $M_t$
-    ``predicted=CURRENT``                 $v^{(t)}$              $M_t$      $M_t$
-    ``axis=ONPOLICY, predicted=CURRENT``  $v^{(t\\leftarrow t)}$  $M_t$      $M_t$
-    ====================================  =====================  =========  =========
-
-    The axis column has three levels, not two. $v^{(t)}$ re-encodes $M_0$'s
-    frozen persona texts, so it moves only with the encoder;
-    $v^{(t\\leftarrow t)}$ re-draws those texts from $M_t$ as well, which is
-    what the persona-vectors paper does at every model it measures. The six
-    rows are therefore a 3x2, and the last pair is the only place the
-    extraction text is ever anything but $M_0$'s.
-
-    The encoder is not a third knob. $v^{(t)}$ is *extracted from* $M_t$ and
-    $M_t$'s answers require $M_t$, so a current axis or a current prediction
-    each presuppose a current encoder, and holding both at the base model is
-    just $t = 0$. What is left is the axis crossed with the answers, and all
-    four corners are measured because that is what identifies either factor at
-    both levels of the other: with the base-axis/current-answers corner
-    missing, the only path from $\Delta \hat{P}_t^{(\mathbf{v}_0)}$ to
-    $\Delta P_t$ moves the axis and the answers at once, and neither effect can
-    be read off it alone.
-
-    That corner was skipped while it looked like it refreshed the expensive
-    half and left the free half stale. It no longer does: the answers it needs
-    are the ones :func:`method.experiments.build_exp2_regen_configs` has
-    already generated, and they are cached per checkpoint and dataset
-    independently of the axis, so it re-projects tensors that are on disk --
-    see :func:`method.experiments.build_exp2_v0regen_configs`.
-
-    The default view is the one every existing measurement took, so it names
-    its artifacts and record keys without any qualifier at all.
-    """
+    r"""One projection difference: which axis, and whose predicted answers."""
 
     axis: ProjectionAxis = ProjectionAxis.CURRENT
     predicted: PredictedSource = PredictedSource.BASE
@@ -460,31 +346,8 @@ class TrajectoryConfig:
     #: cannot invalidate a trained adapter.
     group: str = ""
     #: Design factors this run varies, as ``(key, value)`` pairs -- e.g.
-    #: ``(("condition", "same"), ("dataset", "hallucination/misaligned_1"))``.
-    #: A tuple of pairs rather than a dict because the dataclass is frozen and
-    #: must stay hashable. Read it via :attr:`label_map`.
-    #:
-    #: These are the factors the bar charts group by. They are recorded here,
-    #: where the builder that varies them already knows their values, precisely
-    #: so that no downstream code has to recover them by parsing ``name`` --
-    #: dataset names contain underscores, so that parse is ambiguous.
     labels: tuple[tuple[str, str], ...] = ()
-    #: Datasets whose DeltaP is measured at *every* checkpoint, not just at the
-    #: checkpoint that trains on them. Only the dataset-identifying fields of
-    #: each :class:`StepConfig` are read; ``train`` is ignored.
-    #:
-    #: The runner otherwise measures DeltaP only for the dataset a step is about
-    #: to train on, which gives one value per dataset per trajectory -- enough
-    #: for the action features, but not enough to plot how a *fixed* dataset's
-    #: DeltaP drifts as the model changes. Listing it here fills in that series.
-    #:
-    #: Cheap relative to what it buys: the expensive half of DeltaP is
-    #: generating the base model's answers to the dataset's prompts, and that is
-    #: keyed to the base checkpoint (see ``steps._base_answers_to_training_prompts``),
-    #: so it is generated once and reused at every checkpoint. Each extra
-    #: checkpoint costs only forward passes. Passing the *same* ``StepConfig``
-    #: object that appears in ``steps`` makes the probe and the action feature
-    #: resolve to one artifact, so neither is computed twice.
+    #: Datasets whose DeltaP is measured at *every* checkpoint, not just at the checkpoint that trains on them.
     probes: tuple[StepConfig, ...] = ()
     #: Which measurements this run is for; see :class:`MeasurementLevel`.
     #: Bookkeeping like :attr:`group` and :attr:`labels`, and excluded from
@@ -515,39 +378,7 @@ class TrajectoryConfig:
         return dict(self.labels)
 
     def weights_key(self, t: int) -> dict[str, Any]:
-        """The recipe that uniquely determines the weights after ``t`` steps.
-
-        ``t=0`` is the untouched base model. Two trajectories sharing a prefix
-        produce identical keys for that prefix, which is what makes adapter
-        reuse across experiments work.
-
-        ``trait`` is deliberately excluded: it never affects the LoRA weights,
-        only which measurements get computed on top of them. Two configs that
-        differ only in ``trait`` therefore resolve to the same ``weights_id``,
-        so the same fine-tuning chain is measured under each trait instead of
-        being trained once per trait. Measurement code must namespace
-        trait-dependent artifacts by trait itself (see
-        ``Store.trait_measurement``) since they now may share a directory.
-
-        ``group``, ``labels`` and ``probes`` are excluded for the same reason:
-        they are bookkeeping and extra measurement for the plotting code, and
-        change nothing about training. Adding probes to a config whose runs
-        already exist therefore costs measurements, never a retrain -- the
-        adapters are found in the store and the runner skips straight past them.
-
-        ``seed`` is normalized away at ``t=0``, where it cannot have acted on
-        anything yet: with no steps taken the weights are the base model
-        verbatim, so every seed must resolve to one base ``weights_id`` or each
-        would re-measure identical weights under its own key. It is pinned to
-        ``0`` rather than dropped so that seed-0 keys -- and the base artifacts
-        already stored under them -- stay valid.
-
-        Normalizing rather than dropping matters a second time downstream: the
-        base checkpoint's measurement directory holds both the ``SAMPLE``-mode
-        DeltaP subsample and M_0's answers to that subsample's prompts, which
-        are compared row-for-row. Sharing one base ``weights_id`` keeps the pair
-        consistent; keying either of them by seed alone would not.
-        """
+        r"""The recipe that uniquely determines the weights after ``t`` steps."""
         if not 0 <= t <= len(self.steps):
             raise IndexError(f"step {t} out of range for {len(self.steps)} steps")
         return {

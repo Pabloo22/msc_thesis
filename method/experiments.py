@@ -141,16 +141,8 @@ def _scale_presets(
     return QWEN_7B, EvalConfig(), DeltaPConfig(mode=DeltaPMode.FULL), LatentConfig()
 
 
-# --- experiment 2 (RQ1): does Delta P_0 go stale as the model drifts? ------
-# The design this replaces ran one 8-step trajectory over 5 seeds, which yields
-# a single (Delta P, Delta b) pair per step and therefore no correlation at
-# all: seeds reduce the variance of each point, they do not create additional
-# points. What follows instead separates two roles -- *drivers* advance a
-# trunk, *probes* are fine-tuned from a checkpoint, scored, and thrown away --
-# so every checkpoint yields a scatter of K points and a real R^2.
+# --- experiment 2 (RQ1): does Delta P_0 go stale as the model drifts?
 
-#: The eight SFT dataset directories, each with three versions, giving the 24
-#: datasets the design partitions into probes and drivers.
 DATASET_NAMES: tuple[str, ...] = (
     "evil",
     "hallucination",
@@ -424,41 +416,7 @@ def build_exp2_axis_configs(
     probes: Sequence[StepConfig] = EXP2_PROBES,
     local: bool = False,
 ) -> list[TrajectoryConfig]:
-    r"""Every trunk again, projected onto $v^{(0)}$ instead of its own axis.
-
-    DeltaP at checkpoint $t$ refreshes two things at once: the persona vector
-    ($v^{(0)} \to v^{(t)}$) and the activations the projection is taken over
-    ($M_0 \to M_t$). The decay from $\Delta P_0$ to $\Delta \hat{P}_t$
-    therefore confounds two causes -- the direction rotating and the
-    representation drifting -- and neither existing series can tell them apart.
-
-    This family measures the rung between them: $\Delta \hat{P}_t^{(\mathbf{v}_0)}$, the
-    checkpoint's own activations held against the base model's axis. Read
-    against $\Delta \hat{P}_t$ it isolates the rotation; read against
-    $\Delta P_0$ it isolates the drift. It is the DeltaP analogue of $p_t$ in
-    $z_t$, which projects ``h_neutral`` at $t$ onto $v^{(0)}$ for exactly this
-    reason.
-
-    **It is free.** The activations DeltaP is taken over are cached per
-    checkpoint and dataset and do not depend on the axis, so on a trunk that
-    has already been measured this loads two tensors, loads $v^{(0)}$, and does
-    the arithmetic -- no generation and no forward pass. ``compute_delta_p``
-    defers materialising the checkpoint until something actually needs one, so
-    this does not even replay the adapter chain. That is why it runs on all
-    three trunks and both traits by default where
-    :func:`build_exp2_regen_configs` has to be scoped by cost.
-
-    Deliberately identical to :func:`build_exp2_decay_configs`' trunks in
-    everything ``weights_key`` hashes, so it replays checkpoints that already
-    exist and trains nothing. The name differs, so it writes its own
-    ``trajectory.json`` rather than overwriting the decay trunk's.
-
-    ``ProjectionAxis.BASE`` rather than ``BOTH``: the current-axis series is
-    already measured and already plotted, and asking for it again here would
-    only re-read it under a second name. The figures join the families on
-    ``(trait, trunk, seed, t, probe)`` instead (see
-    :func:`method.visualization.decay.decay_frame`).
-    """
+    r"""Every trunk again, projected onto $v^{(0)}$ instead of its own axis."""
     check_exp2_feasibility(trunks, probes)
     return [
         _exp2_config(
@@ -485,65 +443,7 @@ def build_exp2_regen_configs(
     probes: Sequence[StepConfig] = EXP2_PROBES,
     local: bool = False,
 ) -> list[TrajectoryConfig]:
-    r"""Every trunk again, with each checkpoint answering the probes for itself.
-
-    $\Delta P_0$ and $\Delta \hat{P}_t$ both hold the *predicted* half of the
-    projection difference frozen at $M_0$: the target answers come from the
-    training set and the answers they are differenced against are the ones the
-    base model gave, re-read verbatim at every checkpoint. That is the right
-    rule for the decay family -- it is what makes movement in the series
-    attributable to the representation rather than to churn in the text -- but
-    it leaves a gap the figures cannot close on their own. A checkpoint that
-    has drifted no longer says what $M_0$ said, so the shift the training data
-    actually asks it to make is not the shift either series reports. This
-    family measures that shift: each $M_t$ generates its own answers to the
-    probe prompts, and the projection difference is taken against those.
-    Nothing in it is frozen at a step, so it is written $\Delta P_t$.
-
-    All three trunks are emitted, but the measurement is expensive enough that
-    which of them to actually run is a decision taken per run rather than here:
-    it costs a generation pass over every probe dataset at every checkpoint,
-    where the frozen series pays for one pass in total. Emitting them all is
-    what makes that decision available -- ``scripts/run_family.sh EXP2_REGEN
-    --trunks a`` selects by the ``trunk`` label, exactly as it does for the
-    decay family -- and it is also what makes an unrun trunk show up as
-    *missing* in the collector rather than silently narrowing the figure.
-
-    Trunk A is the one to run first if only one is run. It is the schedule on
-    which both existing series predict $\Delta b$ worst, so it is where "the
-    probe is measuring the wrong model" is still a live explanation; if
-    $\Delta P_t$ does no better there, staleness of the prediction is not what
-    the frozen series was losing. Trunk C is the control it is read against --
-    every driver Normal, so little drift to make the prediction stale -- and
-    trunk B sits between them.
-
-    Deliberately identical to :func:`build_exp2_decay_configs`' trunk in
-    everything ``weights_key`` hashes -- model, seed, steps -- so it resolves to
-    the *same* checkpoints and replays adapters that already exist instead of
-    training anything, exactly as :func:`build_anchor_noise_configs` does. The
-    name differs, so it writes its own ``trajectory.json`` rather than
-    overwriting the decay trunk's.
-
-    ``PredictedSource.CURRENT`` rather than ``BOTH``: the frozen series for
-    this trunk is already measured and already plotted, and asking for it again
-    here would only re-read it under a second name. The figures join the two
-    families on ``(trait, trunk, seed, t, probe)`` instead (see
-    :func:`method.visualization.decay.decay_frame`).
-
-    No branches. $\Delta b_{t+1}$ is a property of the probe fine-tune, not of
-    how the projection was measured, so the decay family's branch endpoints are
-    the y-axis for this series too -- which is what makes it a re-measurement
-    rather than a second experiment.
-
-    Both traits, because they are nearly free together: the answers and their
-    hidden states depend on the checkpoint and the prompts but not on the
-    trait, so the second trait adds one projection onto its own $v^{(t)}$ and
-    no generation at all.
-
-    One seed, unlike the reseed family: this varies how a fixed checkpoint is
-    *measured*, not which checkpoint is reached, so a second seed would answer
-    a different question at full price.
-    """
+    r"""Every trunk again, with each checkpoint answering the probes for itself."""
     check_exp2_feasibility(trunks, probes)
     return [
         _exp2_config(
@@ -571,59 +471,7 @@ def build_exp2_v0regen_configs(
     probes: Sequence[StepConfig] = EXP2_PROBES,
     local: bool = False,
 ) -> list[TrajectoryConfig]:
-    r"""The re-answered probes again, projected onto $v^{(0)}$ instead.
-
-    The fourth corner of the 2x2 in :class:`method.config.DeltaPView`:
-    $\Delta P_t^{(\mathbf{v}_0)}$, with the checkpoint answering the probe
-    prompts for itself and the projection taken along the base model's axis.
-
-    It exists because the other three do not identify either factor on their
-    own. :func:`build_exp2_axis_configs` moves the axis with the answers frozen
-    and :func:`build_exp2_regen_configs` moves the answers with the axis
-    current, so the only path between them crosses both at once: the step from
-    $\Delta \hat{P}_t^{(\mathbf{v}_0)}$ to $\Delta P_t$ rotates the axis *and*
-    refreshes the prediction, and a difference measured over it cannot be
-    attributed to either. With this family the four views close a square, and
-    each factor has a contrast at both levels of the other -- which is exactly
-    what RQ1's sub-question asks for: how much of the lost prediction power
-    each component recovers, separately.
-
-    **It is free wherever the regen family has run.** The expensive half is
-    generating $M_t$'s answers and taking their hidden states, and that work is
-    cached per checkpoint and dataset under ``delta_p_predicted_current``,
-    keyed independently of both the axis and the trait (see
-    ``steps.predicted_dir``). This family therefore loads two tensors that
-    already exist, loads $v^{(0)}$, and does the arithmetic -- the same deal
-    :func:`build_exp2_axis_configs` gets over the decay family, one rung up.
-    ``compute_delta_p`` defers materialising the checkpoint until something
-    needs a forward pass, so it does not even replay the adapter chain.
-
-    Which is why all three trunks and both traits are emitted, matching
-    :func:`build_exp2_axis_configs` rather than the cost-scoped regen family.
-    A trunk the regen family skipped is not free here -- there are no cached
-    answers to re-project, so it would generate them -- but it is also the
-    trunk whose $\Delta P_t$ column is missing anyway, so the two families are
-    run over the same trunks in practice and the collector reports the same
-    gaps for both.
-
-    Deliberately identical to :func:`build_exp2_decay_configs`' trunks in
-    everything ``weights_key`` hashes, so it replays checkpoints that already
-    exist and trains nothing. The name differs, so it writes its own
-    ``trajectory.json`` rather than overwriting any other family's.
-
-    Single views on both settings rather than ``BOTH`` on either, for the
-    reason the two families it sits between give: the other three corners are
-    already measured and already plotted, and asking for them here would only
-    re-read them under a second name. The figures join the families on
-    ``(trait, trunk, seed, t, probe)`` instead (see
-    :func:`method.visualization.decay.decay_frame`).
-
-    No branches, and one seed, for the reasons
-    :func:`build_exp2_regen_configs` gives: this varies how a fixed checkpoint
-    is measured, not which checkpoint is reached, and $\Delta b_{t+1}$ is a
-    property of the probe fine-tune rather than of how the projection was
-    taken.
-    """
+    r"""The re-answered probes again, projected onto $v^{(0)}$ instead."""
     check_exp2_feasibility(trunks, probes)
     return [
         _exp2_config(
@@ -652,35 +500,7 @@ def build_exp2_onpolicy_configs(
     probes: Sequence[StepConfig] = EXP2_PROBES,
     local: bool = False,
 ) -> list[TrajectoryConfig]:
-    r"""Every trunk again, against the axis the checkpoint drew for itself.
-
-    $v^{(t)}$ is not the vector \citet{chen2025persona_vectors} would extract
-    at $M_t$. Theirs generates the trait-positive and trait-negative responses
-    *from the model being measured*; ours generates them once from $M_0$ and
-    has every later checkpoint re-encode that same fixed text. The freeze buys
-    comparability -- a refreshed extraction set would move for two reasons at
-    once -- and :mod:`method.axis_refresh` measures what it costs, as an angle
-    between the two vectors.
-
-    Axis rotation alone does not show whether dataset ordering changed. This
-    family measures that directly:
-    the same probes at the same checkpoints, projected onto
-    $v^{(t \leftarrow t)}$, so the freeze can be read as a change in a
-    *prediction* rather than as a change in a direction.
-
-    **It is free wherever the axis-refresh sweep has run**, and impossible
-    where it has not. The activations are cached per checkpoint and dataset and
-    do not depend on the axis, exactly as in
-    :func:`build_exp2_axis_configs`; what is not free is the extraction draw
-    itself -- 1000 responses a side, judged, at every (checkpoint, trait) --
-    and nothing else in the repo produces it. Run ``python -m
-    method.axis_refresh`` first; :func:`method.steps._projection_vector` says
-    so by name when the vector is missing.
-
-    Deliberately identical to :func:`build_exp2_decay_configs`' trunks in
-    everything ``weights_key`` hashes, so it replays checkpoints that already
-    exist and trains nothing.
-    """
+    r"""Every trunk again, against the axis the checkpoint drew for itself."""
     check_exp2_feasibility(trunks, probes)
     return [
         _exp2_config(
@@ -753,68 +573,7 @@ def build_exp2_hregen_configs(
     probes: Sequence[StepConfig] = EXP2_PROBES,
     local: bool = False,
 ) -> list[TrajectoryConfig]:
-    r"""Every trunk again, with each checkpoint answering the neutral prompts.
-
-    $z_t$ is read off ``h_neutral``, the mean activation over a fixed set of
-    trait-neutral prompts. Every series measured so far takes that activation
-    over *$M_0$'s* answers: the base model's text is generated once and every
-    later checkpoint merely re-reads it. That is what makes $p_t$ and $q_t$
-    attributable to the representation -- the tokens are held still, so only
-    the encoder moves -- but it also means $z_t$ never sees what the checkpoint
-    would actually say. A model that has drifted far enough to answer the same
-    prompts differently is, on that measurement, only as drifted as its reading
-    of $M_0$'s answers makes it look.
-
-    This family measures the other one: each $M_t$ generates its own answers to
-    the neutral prompts, and ``h_neutral`` is the mean activation over *those*.
-    It is the $z_t$ analogue of :func:`build_exp2_regen_configs`, which does the
-    same for DeltaP's predicted term, and it inherits that family's trade --
-    behavioural drift is now inside the measurement rather than held out of it,
-    which is the point and also the reason it degrades once a checkpoint starts
-    producing degenerate text. Neither reading is the true one; RQ1's
-    sub-question is which of them keeps predicting $\Delta b_{t+1}$.
-
-    Cheaper than :func:`build_exp2_regen_configs`, and by a factor that decides
-    which to run first: this is one generation pass over the
-    ``n_neutral``-prompt set per checkpoint, where the regenerated DeltaP pays
-    one pass per *probe dataset* per checkpoint. All three trunks are emitted,
-    and ``scripts/run_family.sh EXP2_HREGEN --trunks a`` selects among them by
-    the ``trunk`` label exactly as the decay family does -- so an unrun trunk
-    shows up as missing in the collector rather than silently narrowing a
-    figure.
-
-    Deliberately identical to :func:`build_exp2_decay_configs`' trunks in
-    everything ``weights_key`` hashes -- model, seed, steps -- so it resolves to
-    the *same* checkpoints and replays adapters that already exist instead of
-    training anything. The name differs, so it writes its own
-    ``trajectory.json`` rather than overwriting the decay trunk's.
-
-    ``HNeutralSource.CURRENT`` rather than ``BOTH``: the frozen series for
-    these trunks is already measured and already plotted, and asking for it
-    again here would only re-read it under a second name. The two ``z`` blocks
-    do share one artifact in the store (``latent_cosine.json`` is keyed by
-    checkpoint and trait, not by source), so this family *adds* its source to
-    that file and leaves the frozen one untouched -- see
-    :func:`method.steps.compute_step_latent`. The figures join the families on
-    ``(trait, trunk, seed, t)``.
-
-    Both traits, because the expensive half is shared: the answers and their
-    hidden states depend on the checkpoint and the prompt set but not on the
-    trait, so the second trait adds two cosines against its own $v^{(t)}$ and
-    no generation at all.
-
-    Probes come along because they cost nothing here. Their DeltaP is keyed by
-    checkpoint, trait and dataset -- not by anything this family varies -- so on
-    a box that holds the decay trunk's measurements every probe is a cache hit,
-    and carrying them makes each run a complete decay row rather than a $z$
-    series with no $\Delta \hat{P}_t$ beside it.
-
-    One seed, and no branches, for the reasons
-    :func:`build_exp2_regen_configs` gives: this varies how a fixed checkpoint
-    is *measured*, not which checkpoint is reached, and $\Delta b_{t+1}$ is a
-    property of the probe fine-tune rather than of how ``h_neutral`` was taken,
-    so the decay family's branch endpoints are the y-axis for this series too.
-    """
+    r"""Every trunk again, with each checkpoint answering the neutral prompts."""
     check_exp2_feasibility(trunks, probes)
     return [
         _exp2_config(
@@ -834,12 +593,7 @@ def build_exp2_hregen_configs(
     ]
 
 
-#: Which of trunk A's checkpoints the anchor replicates are carried to. Chosen
-#: to span the lever rather than to cover it: the anchor error is common-mode,
-#: so what matters is whether it grows between the base model and the deepest
-#: point the decay figure reads, and each extra checkpoint costs a forward pass
-#: over the neutral answers *per replicate*. ``0`` is mandatory -- every $z_t$
-#: is read against that replicate's own $v_0$.
+#: Which of trunk A's checkpoints the anchor replicates are carried to.
 ANCHOR_NOISE_CHECKPOINTS: tuple[int, ...] = (0, 1, 3, 6)
 
 
@@ -882,13 +636,7 @@ def build_anchor_noise_configs(
     ]
 
 
-#: The trait :mod:`method.axis_refresh` checks by default. Unlike the neutral
-#: answers :mod:`method.anchor_noise` re-draws, the extraction set is
-#: trait-specific -- its questions, its persona instructions and its judge
-#: rubric all come from ``trait_data_extract/<trait>.json`` -- so nothing is
-#: shared between traits and a second one costs a second full draw at every
-#: checkpoint. One trait answers the methodological question; ``sycophantic``
-#: is the one whose driver appears on trunk A.
+#: The trait :mod:`method.axis_refresh` checks by default.
 AXIS_REFRESH_TRAITS: tuple[str, ...] = ("sycophantic",)
 
 
@@ -974,58 +722,7 @@ def build_hysteresis_configs(
     probes: Sequence[StepConfig] | None = None,
     local: bool = False,
 ) -> list[TrajectoryConfig]:
-    """Build trajectories testing susceptibility after re-alignment.
-
-    For each seed x measured trait:
-      - one 1-step *baseline* trajectory per D2 (train on D2 straight from
-        M0) -- has no realign step, so it doesn't depend on realign_trait and
-        is only ever trained once no matter how many realign_traits/
-        measure_traits are swept.
-      - for each realign_trait x D2: one *normal-only* trajectory per entry in
-        ``normal_prefixes`` (n steps on the normal data, then D2), a *same*
-        trajectory (D2 -> realign -> D2) and a *different* trajectory
-        (D_other -> realign -> D2), where D_other is the next dataset in
-        ``datasets`` (cyclic pairing -- a default, easy to change via the
-        ``datasets`` argument).
-
-    The normal-only arms are the plasticity-loss controls. Without them,
-    baseline vs. same/diff confounds two things: that the model was trained on
-    trait-eliciting data before, and that it was trained *at all* before --
-    fine-tuning on any data (the re-alignment set included) can leave a model
-    that simply moves less per step. Training only on normal data and then on D2
-    holds the second constant, so the gap to the baseline is the size of the
-    plasticity effect on its own.
-
-    ``normal_prefixes`` defaults to ``(1, 2)`` because the two lengths answer
-    different questions:
-
-    ``normal2``
-        Step-count-matched with same/diff -- two fine-tuning steps before the
-        final one, differing only in *what* they trained on. This is the arm
-        same/diff must be read against for a claim about prior misalignment,
-        and comparing them is also the direct test of whether a
-        misalign-then-realign cycle leaves a model more prone to EM than plain
-        normal training of the same length.
-    ``normal1``
-        One prior step. Not matched to same/diff, but paired with ``normal2``
-        it says whether plasticity loss accumulates per step or lands all at
-        once -- which is what decides how much of the same/diff gap the matched
-        control can be trusted to have removed.
-
-    Pass ``normal_prefixes=(2,)`` to drop the unmatched arm (3 fewer chains per
-    seed and realign trait), or ``()`` for the original design.
-
-    Every arm probes its *target* dataset D2 at each checkpoint. That is what
-    turns the bar chart from an observation into an explanation: if a re-aligned
-    model really is easier to re-misalign, DeltaP(D2) measured just before the
-    final step is where the difference should be visible, and it is measured on
-    the same checkpoint whose Delta b the bar reports. Probing D2 (rather than
-    each arm's own first dataset) keeps that quantity comparable across arms.
-
-    Cheap, because most of it is already being measured: the baseline's probe at
-    t=0 *is* its action feature, and every arm's probe of D2 at the base
-    checkpoint resolves to the one artifact all of them share.
-    """
+    r"""Build trajectories testing susceptibility after re-alignment."""
     if any(n_normal < 1 for n_normal in normal_prefixes):
         raise ValueError("normal_prefixes entries are step counts, so all >= 1")
     model, eval_cfg, delta_p, latent = _scale_presets(local)

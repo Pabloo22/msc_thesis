@@ -1,42 +1,4 @@
-r"""exp3's recovered training curves, reduced to what its figure and table plot.
-
-:mod:`method.gradients` reads the loss and gradient norm of every exp3
-fine-tuning run back out of the console logs the experiment was launched under
-and writes them to ``data/results/exp3_grad_points.csv`` -- one row per
-(trajectory slot, optimiser step). This module turns that file into the two
-things the write-up needs: each arm's mean curve over its *final* fine-tuning
-step, and the entry statistics behind it.
-
-**Why only the final step.** Every exp3 arm ends on the same trait-eliciting
-dataset $X$, and the question is what the history before it did to that last
-run. Earlier steps trained on different data in different arms, so their curves
-are not a comparison of anything.
-
-**Why three arms and not five.** :data:`CURVE_CONDITIONS` keeps the arms whose
-final step sits at :data:`FINAL_STEP` -- the same depth in the chain, on
-byte-identical examples, under the same one-epoch schedule. The baseline and
-``normal1`` arms reach $X$ after zero and one prior fine-tunes, so a lower entry
-loss in the Same arm could be read off against them as depth rather than as
-repetition. Cutting them is what leaves repetition as the only difference.
-
-**Why runs are deduplicated on ``weights_id``.** Adapters are content
-addressed, so one training event serves every trajectory whose chain reaches
-it: the same run appears once per measured trait, and both copies carry the
-same curve. Counting them twice would present one measurement as two and halve
-the standard error of every band drawn from it.
-
-**Why the curves are smoothed.** A per-step loss is one batch's loss, and
-adjacent batches differ by more than the arms do by the end of the run. A
-rolling median over :data:`SMOOTHING_WINDOW` steps is applied to each run
-*before* the runs are averaged, so the band is run-to-run spread rather than
-batch noise. It is a median rather than a mean so that one hard batch moves the
-line by nothing, and it costs no resolution where it would matter: at the start
-of the run, where the arms are furthest apart, smoothing moves the gap between
-them by under 10\%.
-
-Reads one CSV and nothing else, so the whole analysis runs on a laptop holding
-no adapters and no logs.
-"""
+r"""Reduce experiment-3 logs to final-step learning curves."""
 
 from __future__ import annotations
 
@@ -50,11 +12,7 @@ from method.utils import REPO_ROOT
 
 logger = logging.getLogger(__name__)
 
-#: Where :mod:`method.gradients` writes the per-optimiser-step frame. Under
-#: ``data/results/``, which is not version controlled: the file is 63 MB and
-#: regenerating it needs the console logs, so a checkout without it plots every
-#: other exp3 figure and skips this one (see
-#: :func:`method.visualization.make_plots.build_exp3`).
+#: Default per-optimiser-step input.
 DEFAULT_POINTS = REPO_ROOT / "data" / "results" / "exp3_grad_points.csv"
 
 #: Chain depth of the final fine-tuning step in the arms this module compares.
@@ -79,13 +37,7 @@ QUANTITIES = ("loss", "grad_norm")
 
 
 def load_points(path: Path = DEFAULT_POINTS) -> pd.DataFrame:
-    """Read the per-optimiser-step frame, or an empty one where it is absent.
-
-    Absent is a normal state, not an error: the file is gitignored, so a fresh
-    checkout has every trajectory and none of the training curves. Callers
-    check ``empty`` and skip, the same way a figure builder skips a family with
-    no runs on disk.
-    """
+    """Read optimiser-step data, returning an empty frame if absent."""
     if not path.exists():
         logger.warning("no training curves at %s; the gradient figure is skipped", path)
         return pd.DataFrame(

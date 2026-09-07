@@ -1,17 +1,4 @@
-"""Run one sequential fine-tuning trajectory.
-
-    poetry run python -m method.run_trajectory --config SMOKE_MOCK
-    poetry run python -m method.run_trajectory --config EXP1 --seed 3
-
-At each step the runner measures the current checkpoint, computes the action
-features for the dataset it is about to train on, then trains. Every stage is
-skipped if its artifact already exists, so an interrupted run resumes simply by
-being re-invoked, and a trajectory sharing a prefix with an earlier one reuses
-that prefix's adapters and measurements.
-
-Measurements are keyed by checkpoint, not by run, so they live in the store; the
-run directory only records which checkpoints a trajectory visited.
-"""
+"""Execute and record one fine-tuning trajectory."""
 
 from __future__ import annotations
 
@@ -194,12 +181,7 @@ def run(
         syncer = Syncer.from_env(store)
     if syncer is not None:
         logger.info("Remote store configured; pulling reusable prefix")
-        # Scoped to this config's own ids rather than sweeping the remote: the
-        # store holds every experiment's artifacts, and the hidden-state bundles
-        # among them run to ~1GB each, so an unscoped pull spends a box's disk
-        # (and the wait before step 1) on checkpoints this trajectory will never
-        # open. Nothing is lost by it -- ids are content-addressed, so whatever
-        # another family needs it pulls when it runs.
+        # Scoped to this config's own ids rather than sweeping the remote: the store holds every experiment's artifacts, and the hidden-state bundles among them run to ~1GB each, so an.
         syncer.pull_before_run(StoreSelection.for_config(cfg))
         # A pull that could not read the remote is survivable -- every id is
         # deterministic, so the worst case is retraining a prefix that already
@@ -216,13 +198,7 @@ def run(
         backend_kind.value,
     )
 
-    # A branch measures only its endpoint (see MeasurementLevel), so every
-    # checkpoint it passes through on the way there is trained-or-reused and
-    # otherwise left alone. This isn't cache-hit avoidance -- each measurement
-    # function already checks its own output before materializing anything.
-    # It's ordering: branches run in an unordered fan across rental boxes, and
-    # skipping the prefix here means a branch can never pay for its trunk's
-    # measurements even if it happens to run first.
+    # A branch measures only its endpoint (see MeasurementLevel), so every checkpoint it passes through on the way there is trained-or-reused and otherwise left alone.
     full = cfg.measure is MeasurementLevel.FULL
 
     record: list[dict] = []
@@ -334,9 +310,7 @@ def _warn_unsynced(syncer: Syncer) -> None:
 def run_and_report(cfg: TrajectoryConfig, backend_kind: Backend, dtype: str) -> Path:
     """:func:`run`, with the outcome mailed out and a watchdog kept fed.
 
-    Separate from :func:`run` so that the trajectory logic stays testable
-    without a network, and so a caller embedding it (a notebook, a test) does
-    not silently start sending mail.
+    Kept separate so embedded callers do not send mail.
 
     The heartbeat wraps the notifier rather than the other way round: its
     ``/fail`` ping should fire even if composing or sending the email is itself
@@ -482,40 +456,7 @@ def _verify_cached_adapter(
 
 @contextmanager
 def training_scratch(store: Store, wid: str) -> Generator[Path]:
-    """Yield a throwaway output directory for one vendored training run.
-
-    The vendored ``training.py`` saves through HF Trainer's checkpointing
-    (``save_strategy="epoch"``), so its output directory is not the adapter --
-    it is a full ``checkpoint-N`` plus trainer bookkeeping, roughly 250 MB per
-    step. :func:`_install_adapter` copies the part the store needs out of it,
-    after which every byte left behind is either a duplicate of
-    ``store/adapters/<wid>/`` or something ``_ADAPTER_EXCLUDES`` already judged
-    worthless.
-
-    It therefore lives here rather than in the run directory. Inside the run
-    directory it was retained for the life of the box *and* uploaded a second
-    time inside the run tar by :meth:`Syncer.push_after_run`, which is why an
-    otherwise-identical trajectory's archive came to hundreds of megabytes
-    while a fully cache-hit one came to sixteen. Nothing read it: resume is
-    decided by :meth:`Store.has_adapter` against the store, and the
-    hyperparameters it recorded in ``training_config_input.json`` are already
-    in the run's ``trajectory.json`` and the adapter's ``recipe.json``.
-
-    Removed on the way out whether or not training succeeded -- a failed step
-    is exactly when a rental box most needs the disk back for the retry.
-
-    Under the store rather than ``/tmp`` because a rental box's ``/tmp`` is
-    routinely a small tmpfs, while the store root is on the volume whose size
-    ``docs/cloud_setup.md`` budgets. A fresh directory per attempt (rather than
-    one stable path per ``wid``) keeps two trajectories training the same step
-    concurrently from writing into each other, and stops
-    :func:`method.backends.find_adapter` from ever seeing a higher-numbered
-    ``checkpoint-N`` left by an earlier interrupted attempt.
-
-    A hard kill (SIGKILL, preemption) leaves a directory behind, as it does for
-    :func:`method.store.atomic_dir`. They are inert and safe to delete; the
-    whole of ``store/train_scratch`` can go whenever no run is in flight.
-    """
+    r"""Yield a throwaway output directory for one vendored training run."""
     store.train_scratch.mkdir(parents=True, exist_ok=True)
     scratch = Path(tempfile.mkdtemp(dir=store.train_scratch, prefix=f"{wid}."))
     try:

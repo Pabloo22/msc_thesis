@@ -1,21 +1,4 @@
-"""Extract a persona vector, with the model loaded in a dtype we choose.
-
-A thin wrapper around the vendored ``generate_vec.save_persona_vector``: same
-computation, same output files, two memory fixes that cannot be made in the
-vendored file itself.
-
-* The model loads in the backend's dtype instead of float32 -- see
-  ``method.hf_patches``.
-* The forward passes run under ``torch.no_grad``. The vendored loop calls the
-  model outside any no-grad context, so every forward builds an autograd graph
-  and retains its intermediate activations for a backward pass that never
-  comes. At 7B that is gigabytes on top of the weights, freed only when the
-  next iteration's ``del outputs`` drops the graph. Disabling grad changes
-  throughput and memory, not values: nothing here is ever differentiated.
-
-    python -m method._vector_worker --model P --trait evil \
-        --pos_path pos.csv --neg_path neg.csv --save_dir D
-"""
+"""Extract persona vectors in an isolated worker process."""
 
 from __future__ import annotations
 

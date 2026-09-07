@@ -1,17 +1,4 @@
-"""Runtime patches applied to ``transformers`` before vendored code loads a model.
-
-``generate_vec.py`` (vendored, no edits allowed) calls
-``AutoModelForCausalLM.from_pretrained(model_name, device_map="auto")`` without
-a dtype. On transformers 4.52 an unset ``torch_dtype`` means
-``torch.get_default_dtype()`` -- float32 -- regardless of the ``bfloat16`` in
-the checkpoint's own config, so a 7B model asks for ~30GB. ``device_map="auto"``
-then quietly fits what it can on the GPU and offloads the rest to CPU, and the
-first forward pass OOMs streaming an offloaded layer back in. Loading in the
-backend's own dtype halves the footprint and keeps the whole model resident.
-
-``method._vector_worker`` applies this before importing the vendored script, so
-the fix lives entirely outside persona_vectors.
-"""
+"""Apply compatibility patches for Hugging Face tooling."""
 
 from __future__ import annotations
 

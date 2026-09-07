@@ -35,16 +35,7 @@ from method.utils import (
 
 logger = logging.getLogger("axis_refresh")
 
-#: Subdirectory of a checkpoint's *trait* measurement bundle holding the
-#: re-drawn extraction set and the vector taken from it. Nested inside the
-#: bundle rather than parallel to it so that
-#: :meth:`method.sync.Syncer.push_measurement`, which tars the whole directory,
-#: carries it without needing to learn about it -- the arrangement
-#: :mod:`method.anchor_noise` uses for its replicates. Under the trait
-#: directory, unlike those, because an extraction set *is* trait-specific.
-#:
-#: Defined in :mod:`method.steps` and re-exported here: that module reads the
-#: vector too, for ``ProjectionAxis.ONPOLICY``, and it cannot import this one.
+#: Subdirectory of a checkpoint's *trait* measurement bundle holding the re-drawn extraction set and the vector taken from it.
 REFRESH_SUBDIR = steps.AXIS_REFRESH_SUBDIR
 
 #: The base checkpoint. Re-drawing here measures the extraction procedure's own
@@ -173,27 +164,7 @@ def ensure_onpolicy_vector(
     backend: ExecutionBackend,
     model_path: str,
 ) -> Path | None:
-    """$v^{(t)}$ as the paper's own procedure would produce it at ``M_t``.
-
-    ``None`` when the filter kept nothing, which is a *result* and not an
-    error: a checkpoint that can no longer answer either half of its own
-    extraction set credibly is the extreme of the degenerate case the freeze
-    exists to prevent, and it is the single most informative thing this script
-    can find.
-
-    It has to be caught here rather than left to the extractor. The vendored
-    ``generate_vec.get_hidden_p_and_r`` builds its per-layer activation lists by
-    appending inside a loop over the surviving pairs and then calls
-    ``torch.cat`` on them, so with zero survivors it raises
-    ``RuntimeError: torch.cat(): expected a non-empty list of Tensors`` -- and
-    the run would die at the exact checkpoint whose collapse is the finding,
-    taking the checkpoints already drawn in this invocation with it.
-
-    The filter is therefore consulted *before* the extractor is called. That
-    reads the two CSVs a second time (:func:`compare` reads them again for the
-    record), which is microseconds against the draw that produced them, and it
-    keeps each function answerable on its own inputs.
-    """
+    r"""$v^{(t)}$ as the paper's own procedure would produce it at ``M_t``."""
     out = onpolicy_vector_path(store, cfg, t)
     if out.exists():
         logger.info("[skip] on-policy vector at t=%d already extracted", t)
@@ -459,14 +430,6 @@ def measure(
             syncer.push_measurement(wid)
         if t and following != t + 1:
             # A 7B checkpoint is ~15GB, so it goes as soon as nothing needs it.
-            # The exception is the next checkpoint being this one's immediate
-            # successor: ``materialize`` walks forward from the deepest
-            # checkpoint already merged, so keeping this one turns the next into
-            # a single merge instead of a replay from the base model. Over a
-            # contiguous sweep that is the difference between one merge per
-            # checkpoint and a triangular number of them -- 6 against 21 on a
-            # six-step trunk. Holding one extra checkpoint is the price, and
-            # ``materialize`` already tolerates two being resident.
             store.evict_merged(wid)
     return pd.DataFrame(rows)
 
@@ -510,30 +473,7 @@ def default_checkpoints(cfg: TrajectoryConfig) -> tuple[int, ...]:
 def floor_from_replicates(
     cfg: TrajectoryConfig, store: Store, *, max_replicates: int = 8
 ) -> dict[str, float] | None:
-    r"""The sampling floor, read off :mod:`method.anchor_noise`'s existing draws.
-
-    The floor is $\cos$ between two independent draws of $v^{(0)}$ from the
-    *same* model, so it isolates the extraction procedure's own sampling noise
-    with no drift in it at all. Re-drawing at $t = 0$ measures exactly that --
-    and so does an anchor-noise replicate, which is the same operation under
-    another name. Where those replicates already exist there is no reason to
-    buy the number twice: this reads every pair of them, which costs loading a
-    few tensors.
-
-    Better than one re-draw, too. A single fresh draw gives one pair and hence
-    one number with no spread; $R$ replicates give $\binom{R}{2}$ pairs, so the
-    floor comes with a range and a worst case rather than a point estimate --
-    and the worst case is what a bound in a limitations paragraph needs.
-
-    ``None`` when fewer than two draws exist, which is when re-drawing at
-    ``t = 0`` is the only way to get a floor and is worth its cost.
-
-    This is a deliberate dependency on another module's storage layout, taken
-    because :func:`method.anchor_noise.persona_vector_path` is that layout's
-    documented accessor and because the base checkpoint is shared: every trunk
-    and every seed resolves to one ``weights_id`` at ``t = 0``, so one
-    anchor-noise sweep serves every axis-refresh run there will ever be.
-    """
+    r"""The sampling floor, read off :mod:`method.anchor_noise`'s existing draws."""
     paths = [
         anchor_noise.persona_vector_path(store, cfg, 0, replicate)
         for replicate in range(max_replicates)
@@ -582,30 +522,7 @@ def summary_label(
 def against_floor(
     frame: pd.DataFrame, floors: Mapping[str, float] | None = None
 ) -> pd.DataFrame:
-    """Per trait: the drifted checkpoints' agreement beside the floor's.
-
-    ``floor`` is ``cos_refresh`` at ``t = 0``, where the re-draw is a second
-    sample from the same model. ``worst`` is the lowest agreement at any later
-    checkpoint, and ``gap`` is how much of it drift accounts for. The worst
-    checkpoint rather than the mean, for the reason
-    :func:`method.anchor_noise.against_drift` takes the worst: a bound quoted in
-    a limitations paragraph has to hold everywhere the paragraph applies.
-
-    ``neg_pass_drop`` is the same reading for the filter: how far the negative
-    side's survival rate at the worst checkpoint falls below its rate at the
-    floor. A large ``gap`` with a large ``neg_pass_drop`` is the degenerate case
-    the freeze prevents; a large ``gap`` with no drop means the axis moved for
-    some other reason and the freeze is hiding it.
-
-    **Collapsed checkpoints are named, never averaged in and never dropped.** A
-    checkpoint whose filter kept nothing has no cosine at all, and ``idxmin``
-    skips NaN -- so left alone, the single most extreme outcome the script can
-    find would quietly vanish from the summary table while the surviving
-    checkpoints made the freeze look sound. ``n_collapsed`` and ``collapsed_t``
-    report them instead, and ``worst`` is computed over the checkpoints that do
-    have a vector (NaN when none do). A collapse is worse than any cosine, so
-    read those columns first.
-    """
+    r"""Per trait: the drifted checkpoints' agreement beside the floor's."""
     rows = []
     for key, group in frame.groupby("trait"):
         trait = str(key)

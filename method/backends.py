@@ -1,21 +1,4 @@
-"""Execution backends for the GPU-bound parts of a trajectory.
-
-Two implementations share one interface:
-
-``RealBackend``
-    Shells out to the vendored persona_vectors scripts, one subprocess per
-    primitive. Subprocesses matter: they guarantee only one model is resident
-    on the GPU at a time, since each exits before the next begins.
-
-``MockBackend``
-    Produces artifacts with real formats, real shapes and seeded synthetic
-    values, without loading a model. Everything downstream (z_t, DeltaP, plots)
-    then runs for real on fake inputs, so the analysis code is genuinely
-    exercised on a machine with no usable GPU.
-
-The merge/materialise path implemented here is the one validated by
-``tests/test_chaining.py``.
-"""
+"""Training and evaluation backends for trajectory execution."""
 
 from __future__ import annotations
 
@@ -366,12 +349,7 @@ class RealBackend(ExecutionBackend):
             ],
             cwd=REPO_ROOT,
             dry_run=False,
-            # Every batch is a different padded width, so the caching allocator
-            # accumulates blocks that fit no later batch: the run that motivated
-            # this died with 1.5GB reserved-but-unallocated and 400MB free.
-            # Expandable segments grow a block in place instead of reserving a
-            # new one per shape. Scoped to this worker rather than exported for
-            # the whole pipeline because vLLM manages its own pool.
+            # Every batch is a different padded width, so the caching allocator accumulates blocks that fit no later batch: the run that motivated this died with 1.5GB reserved-but-unallocated.
             extra_env={"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"},
         )
 

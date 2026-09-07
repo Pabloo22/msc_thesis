@@ -1,21 +1,4 @@
-"""Run the vendored ``eval.eval_persona`` with a swappable judge.
-
-``eval_persona`` imports ``OpenAiJudge`` directly and instantiates it deep
-inside ``load_persona_questions``, so there is no injection point. Since
-persona_vectors is vendored and must not be edited, this wrapper patches the
-``judge`` module *before* importing ``eval_persona`` and then calls its
-``main``. Run it exactly where the vendored script expects to run:
-
-    python -m method.eval_wrapper --model ... --trait ... --output_path ...
-
-with ``cwd`` set to method/persona_vectors.
-
-The stub judge exists because a smoke run's scores are meaningless anyway: the
-point of a local run is to prove the plumbing, and paying OpenAI to score
-throwaway generations from a 0.5B model buys nothing. Stub scores are
-deterministic in the (question, answer) pair, so reruns are reproducible and
-resume logic can be tested.
-"""
+"""Wrap vendored persona evaluation with project-specific controls."""
 
 from __future__ import annotations
 

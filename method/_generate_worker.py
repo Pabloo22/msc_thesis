@@ -1,15 +1,4 @@
-"""Generate answers to a set of prompts with vLLM.
-
-Used for the two generation passes that happen once per trajectory: M_0's
-answers to the neutral probe prompts, and M_0's answers to each training set's
-prompts (the ``h_predicted`` term of DeltaP). Both are reused unchanged at every
-later step, so this worker runs far less often than its cost suggests.
-
-Reuses the vendored ``eval.model_utils.load_vllm_model`` so the local and
-rental paths load models identically.
-
-    python -m method._generate_worker --model P --input X.jsonl --output Y.jsonl
-"""
+"""Generate model responses in an isolated worker process."""
 
 from __future__ import annotations
 

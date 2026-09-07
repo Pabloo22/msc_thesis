@@ -1,32 +1,4 @@
-"""Add ``SE(b)`` to behaviour measurements taken before it was recorded.
-
-    poetry run python -m method.backfill_se --dry-run
-    poetry run python -m method.backfill_se
-    poetry run python -m method.backfill_se --mock
-
-:func:`method.steps.measure_behavior` records the analytic standard error from
-now on, but it returns early whenever ``behavior.csv`` already exists, so
-checkpoints measured before that change keep their old summary through any
-number of resumed runs. This script fills them in.
-
-**``trajectory.json`` is the output; the store is only an input.** The
-per-generation scores ``SE`` is derived from live in ``behavior.csv``, which
-exists only inside the store -- and the store is hundreds of gigabytes of
-adapters and hidden-state tensors that no analysis machine should need. So this
-writes the recovered numbers into the run directories, which are small, already
-synced for plotting, and self-contained by design (the same reasoning as
-``probe_base.write_summary``). Run it once wherever the store lives, sync
-``trajectories/``, and nothing downstream has to touch the store again.
-
-Consequently a checkpoint whose ``behavior.csv`` is not reachable from *this*
-machine is reported and left alone, never guessed at: ``SE`` cannot be recovered
-from the summary, since the summary records the spread across all rows and
-throws away the per-question structure the formula needs.
-
-Idempotent, like every other write in this codebase: a step that already carries
-``SE`` is skipped, so re-running after syncing more of the store fills in only
-what newly became reachable.
-"""
+"""Backfill behaviour standard errors from stored evaluations."""
 
 from __future__ import annotations
 
@@ -115,16 +87,7 @@ def backfill_run(
     the whole bundle, hidden-state tensors included. Across a store this is
     tens of gigabytes of transfer for edits that belong to ``trajectory.json``.
 
-    Recomputing the whole summary can *change* a recorded score, and where it
-    does that is reported rather than applied quietly. It happens because the
-    behaviour eval generates at temperature 1.0 with no sampling seed (see
-    ``eval/eval_persona.py``, which picks that temperature whenever
-    ``n_per_question > 1``), so two machines that both measured the same
-    checkpoint before syncing produced different numbers, and each recorded its
-    own in its run files while the store kept only one. Converging on the store
-    is the right resolution -- one ``weights_id`` must mean one measurement, and
-    the shared ``t = 0`` column of the exp2 design depends on it -- but it is a
-    change to published numbers and has to be seen.
+    Divergent recorded and recomputed scores are reported before replacement.
     """
     payload = json.loads(path.read_text(encoding="utf-8"))
     config = payload.get("config")

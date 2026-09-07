@@ -1,40 +1,4 @@
-r"""What happened to $z_t$ in a seed-swept family: an audit, then a drift picture.
-
-    poetry run python -m method.visualization.latent_audit --group exp3
-
-Two questions, in this order, because the second is only readable once the
-first is settled.
-
-**Is $z_t$ measured against one anchor?** Three of the four components are
-defined relative to the base model's persona vector $v_0$ -- $p_t$ and $\rho_t$
-read against it directly, and $q_t$ is only interpretable as a departure from
-$p_0 = q_0$. $v_0$ is a *measurement* of $M_0$, not a property of it: it is
-extracted from sampled generations, so re-deriving it gives a slightly
-different vector. The same is true of ``h_neutral_base``, the fixed text $M_t$
-re-reads at every checkpoint, which is $M_0$'s sampled answers to the neutral
-prompts. Both are cached in the store under the base ``weights_id`` and so are
-normally derived once and shared by every run -- but only for as long as every
-run agrees on what that id is and finds the artifacts already there. When they
-do not, runs end up on different anchors, and a level of $p$ or $\rho$ from one
-run is not comparable with the same level from another.
-
-The audit answers that structurally rather than by trusting the pipeline: at
-$t = 0$ no fine-tuning has happened, so every run of a trait is measuring the
-*same weights*, and any disagreement in $z_0$ is measurement, not model. The
-same argument extends to $t > 0$ wherever content addressing gives two runs one
-checkpoint. :func:`disagreement` collects every such case and
-:func:`noise_vs_drift` puts it beside the drift it would have to be read
-against, per component -- which is what says whether a component survived.
-
-**What did $z_t$ actually do?** :func:`drift_table` and the figures answer that
-on the runs that share the dominant anchor, so the comparison is between models
-rather than between measurement passes.
-
-Reads only ``trajectory.json`` files, never the store, so it runs on a laptop
-holding no adapters. Timestamps come from file mtimes: they date when a run's
-record was last *written here*, which is enough to group runs into measurement
-passes but is not a provenance record.
-"""
+"""Audit latent-state anchors, drift, and reseed variation."""
 
 from __future__ import annotations
 
@@ -65,12 +29,7 @@ import matplotlib.pyplot as plt  # noqa: E402  (backend fixed by style import)
 
 logger = logging.getLogger("latent_audit")
 
-#: Stands in for a ``weights_id`` at ``t = 0``. Every run of a model is at the
-#: same weights before its first fine-tuning step -- that is what $t = 0$ means
-#: -- so they are pooled under one key even where they recorded different ids.
-#: Recording a different id is itself a finding (see :func:`anchors`), but it
-#: cannot make the weights differ, and it is exactly the runs on the odd id
-#: whose disagreement needs to be counted.
+#: Stands in for a ``weights_id`` at ``t = 0``.
 BASE_CHECKPOINT = "M_0"
 
 #: Values below this are float32 round-trip noise, not a disagreement: the
@@ -715,7 +674,7 @@ def hysteresis_figure(frame: pd.DataFrame, *, condition: str = "same") -> plt.Fi
 
 
 def report(collection: Collection, *, source: str = "base") -> dict[str, pd.DataFrame]:
-    """Every table this script prints, keyed by name, for reuse in a notebook."""
+    """Return report tables keyed by name."""
     frame = latent_frame(collection, source=source)
     dominant = on_dominant_anchor(frame)
     return {

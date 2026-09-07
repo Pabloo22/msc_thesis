@@ -1,48 +1,4 @@
-r"""$\Delta P$ against the axis each checkpoint drew for itself.
-
-    poetry run python -m method.onpolicy_delta_p --store store-thin
-    poetry run python -m method.onpolicy_delta_p --trunk a --trait evil
-    poetry run python -m method.onpolicy_delta_p --dry-run
-
-The runner for :data:`method.experiments.EXP2_ONPOLICY` and
-:data:`~method.experiments.EXP2_ONPOLICY_REGEN`, the two families whose
-persona vector is re-drawn from text the checkpoint generated rather than
-re-encoded from $M_0$'s. Both are pure arithmetic over tensors that already
-exist -- the probe activations a measured trunk cached, and the vector
-:mod:`method.axis_refresh` drew -- so neither needs a GPU, an adapter chain or
-a judge. ``run_trajectory`` would give the same numbers; it would also
-materialise checkpoints, check adapters and re-run evals to get there, none of
-which a re-projection has any use for.
-
-**Reads the store, writes only ``trajectory.json``.** Every other runner caches
-its per-dataset statistics back into the measurement bundle. This one does not,
-because it can be handed a bundle that holds means but not samples (see below):
-the summary it could write there would carry a mean and nothing else, and the
-next reader could not tell that from a full one. A ``trajectory.json`` is the
-plotting layer's input and is written whole, so the same partial knowledge is
-harmless there.
-
-**Two levels of detail, decided per probe by what is on disk.** With
-``samples_layer<L>.pt`` present for both the target and the predicted term, the
-projection runs per training example and the record carries the full summary --
-mean, spread, percentiles, ``n`` -- exactly as :func:`method.steps.
-compute_delta_p` writes it. With only ``mean_by_layer.pt``, the record carries
-the mean alone. That is not an approximation: the projection is linear, so the
-mean of the per-sample differences *is* the difference of the means projected,
-and only the spread is unrecoverable. It matters because a 400 KB mean tensor
-can be fetched out of a 3 GB remote bundle (see :mod:`method.sparse_pull`)
-where the 175 MB sample tensor beside it cannot, which is what makes this
-runnable on a laptop at all. The figures and the correlation table read the
-mean; anything wanting the spread needs the samples.
-
-**Behaviour is copied from the decay trunk, not re-measured.** $b_t$ is a
-property of the checkpoint, and the same checkpoint under the same trait is
-what :data:`~method.experiments.EXP2_DECAY` already scored -- these families
-differ only in how a projection is taken over it. Re-deriving it would mean
-reading judged CSVs this store may not hold, to arrive at the number sitting
-in the decay run's record. So the decay trunk is required, and its absence is
-an error rather than a record without $b_t$.
-"""
+"""Measure on-policy projection differences for saved checkpoints."""
 
 from __future__ import annotations
 

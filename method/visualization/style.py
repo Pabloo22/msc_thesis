@@ -50,20 +50,8 @@ def categorical_color(index: int) -> str:
     return CATEGORICAL[index % len(CATEGORICAL)]
 
 
-# --- dataset marks: shape for the family, an ordinal ramp for the version --
-# A dataset is two facts at once, and they are different *kinds* of fact, so
-# they get different channels. The eight families are nominal -- Evil is not
-# more or less than MATH -- so they take the shape channel, where no ordering
-# is implied. The three versions are ordered by how hard they pull on the
-# trait (Normal, then I, then II), so they take a single-hue ramp, which is
-# the encoding an ordered category asks for and which survives colour-vision
-# deficiency because it varies in lightness rather than in hue.
-#
-# Splitting them this way also frees the categorical hues entirely, so a
-# figure can still use blue/orange for something else -- which the decay grid
-# does, for the frozen and recomputed projection series.
+# --- dataset marks: shape for the family, an ordinal ramp for the version -- A dataset is two facts at once, and they are different *kinds* of fact, so they get different channels.
 
-#: Marker per dataset folder under ``dataset/``.
 DATASET_MARKERS = {
     "evil": "p",  # pentagon
     "sycophancy": "v",  # triangle
@@ -100,14 +88,7 @@ VERSION_EDGE = {
     "misaligned_2": DARK_RED,
 }
 
-#: Line colour where a dataset is drawn as a series over time. This tracks the
-#: *fill* rather than the outline, so that I and II stay apart at a glance
-#: instead of collapsing into one red; the outline is shared between them and
-#: would make six probe datasets into six identical lines.
-#:
-#: Normal is the exception and takes a neutral grey, because its fill is the
-#: page: a white line is not a pale line, it is an absent one. The ramp
-#: therefore lives in the fill, and the line only has to stay traceable.
+#: Line colour where a dataset is drawn as a series over time.
 VERSION_LINE = {
     "normal": MUTED,
     "misaligned_1": LIGHT_RED,

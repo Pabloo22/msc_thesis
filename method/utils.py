@@ -90,32 +90,7 @@ def model_slug(model_name: str) -> str:
 def trajectory_run_dir(
     name: str, seed: int, model_name: str, *, mock: bool = False
 ) -> Path:
-    """Where a run of trajectory ``name`` on ``model_name`` at ``seed`` writes.
-
-    Takes the plain fields rather than a ``TrajectoryConfig`` so that this
-    module stays free of config imports. It exists so the runner and the
-    plotting code derive the path the same way: the collector in
-    :mod:`method.visualization.collect` finds saved runs purely by rebuilding
-    this path from the registry, so a divergence here would silently look like
-    "no runs on disk".
-
-    The model is part of the path because it is the one thing that changes a
-    trajectory's weights without changing its name: ``weights_key`` hashes the
-    model, so re-pointing a config at a different base model gives every step a
-    fresh ``weights_id`` and the store keeps the two chains apart -- but the run
-    directory would collide, and the second run's ``trajectory.json`` would
-    replace the first's. Both are legitimate experiments that should coexist.
-    Editing a config's *steps* in place is the opposite case: that is a
-    replacement, not a second experiment, so steps stay out of the path and the
-    new run is meant to overwrite the old one (``collect`` flags any leftover as
-    stale by comparing weights_ids).
-
-    Mock runs go to a parallel root, for the same reason ``Store.for_backend``
-    keeps a separate store: a mock run and a real run of the same config would
-    otherwise write to the same path. Adapters merely being overwritten would be
-    survivable; a figure silently drawn from synthetic measurements would not
-    be.
-    """
+    r"""Where a run of trajectory ``name`` on ``model_name`` at ``seed`` writes."""
     return trajectories_root(mock=mock) / f"{name}_{model_slug(model_name)}_seed{seed}"
 
 
@@ -174,33 +149,7 @@ def check_env_vars(required: Sequence[str] = REQUIRED_ENV_VARS) -> None:
 
 
 def require_cuda(component: str) -> None:
-    """Fail fast if no CUDA device is usable.
-
-    Every GPU worker calls this before loading a model, because the failure it
-    guards against is silent rather than loud: ``device_map="auto"`` places the
-    model on the CPU when it sees zero devices, and the run then produces
-    *correct* numbers about a hundred times slower. One dead GPU on a rental box
-    took NVML down with it and cost 73 hours of CPU forward passes that way, so
-    the cheap check earns its place.
-
-    Note that a healthy GPU is not enough: a sibling card that has fallen off
-    the bus breaks NVML enumeration for the whole machine, which is why this
-    reports the driver's own message rather than assuming the device is merely
-    busy.
-
-    The check has to answer without touching the CUDA runtime, which is why it
-    counts devices rather than asking ``torch.cuda.is_available()``. That call
-    goes straight to ``cudaGetDeviceCount``, and torch responds by registering
-    an ``atfork`` handler that marks every later fork of this process as a bad
-    one -- while leaving ``torch.cuda.is_initialized()`` False, since no context
-    was actually created. vLLM reads exactly that flag to decide whether its V1
-    engine may fork ``EngineCore``, so it sees a clean parent, forks, and the
-    child dies in ``torch.cuda.set_device`` with "Cannot re-initialize CUDA in
-    forked subprocess" -- 45s into engine startup, in a worker whose only sin
-    was checking that the GPU it was about to use exists. ``device_count`` asks
-    NVML first and only falls back to the runtime when NVML cannot answer,
-    which is the case this function raises on regardless.
-    """
+    r"""Fail fast if no CUDA device is usable."""
     import torch  # imported here: utils is loaded by CPU-only paths too
 
     if torch.cuda.device_count() > 0:
@@ -367,31 +316,7 @@ def wait_for_free_vram(
     probe: Callable[[], tuple[int, int] | None] = gpu_memory,
     sleep: Callable[[float], None] = time.sleep,
 ) -> None:
-    """Block until ``fraction`` of the GPU is free, then return.
-
-    Defence in depth, not a fix for a diagnosed cause. What is established is
-    only this: a worker died because another process held 12 GiB of a 24 GiB
-    card, and the vendored loader asks for 90% of it (see
-    :data:`VLLM_FREE_FRACTION`), so a holder of that size makes the next load
-    impossible rather than merely smaller. One such OOM aborted a whole family,
-    because ``run_family.sh`` runs under ``set -e``.
-
-    What is *not* established is who the holder was. vLLM 0.8.5 terminates its
-    V1 ``EngineCore`` through a finalizer on normal exit (see
-    :func:`method.vllm_patches.shutdown_vllm`), so an ordinary handover does
-    not strand one; a worker killed outright would, and so would an unrelated
-    process on the box. This function deliberately does not care which: it
-    waits for the card, and if the card does not come free it names whoever is
-    holding it, which is the thing an OOM traceback cannot.
-
-    It never kills anything. Deciding that a process is stray is a judgement
-    about the box, not about this worker, and a gate that guessed wrong would
-    take out the run it was meant to protect.
-
-    ``probe`` and ``sleep`` are injectable so the logic can be tested without a
-    GPU. A ``probe`` that returns None disables the gate -- see
-    :func:`gpu_memory`.
-    """
+    r"""Block until ``fraction`` of the GPU is free, then return."""
     waited = 0.0
     announced = False
     while True:

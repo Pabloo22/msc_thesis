@@ -1,55 +1,4 @@
-r"""RQ1 out of sample: what a predictor fitted once at $M_0$ is worth at $M_t$.
-
-:mod:`method.visualization.decay` scores a projection difference by fitting a
-line to the very checkpoint it is measured at and reporting that line's
-correlation. That answers the scientific question -- is there still a
-relationship -- but not the practical one. Nobody who has already paid for a
-fan-out at the base model refits at every checkpoint; they carry $M_0$'s line
-forward and read a prediction off it. This module scores *that*: one affine map
-per trait, fitted once, applied unchanged at every later checkpoint, and the
-error it makes there is what not refitting costs.
-
-Three facts shape everything here.
-
-*A correlation cannot see this.* Pearson $r$ is invariant under a fixed affine
-map -- $\mathrm{corr}(\alpha + \beta x, y) = \mathrm{sign}(\beta)\,
-\mathrm{corr}(x, y)$ -- so scoring $M_0$'s *predictions* by correlation would
-reproduce :func:`method.visualization.decay.correlation_table` cell for cell.
-What goes stale is the calibration, not the ordering, so the tables here are
-errors on the judge's own 0-100 scale (:func:`score_frame`) and never
-correlations.
-
-*No dataset predicts itself in the tables.* Nothing fitted on dataset $j$ --
-or on a sibling of it -- is used to predict dataset $j$, and everything else
-that was measured is fair game. The 24 validation datasets are 8 *families* of
-3 versions each (Normal, misaligned-I, misaligned-II), and the three versions
-of a family are edits of one corpus rather than three independent datasets, so
-holding out only $\mathcal{D}_j$ would leave two near-copies of it in the fit.
-The table baseline for a probe is therefore fitted on the 21 validation
-datasets outside its family (:func:`baseline_fits`, :func:`dataset_family`),
-and a gain correction is fitted leaving out both the trunk it is scored on and
-the probe it predicts (:func:`_gain_forecast`; the eight probes sit in eight
-distinct families, so dropping a probe already drops its whole family from the
-probe panel). The $t = 0$ column is therefore a real held-out error rather
-than a residual, which is what makes it the right thing to read the later
-columns against.
-
-The recalibration grid has a different job: it must draw one actual affine
-line rather than connect predictions from eight leave-one-out folds. Its
-$M_0$ line is therefore fitted on the 16 validation datasets outside the probe
-set (:func:`nonprobe_baseline_fits`) and evaluated on all eight probes. This
-display-only split does not change the leave-one-out scores in the tables.
-
-*What is cheap and what is not.* Re-measuring a projection difference at $M_t$
-costs a probe fan-out; reading $z_t$ or the trait score $b_t$ off the
-checkpoint costs nothing, since both are measured anyway. So the interesting
-question is not only whether a refit helps but whether the *free* checkpoint
-state can stand in for one -- which is what the corrected forecasters of
-:data:`FORECASTERS` are for.
-
-Reads only the frames :mod:`method.visualization.decay` already builds, so the
-whole analysis runs on a laptop holding no adapters and no activations.
-"""
+r"""Score frozen and recalibrated predictors at later checkpoints."""
 
 from __future__ import annotations
 
@@ -71,45 +20,17 @@ from method.visualization.metrics import LinearFit, linear_fit
 
 logger = logging.getLogger(__name__)
 
-#: The two quantities a line at $M_0$ can be fitted against, as
-#: ``decay_frame`` columns.
-#:
-#: ``delta_b``
-#:     $\Delta b$, how far the step *moved* the model. A prediction is turned
-#:     back into a level by adding the checkpoint's own $b_t$.
-#: ``b_next``
-#:     $b_{t+1}$, where the step *landed* it. Predicted outright, with no
-#:     reference to where the model started.
-#:
-#: These are two different claims about what fine-tuning on a dataset does, and
-#: which is right turns out to depend on what the predictor knows. A
-#: measurement taken at $M_0$ knows nothing about the checkpoint, so the only
-#: claim it can honestly make is "this dataset lands you *here*"; one taken at
-#: $M_t$ knows where the model is, so it can say "from here, this dataset moves
-#: you *that* far". The tables bear it out -- see :data:`FORECASTERS`.
+#: Change and level targets from ``decay_frame``.
 CHANGE, LEVEL = "delta_b", "b_next"
 TARGETS = (CHANGE, LEVEL)
 
-#: What every forecaster is *scored* on, whichever target it was fitted
-#: against: the behaviour the step reached.
-#:
-#: This is what makes the two targets comparable in one table rather than two.
-#: All ``K`` probes of a checkpoint branch off one model, so $b_t$ is a single
-#: constant within the scatter, and a $\Delta b$ error is therefore a
-#: $b_{t+1}$ error exactly:
-#: $\widehat{\Delta b} - \Delta b = (b_t + \widehat{\Delta b}) - b_{t+1}$.
-#: The target changes what a line is fitted on; it does not change the ruler.
+#: Common scoring target for all forecasters.
 SCORED_ON = LEVEL
 
-#: The columns identifying one scatter: a trunk at a checkpoint, which is the
-#: unit :func:`method.visualization.decay.fit_frame` collapses and the unit a
-#: forecaster is scored over here.
+#: Columns identifying one checkpoint scatter.
 CHECKPOINT = ("trait", "trunk", "t")
 
-#: How each $z_t$ coordinate is written in a table's key column, and what it
-#: is in words. Kept beside :data:`GAIN_FEATURES` because the single-component
-#: correctors are generated from :data:`method.visualization.decay.Z_COMPONENTS`
-#: and a coordinate without a label would reach a table as a bare column name.
+#: Plain-language labels for latent coordinates.
 Z_GLOSSES = {
     "p": "the neutral state's alignment with the base persona axis",
     "q": "the neutral state's alignment with the current persona axis",
@@ -117,35 +38,14 @@ Z_GLOSSES = {
     "r": "the current persona vector's length",
 }
 
-#: Checkpoint state a gain correction may be regressed on. $z_t$'s four
-#: coordinates are the drift RQ1 is about; $b_t$ is the nuisance that has to be
-#: carried beside them, because a model already near the judge's ceiling has
-#: less room to move whatever its representation is doing, and a correction
-#: credited to drift when the level explains it would be the whole finding
-#: gone wrong.
+#: State variables available to the recalibration model.
 GAIN_FEATURES = (*decay.Z_COMPONENTS, "b_t")
 
-#: The error summaries :func:`score_frame` reports per scatter.
-#:
-#: ``rmse`` and ``mae`` say how far off the prediction was, in judge points.
-#: ``bias`` -- the mean *signed* error -- says whether it was off in one
-#: direction, which is what a stale slope looks like: as a trunk drifts, the
-#: frozen line goes on promising the behaviour change $M_0$ would have made and
-#: over-predicts every probe at once. That is invisible to ``rmse``, which
-#: cannot tell a systematic offset from scatter.
-#:
-#: Only a forecaster carrying $M_0$'s intercept has a bias worth reporting.
-#: Least squares with a free intercept leaves residuals summing to zero, so the
-#: refit-at-$t$ row of a bias table is $0.0$ at every checkpoint by
-#: construction -- see :data:`BIASED_MODELS`.
+#: Error metrics reported per checkpoint scatter.
 METRICS = ("rmse", "mae", "bias")
 
 
-#: The fold that holds nothing out: the line fitted on the whole validation
-#: fan. It is what a probe whose *family* the fan never covered falls back to,
-#: since a corpus nobody fine-tuned on at $M_0$ cannot be in any fit and so
-#: cannot leak from one, and what :func:`gain_frame` uses when asked for the
-#: plain diagnostic.
+#: Sentinel for the full validation fan.
 WHOLE_FAN = None
 
 #: Points a fold needs before :func:`method.visualization.metrics.linear_fit`
@@ -154,17 +54,7 @@ MIN_FIT_POINTS = 2
 
 
 def dataset_family(dataset_id: str) -> str:
-    """``"mistake_gsm8k/misaligned_2"`` -> ``"mistake_gsm8k"``.
-
-    A dataset id names a corpus and the version of it that was fine-tuned on.
-    The three versions of one family are edits of the same prompts, so they are
-    not three independent observations of the $M_0$ law, and a leave-one-out
-    fold that drops only the exact id keeps two near-copies of the held-out
-    point in the fit. Every fold here therefore drops the family.
-
-    An id carrying no version is its own family, so a synthetic or
-    already-collapsed identifier still groups as *something*.
-    """
+    """Return the corpus family prefix of a dataset ID."""
     family, _, _ = dataset_id.partition("/")
     return family
 
@@ -206,60 +96,13 @@ class Baselines:
 
 
 def baseline_fits(validation: pd.DataFrame) -> Baselines:
-    r"""$M_0$'s lines, fitted leave-one-family-out over the validation fan.
-
-    The fan covers all 24 datasets at the base model, 8 of which the decay
-    experiment goes on to probe (section 5). Those 24 are 8 families of 3
-    versions, and a fold drops the held-out dataset's whole family
-    (:func:`dataset_family`): to predict dataset $j$ this fits on the 21
-    datasets from the other 7 families, so neither $j$ nor either of its two
-    sibling versions is in the line that scores it and the $t = 0$ column is a
-    real held-out error rather than an in-sample residual.
-
-    Dropping the family rather than the single id is what makes that claim
-    true. The three versions of a family are the same prompts at three
-    strengths of the trait, so they are near-copies: a line fitted with
-    ``evil/normal`` and ``evil/misaligned_1`` still in it has effectively been
-    shown where ``evil/misaligned_2`` lands, and $\alpha$ and $\beta$ come out
-    tuned to the very corpus they are about to be scored on.
-
-    Leave-one-out rather than a fixed probe/non-probe split, and the reason is
-    consistency with the correction. A gain model reads the *other* probes'
-    outcomes at every checkpoint of the other trunks (:func:`_gain_forecast`);
-    a base line fitted on the 16 non-probe datasets would meanwhile pretend
-    those same probes had never been fine-tuned on at all. Both cannot be true
-    of one practitioner. Leave-one-out keeps the test point just as clean and
-    states the rule once for the whole module: **nothing fitted on dataset $j$
-    or on a sibling version of it is used to predict dataset $j$**, and
-    everything else that was measured is fair game.
-
-    It is also what the RQ1 question actually asks. The quantity of interest is
-    how well a line fitted at $M_0$ predicts a dataset it has not seen, and
-    leave-one-out is the standard estimator of exactly that. Fitting on 16 and
-    scoring a fixed 8 is one train/test split of the same thing -- a wastier
-    one, and one whose split can be unrepresentative.
-
-    Fitted per trait and pooled over seeds: the persona vector and the judge
-    are both per trait, so two traits share no units, while two seeds of one
-    trait are replicates of one measurement.
-
-    One set of lines per entry of :data:`TARGETS`, since a line fitted to
-    predict how far a step *moves* the model is not the line that predicts
-    where it *lands*, and both are wanted.
-
-    A trait whose fan is missing or too small to fit simply has no entry, and
-    every forecaster resting on it reports NaN rather than a number the sweep
-    did not support.
-    """
+    r"""Fit per-trait $M_0$ lines with leave-one-family-out folds."""
     fits: dict[tuple[str, str, str | None], LinearFit] = {}
     if validation.empty:
         return Baselines(fits)
     for trait, group in validation.groupby("trait"):
         families = group["dataset"].astype(str).map(dataset_family)
-        # The worst fold is the one dropping the largest family. A trait that
-        # cannot survive it registers *nothing*, not even the whole-fan line:
-        # Baselines.line falls back to that line, and falling back to a fit
-        # containing dataset j is the leak this function exists to prevent.
+        # Reject traits whose smallest fold cannot support a fit.
         smallest_fold = len(group) - int(families.value_counts().max())
         if smallest_fold < MIN_FIT_POINTS:
             logger.warning(
@@ -324,13 +167,7 @@ def nonprobe_baseline_fits(
     return Baselines(fits)
 
 
-#: What a forecaster does: turn one series' column, over the rows it was
-#: measured on, into a predicted $b_{t+1}$ aligned to those rows.
-#:
-#: A *level*, not a change, whichever target the forecaster was fitted on. That
-#: is what lets one table hold both (see :data:`SCORED_ON`), and it puts the
-#: conversion in the one place that knows which target was used rather than in
-#: every consumer downstream.
+#: What a forecaster does: turn one series' column, over the rows it was measured on, into a predicted $b_{t+1}$ aligned to those rows.
 Predict = Callable[[pd.DataFrame, str, Baselines], pd.Series]
 
 
@@ -447,29 +284,7 @@ def _corrected(features: Sequence[str], target: str = CHANGE) -> Predict:
     return predict
 
 
-#: The forecasters, in the order a table lists them: the frozen line under each
-#: of its two targets, the two things a free reading of the checkpoint can do
-#: to it, and the refit that bounds them all.
-#:
-#: The first two differ only in what $M_0$'s line was fitted to predict, and
-#: which of them wins turns on what the projection difference knows. A
-#: measurement frozen at $M_0$ -- $\Delta P_0$ and both hatted rungs -- does
-#: better predicting the *level* the step lands at, because it has no way to
-#: know where the checkpoint currently is and "this dataset lands you here" is
-#: the only claim it is entitled to. $\Delta P_t$, whose encoder and answers
-#: are both current, does better predicting the *change*: it knows where the
-#: model is, so it can say how far from there the step will move it. That
-#: crossover is what ``exp2_forecast_target_rmse`` tabulates.
-#:
-#: The two corrections differ only in what the gain is regressed on, which is
-#: the comparison that makes either readable. $z_t$ is the drift RQ1 names;
-#: $b_t$ is the level, equally free to read and not a representation claim at
-#: all. A $z_t$ correction that beats the frozen line says nothing until it is
-#: put beside a $b_t$ correction that costs the same.
-#: The checkpoint states a gain may be regressed on: the latent state fitted
-#: whole, each of its coordinates alone, and the behaviour level as the control
-#: they all have to beat. Named once here because each of them is registered
-#: twice over -- see :func:`_correction_pair`.
+#: Recalibration states, including latent coordinates and behaviour level.
 CORRECTION_STATES: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
     ("z", z_symbol(), "the latent state", decay.Z_COMPONENTS),
     *(
@@ -577,28 +392,13 @@ HEADLINE_MODELS = ("step0", "oracle")
 TARGET_MODELS = ("step0", "step0_level", "oracle")
 
 #: The pre-specified target for each projection variant in the RMSE headline.
-#: A cached predicted-answer representation is a measurement of where a dataset
-#: lands and is fitted directly to $b_{t+1}$. Once those answers are refreshed
-#: at $M_t$, the projection carries checkpoint-relative information and is
-#: fitted to the change $\Delta b_{t+1}$ instead. Both forecasters return a
-#: predicted level and are scored against the same realised $b_{t+1}$.
 HEADLINE_MODEL_BY_SERIES = {
     series: model
     for _, _, members in decay.REFRESH_GROUPS
     for series, model in zip(members, ("step0_level", "step0"), strict=True)
 }
 
-#: Which target $f_0$ is fitted against for each projection, as the chapter
-#: fixes it: a projection whose predicted responses were regenerated at the
-#: checkpoint is fitted to the change $\Delta b_{t+1}$, and one still carrying
-#: $M_0$'s cached responses to the level $b_{t+1}$. $\Delta P_0$ caches
-#: everything and so takes the level with the hatted rungs.
-#:
-#: The same rule has to reach the corrected forecasts, not only the bare ones.
-#: A correction rescales what is fed to $f_0$ and says nothing about what $f_0$
-#: was fitted to predict, so comparing a correction fitted on $\Delta b$
-#: against a baseline fitted on $b_{t+1}$ would score the target choice and
-#: call it a gain.
+#: Target matched to each projection series.
 MATCHED_TARGET_BY_SERIES = {
     "p0": LEVEL,
     **{
@@ -625,29 +425,7 @@ def matched_model(model: str, series: str) -> str:
 #: ones carrying $M_0$'s intercept forward (see :data:`METRICS`).
 BIASED_MODELS = tuple(f.name for f in FORECASTERS if not f.refits)
 
-#: The forecasters a correction table compares, on the one projection that
-#: needs correcting. $\Delta P_0$ is the rung nothing at $M_t$ has refreshed,
-#: so it is where a free reading of the checkpoint has something to fix; the
-#: refit bounds what any of them could do.
-#:
-#: Read top to bottom it is one argument. The frozen line is the bar. $g(z_t)$
-#: is the latent state fitted whole. Its four coordinates then appear one at a
-#: time, and $g(b_t)$ -- the behaviour level, equally free to read and not a
-#: representation claim at all -- is the control every one of them has to beat
-#: before any of this is about drift.
-#:
-#: The single-coordinate rows are not there to find a winner. They are there
-#: because $g(z_t)$ spends five parameters on a fold of roughly fourteen
-#: checkpoints drawn from two trunks, and "you overfitted" is the first thing
-#: anyone will say about a correction that fails. Each coordinate on its own
-#: costs the same two parameters as $g(b_t)$, so a correction that still fails
-#: cannot be failing for want of parsimony. That they also answer RQ1's own
-#: sub-question -- which part of the projection difference carries the drift --
-#: is what makes them worth the rows rather than a footnote.
-#:
-#: All of them are reported every time, never the best of them. Six trait and
-#: trunk cells against seven models is enough forks to find something, and a
-#: row that only appears when it wins is not evidence.
+#: Forecasters compared in recalibration tables.
 CORRECTION_MODELS = (
     "step0",
     "step0_z",
@@ -667,21 +445,7 @@ CORRECTION_BIAS_MODELS = tuple(m for m in CORRECTION_MODELS if m != "oracle")
 RECALIBRATION_MODELS = ("step0_level", "oracle")
 RECALIBRATION_LABELS = {"step0_level": "Prediction", "oracle": "Oracle"}
 
-#: What the predicted-against-actual grid draws: the level fit against the
-#: refit.
-#:
-#: The level fit rather than the change fit, because that grid forecasts from
-#: $\Delta P_0$ and the level is the target $\Delta P_0$ should be fitted on
-#: (see :data:`FORECASTERS`) -- drawing the weaker of the two would be showing
-#: the frozen predictor at less than its best and calling the gap to the refit
-#: the cost of not refitting.
-#:
-#: It also makes the axes say something the change fit cannot. A level forecast
-#: never consults $b_t$, so a probe's predicted $b_{t+1}$ is the *same number*
-#: at every checkpoint: the cloud is pinned horizontally and only the truth
-#: moves under it. What the panel then shows is the checkpoint drifting out
-#: from under a fixed prediction, which is the staleness itself rather than the
-#: staleness plus the level riding up and down.
+#: Models shown in predicted-versus-actual grids.
 FORECAST_GRID_MODELS = ("step0_level", "oracle")
 
 
@@ -736,26 +500,7 @@ def gain_frame(
     *,
     without_probe: str | None = None,
 ) -> pd.DataFrame:
-    """The ideal gain per checkpoint, beside the state it might be read off.
-
-    Public because it is the diagnostic behind every corrected forecaster: a
-    correction can only work as well as ``gain`` is predictable from
-    :data:`GAIN_FEATURES`, and a table of errors says whether it worked, not
-    why.
-
-    ``without_probe`` names the probe being held out. It does two things at
-    once, which is the point: the gain is solved over every probe *but* that
-    one, and it is solved against that probe's own base line -- the one fitted
-    without it (:meth:`Baselines.line`). One argument, one fold, nothing about
-    the held-out dataset anywhere in the fit.
-
-    The default of ``None`` uses the whole scatter against the whole-fan line,
-    which is what the diagnostic itself wants: the question it asks is what the
-    right gain at a checkpoint was, not what a fold could have guessed. Against
-    the whole-fan line a $t = 0$ gain of $1$ means "no drift, nothing to
-    correct", which is the reading that makes a departure at $t > 0$ mean
-    something.
-    """
+    r"""The ideal gain per checkpoint, beside the state it might be read off."""
     panel = rows if without_probe is None else rows[rows["probe"] != without_probe]
     records = []
     for key, group in panel.groupby(list(CHECKPOINT), sort=True):
@@ -807,45 +552,7 @@ def _gain_forecast(
     features: Sequence[str],
     target: str = CHANGE,
 ) -> dict[tuple[str, str, int, str], float]:
-    r"""Predicted gain per checkpoint *and probe*, fitted on neither of them.
-
-    A corrected forecast has two ways of seeing the answer it is about to be
-    scored on, so it is held out along both.
-
-    *Leave one trunk out*, rather than one checkpoint. Consecutive checkpoints
-    of one trunk are the same trajectory a step further along, so holding one
-    out while its neighbours stay in the training set would let the correction
-    be read off the trunk it is scored on. Holding out the whole trunk asks the
-    question the table is for: does the state at a checkpoint predict the gain
-    on a trajectory the correction has never seen?
-
-    *Leave one probe out.* Every trunk fans out over the same probes, so a gain
-    fitted on the other trunks alone has still been shown how probe $j$
-    responds -- at other checkpoints, but to the same dataset -- and the
-    correction it hands back for $j$ would be part memory of $j$ rather than a
-    reading of the checkpoint. So the training checkpoints solve for their
-    ideal gain over the *other* probes (``without_probe``), and the model that
-    comes out is only ever used to predict the one that was dropped.
-
-    That is one gain model per ``(trait, held-out trunk, held-out probe)``: a
-    checkpoint's ``K`` corrected predictions come from ``K`` different models,
-    each blind to the trajectory and the dataset it is scored on. The error
-    summarised over that checkpoint is therefore a cross-validated one, which
-    is a thing a caption has to say out loud.
-
-    The ``K`` models are not near-copies of each other, and the reason is worth
-    knowing before reading a correction table. :func:`_ideal_gain` is least
-    squares on a rescaled slope, so a probe enters the gain weighted by
-    $\Delta P_0^2$ -- and one probe with several times the projection
-    difference of the rest carries most of the gain on its own. Holding *that*
-    probe out leaves the remaining panel estimating a visibly different number,
-    and the correction it hands back for the dropped probe is the honest one:
-    what the checkpoint's other probes say, extrapolated to a leverage they
-    never covered.
-
-    Fitted within a trait, since the gain is a ratio of slopes measured against
-    that trait's own persona vector and judge.
-    """
+    r"""Predicted gain per checkpoint *and probe*, fitted on neither of them."""
     forecast: dict[tuple[str, str, int, str], float] = {}
     if rows.empty or "probe" not in rows:
         return forecast
@@ -906,30 +613,7 @@ def prediction_frame(
     models: Sequence[str] | None = None,
     baselines: Baselines | None = None,
 ) -> pd.DataFrame:
-    r"""One row per ``(trunk, t, probe, series, model)``: a prediction and its truth.
-
-    ``rows`` is :func:`method.visualization.decay.decay_frame` and
-    ``validation`` is :func:`method.visualization.decay.validation_frame`; the
-    second is what the step-0 forecasters are fitted on, and without it they
-    are blank.  ``baselines`` may supply an explicitly different split for a
-    specialised consumer; by default the table's leave-one-out fits are used.
-
-    Long rather than wide because the two things built from it want different
-    shapes: :func:`score_frame` collapses each ``(checkpoint, series, model)``
-    to its error, and the grid figure draws each ``(checkpoint, model)`` as a
-    cloud of ``K`` points against the identity line.
-
-    Every forecaster produces ``predicted_b_next``, the behaviour it says the
-    step will reach, whichever target its line was fitted on (see
-    :data:`SCORED_ON`); ``b_next`` beside it is what the step actually reached,
-    and ``error`` is the difference. ``predicted_delta_b`` is the same
-    prediction as a change, read back by subtracting the level the checkpoint
-    started from, and pairs with ``delta_b`` the way the other two pair. Both
-    views are carried so that a forecaster fitted on the level and one fitted
-    on the change can be compared in either, and so the names say which is
-    which -- a column called ``predicted`` beside one called ``actual`` stops
-    being honest the moment the two stop being the same quantity.
-    """
+    r"""One row per ``(trunk, t, probe, series, model)``: a prediction and its truth."""
     wanted = [name for name in (series or decay.SERIES)]
     unknown = set(wanted) - set(decay.SERIES_COLUMNS)
     if unknown:

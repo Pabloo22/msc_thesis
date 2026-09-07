@@ -1,41 +1,4 @@
-"""Outbound notifications for long, unattended GPU runs.
-
-A trajectory is hours of rented GPU time that nobody is watching. Two things
-are worth paying to learn about: that a run *broke* (so the box can be stopped
-rather than billed for a dead process) and how fast it is *going* (so a
-family's total cost can be projected before it is spent).
-
-Mail goes out through Resend's HTTP API over the standard library alone. That
-is deliberate rather than incidental: the image tag a rental box is booked
-against is a digest of ``poetry.lock`` (see ``docs/cloud_setup.md``), so adding
-a package purely to send an email would mean rebuilding and pushing ~17 GB
-before the next rental could start.
-
-Nothing in this module is allowed to raise. A notifier that kills the run it is
-reporting on is strictly worse than no notifier, so every failure here is
-logged and swallowed.
-
-Two channels, because one of them cannot cover the case that matters most:
-
-:class:`Notifier`
-    Email, sent *by* the box over the box's network. It carries the detail --
-    the traceback, the timing table, the projected cost -- and it is the one
-    that usually arrives. It cannot arrive when the network is what failed,
-    when the OOM killer sends SIGKILL (no ``finally`` block runs), or when the
-    instance is preempted out from under the process.
-:class:`Heartbeat`
-    Pings an external watchdog on a fixed schedule. The *absence* of pings is
-    the alarm, so nothing on the box has to be alive to raise it. It carries no
-    detail at all.
-
-They are complementary, not alternatives: the email says what went wrong, and
-the heartbeat is what still works when the box is gone.
-
-:class:`Throttle` sits in front of the email channel because the mail provider
-has a daily quota: a family is dozens of trajectories, each its own process,
-each mailing on the way out, and a quota reached at noon means the failure at
-three in the afternoon is the one that does not arrive.
-"""
+"""Send optional, rate-limited run notifications."""
 
 from __future__ import annotations
 
@@ -152,7 +115,7 @@ class Throttle:
     a sequence of separate ``run_trajectory`` processes, so a counter living in
     one of them would be reset by the very thing it is meant to count.
 
-    Keys are the caller's business. They exist so that one chatty category
+    Keys are caller-defined so one noisy category
     cannot starve another -- a run's routine "done" mails and its failure mails
     are throttled apart, and a failure is never suppressed because a success
     happened to go out ten minutes earlier.
@@ -294,9 +257,7 @@ class Notifier:
         #: rentals working the same family otherwise send indistinguishable
         #: mail.
         self.tag = tag
-        #: Defaults to an unlimited one so that constructing a notifier by hand
-        #: -- a test, a notebook -- does not silently start writing state to
-        #: the repo root or dropping the mail it was asked to send.
+        #: Manual construction defaults to no throttling.
         self.throttle = throttle or Throttle(interval=0.0)
 
     @classmethod
@@ -408,26 +369,7 @@ def _describe_http_error(exc: Exception) -> str:
 
 
 class Heartbeat(AbstractContextManager["Heartbeat"]):
-    """Fixed-period pings to an external watchdog (healthchecks.io or alike).
-
-    The watchdog raises the alarm when pings stop for longer than a grace
-    period, so something has to decide what "too long" means. Pinging once per
-    finished checkpoint would make that a property of the workload -- a
-    behaviour eval on a 7B model and one on the 0.5B proxy differ by more than
-    an order of magnitude -- so the grace would need re-tuning per experiment,
-    and would either cry wolf or stay quiet for hours. Pinging from a thread on
-    a fixed period makes the expected interval a constant chosen here, so the
-    grace is a small constant too and never needs tuning.
-
-    The thread is a daemon: it must never be the reason a finished run fails to
-    exit, and its pings mean "this process still exists", which stops being
-    true at exactly the moment the process does.
-
-    On the way out it pings ``/fail`` for an exception and ``/`` for success,
-    so a failure that *does* have a working network raises the alarm at once
-    rather than after the grace period. The timeout remains the backstop for
-    the failures that cannot report themselves.
-    """
+    r"""Fixed-period pings to an external watchdog (healthchecks.io or alike)."""
 
     #: Chosen so the watchdog's grace can be a small constant. Frequent enough
     #: that a five-minute grace is many missed pings rather than one, cheap

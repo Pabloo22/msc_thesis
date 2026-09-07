@@ -186,29 +186,7 @@ def synthetic_hysteresis_frame(
     base_behavior: float = 8.0,
     realigned_floor: float = 12.0,
 ) -> pd.DataFrame:
-    r"""Fake data for the RQ2 hysteresis bar chart ("Is a model trained on
-    trait-eliciting data more prone to EM?").
-
-    One row per (dataset, condition, seed), covering every arm in
-    :data:`HYSTERESIS_CONDITIONS`, so the demo figure has the same bars the real
-    one will. Encodes the two effects the chart has to separate: ``same``/``diff``
-    move further per step than a first exposure (the hysteresis hypothesis),
-    while ``normal1``/``normal2`` move *less* and by increasing amounts
-    (plasticity loss, accumulating with the number of prior steps) -- so a naive
-    reading of same/diff against the baseline would credit hysteresis with a gap
-    that plain fine-tuning already explains part of.
-
-    Emits levels as well as deltas, matching
-    :func:`~method.visualization.collect.hysteresis_frame`: ``behavior_base``
-    ($b_0$), ``behavior_before`` ($b_{T-1}$, the floor the final step starts
-    from), ``behavior`` ($b_T$) and ``delta_behavior`` ($b_T - b_{T-1}$).
-
-    The floors are what make this fixture worth having. ``same``/``diff`` enter
-    their final step at ``realigned_floor``, *above* $b_0$ -- re-alignment is
-    incomplete, which is the premise of the experiment -- so their $\Delta b$ is
-    charged from higher up and understates where they end. That is the whole
-    reason the figure plots levels against a $b_0$ line rather than deltas.
-    """
+    r"""Fake data for the RQ2 hysteresis bar chart ("Is a model trained on trait-eliciting data more prone to EM?")."""
     rng = np.random.default_rng(seed)
     rows = []
     for dataset in datasets:

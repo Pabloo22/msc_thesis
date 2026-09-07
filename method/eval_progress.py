@@ -1,32 +1,4 @@
-"""Crash-resumable generation and judging for the vendored ``eval_persona``.
-
-The vendored ``eval.eval_persona.eval_batched`` generates every answer with
-vLLM, fires every judge request, keeps all of it in memory, and only then does
-``main`` write the CSV. Nothing is durable until the last request lands, so any
-failure -- one 500 from OpenAI, a CUDA OOM in the next step, a dropped SSH
-session -- throws away the entire pass. At EXP1's defaults one pos/neg
-extraction pass is 2000 generated answers and 4000 billed judge requests, none
-of them recoverable.
-
-This module keeps the computation identical and makes both expensive halves
-durable, in a progress directory beside the artifact being built:
-
-``generations.jsonl``
-    written once, atomically, as soon as vLLM is done. Its presence means it is
-    complete, which is what lets a resumed run skip generation entirely -- and
-    lets the caller skip loading the model at all.
-``judgments.jsonl``
-    appended and flushed per completed request, so a run that dies mid-pass
-    re-asks only for what is genuinely missing.
-``meta.json``
-    what the progress belongs to. A changed judge invalidates the judgments
-    alone; a changed model, trait or sample count invalidates the generations
-    too, since row indices would no longer line up.
-
-Only ``flush`` per record, not ``fsync``: the failures this protects against
-are a dying process, not a dying machine, and the second would cost 4000
-syncs to insure against.
-"""
+"""Track resumable persona-evaluation progress."""
 
 from __future__ import annotations
 

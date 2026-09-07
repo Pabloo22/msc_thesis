@@ -1,21 +1,4 @@
-"""How long a trajectory's stages took, and what the rest of it will cost.
-
-Rented GPU time is the budget this project actually spends, and the only way to
-project it before it is spent is to measure the units that make it up. Every
-stage a run executes is timed and appended to ``timings.jsonl`` in the run
-directory; every finished trajectory is appended to a family-wide
-``runlog.jsonl`` beside the run directories. Both are plain jsonl, appended and
-flushed as work completes, so a preempted box still leaves behind everything it
-had learned about its own speed.
-
-The estimates here are deliberately simple -- a per-stage median over what this
-run has already done, multiplied by what it has left. A trajectory repeats the
-same handful of stages at every checkpoint, so the median is over comparable
-work rather than a curve fit to noise, and it needs no calibration when the
-model, the example counts or the box's GPU change.
-
-Nothing in this module knows how a report is delivered; see :mod:`method.notify`.
-"""
+"""Record and estimate experiment runtimes."""
 
 from __future__ import annotations
 
@@ -44,12 +27,7 @@ CHECKPOINT_STAGES = ("behavior", "persona_vector", "h_neutral", "latent", "probe
 #: Stages executed once per *step*, i.e. at every checkpoint but the last.
 STEP_STAGES = ("delta_p", "train")
 
-#: Stages performed once per DeltaP *view* rather than once per checkpoint
-#: (see :class:`method.config.DeltaPView`). They are timed apart because the
-#: views do very different work for the same name: one re-reads answers
-#: generated at ``t = 0``, one generates its own, and one only re-projects
-#: tensors already on disk. Pooling them would price a generation pass at the
-#: median of a projection.
+#: Stages performed once per DeltaP *view* rather than once per checkpoint (see :class:`method.config.DeltaPView`).
 PER_VIEW_STAGES = ("probes", "delta_p")
 
 #: The view whose stages keep their unqualified names -- the default one, whose
@@ -88,12 +66,7 @@ def _expand(stages: Sequence[str], views: Sequence[str]) -> list[str]:
             out.append(stage)
     return out
 
-#: Below this, a stage cannot have done real work: every genuine stage loads a
-#: model onto the GPU first, which alone costs tens of seconds. What lands
-#: under it is a resumed run's cache hit, skipping straight past an artifact
-#: that already exists. Those are excluded from the estimates, since a resumed
-#: run would otherwise conclude from a directory of instant hits that the
-#: expensive work ahead of it is instant too.
+#: Below this, a stage cannot have done real work: every genuine stage loads a model onto the GPU first, which alone costs tens of seconds.
 _TRIVIAL_SECONDS = 5.0
 
 

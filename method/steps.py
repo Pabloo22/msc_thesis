@@ -1,13 +1,4 @@
-"""Per-step measurement and training for a trajectory.
-
-Every function here is idempotent and resumable: it checks for its output
-artifact first and returns early if present. Because all writes are atomic (see
-:mod:`method.store`), presence implies completeness, so there is no manifest to
-keep in sync.
-
-Artifact names live in one place, :class:`Artifacts`, since both the producers
-here and the resume checks depend on them agreeing.
-"""
+"""Implement cached measurement steps for trajectories."""
 
 from __future__ import annotations
 
@@ -54,26 +45,11 @@ class Artifacts:
     BEHAVIOR_JSON = "behavior.json"
     EXTRACT_POS = "extract_pos.csv"
     EXTRACT_NEG = "extract_neg.csv"
-    # The filename is the cache key, and it carries the convention because
-    # nothing else does: the plain "latent.json" beside it holds $p$ and $q$ as
-    # unnormalised projections, and :func:`compute_step_latent` would serve
-    # those back forever under the old name with no error and no staleness
-    # warning. Renaming rather than deleting keeps the old values readable for
-    # comparison and means a box that pulls a stale bundle cannot silently mix
-    # the two conventions.
+    # The filename is the cache key, and it carries the convention because nothing else does: the plain "latent.json" beside it holds $p$ and $q$ as unnormalised projections, and.
     LATENT_JSON = "latent_cosine.json"
     NEUTRAL_ANSWERS = "neutral_answers.jsonl"
 
-    # DeltaP describes the update a checkpoint is *about to* receive, so it is
-    # not a property of the checkpoint alone: it must be keyed by which
-    # examples the next step trains on. Trajectories sharing a prefix and then
-    # diverging land on the same weights_id, and an unkeyed name would make the
-    # second one silently read the first one's numbers.
-    # The view joins the name for the same reason, one level up: one
-    # checkpoint can hold the same examples projected onto two axes and
-    # differenced against two sets of answers. The default view keeps the
-    # unqualified name it has always had, so every measurement already in the
-    # store stays a cache hit (see :meth:`method.config.DeltaPView.key`).
+    # DeltaP describes the update a checkpoint is *about to* receive, so it is not a property of the checkpoint alone: it must be keyed by which examples the next step trains on.
     @staticmethod
     def delta_p_json(sample_id: str, view: DeltaPView) -> str:
         return f"{view.key('delta_p')}_{sample_id}.json"
@@ -197,26 +173,7 @@ def measure_behavior(
 
 
 def behavior_record(cfg: TrajectoryConfig, t: int, store: Store) -> dict[str, float]:
-    """The behaviour summary for checkpoint ``t``, derived from the scored rows.
-
-    Read from ``behavior.csv`` rather than the ``behavior.json`` written beside
-    it, because that JSON is only written when the eval actually *runs*.
-    :func:`measure_behavior` returns early once the CSV exists, so a checkpoint
-    measured before a field was added to the summary would keep the old shape
-    for good -- and checkpoints are shared, so whichever experiment measures one
-    first fixes its format for every experiment that follows.
-
-    The acute case is the base checkpoint. Every trajectory of every family
-    resolves to one ``M_0`` (:meth:`~method.config.TrajectoryConfig.weights_key`
-    normalises the seed away at ``t=0``, and excludes trait), so exp3 having
-    measured it first would leave exp2's ``t=0`` record without ``SE`` while its
-    own ``t>=1`` records carried it -- and ``t=0`` is precisely what the
-    validation fan differences against.
-
-    Deriving from the raw rows removes the staleness by construction: there is
-    no cached summary left to invalidate. Costs one CSV parse per checkpoint,
-    against an eval that just generated and judged hundreds of completions.
-    """
+    r"""The behaviour summary for checkpoint ``t``, derived from the scored rows."""
     csv = store.trait_measurement(
         get_weights_id(cfg, t), cfg.trait, Artifacts.BEHAVIOR_CSV
     )
@@ -500,27 +457,7 @@ def compute_delta_p(
     *,
     view: DeltaPView = DeltaPView(),
 ) -> dict[str, float]:
-    r"""DeltaP for the dataset step ``t`` is about to train on.
-
-    ``view`` selects which of the projection differences to take -- which axis,
-    and whose answers stand in for the predicted term (see
-    :class:`method.config.DeltaPView` for the ladder they form). The default is
-    the one every existing measurement took: the checkpoint's own axis
-    $v^{(t)}$, differenced against M_0's answers. That gives $\Delta P_0$ at
-    ``t = 0`` and $\Delta \hat{P}_t$ after it.
-
-    Freezing the *answers* at M_0 keeps the measurement comparable across steps
-    and out of the degenerate case where a drifted model stops producing usable
-    text; ``PredictedSource.CURRENT`` gives that up deliberately, and pays a
-    generation pass per checkpoint for it. Freezing the *axis* at $v^{(0)}$
-    costs nothing at all: the activations below do not depend on it, so a
-    second view over a measured checkpoint is a second projection over tensors
-    that are already on disk.
-
-    ``sample_id`` identifies those training examples and keys every artifact
-    written here, because ``weights_id`` alone describes the steps already
-    taken and says nothing about the update being measured.
-    """
+    r"""DeltaP for the dataset step ``t`` is about to train on."""
     wid = get_weights_id(cfg, t)
     dp_key = _delta_p_key(cfg, sample_id)
     out = store.trait_measurement(wid, cfg.trait, Artifacts.delta_p_json(dp_key, view))
@@ -655,29 +592,7 @@ def measure_probes(
     view: DeltaPView = DeltaPView(),
     on_probe_done: Callable[[], None] | None = None,
 ) -> dict[str, dict[str, float]]:
-    """DeltaP at checkpoint ``t`` for every probe dataset, keyed by ``dataset_id``.
-
-    ``compute_delta_p`` has no notion of "the step about to run" -- it measures
-    whichever examples it is handed at whichever checkpoint. Probing is just
-    calling it for datasets the trajectory is *not* training on right now, which
-    is what turns DeltaP from one value per dataset into a series over time.
-
-    Defaults to ``cfg.probes``; pass ``probes`` explicitly to measure a
-    different set (see :mod:`method.probe_base`, which probes every dataset at
-    the base checkpoint). Requires ``v_t``, so callers must have run
-    :func:`extract_persona_vector` for this checkpoint first.
-
-    ``view`` is passed straight through to :func:`compute_delta_p`, so one
-    checkpoint yields each of the projection differences by being called once
-    per view. It takes a single view rather than a set: a caller that wants
-    several iterates ``cfg.delta_p.views``, which keeps the results separate
-    all the way to the records they are written into.
-
-    ``on_probe_done``, if given, runs after each probe's DeltaP lands on disk --
-    a hook a caller can use to sync that one result immediately rather than
-    waiting on the whole (potentially long) list of probes. This module stays
-    unaware of what the hook does; ``steps.py`` has no sync-layer import.
-    """
+    r"""DeltaP at checkpoint ``t`` for every probe dataset, keyed by ``dataset_id``."""
     probes = cfg.probes if probes is None else probes
     results: dict[str, dict[str, float]] = {}
     for probe in probes:

@@ -32,20 +32,9 @@ class StepRecord:
     t: int
     weights_id: str
     behavior: dict[str, float]
-    #: Keyed by h_neutral source, e.g. ``"base"``. Empty on a *branch* endpoint,
-    #: which by design measures only ``b`` (see
-    #: :class:`method.config.MeasurementLevel`): ``z`` is a property of the
-    #: trunk checkpoint the branch left from, and the trunk records it there.
-    #: Emptiness is therefore the marker that distinguishes the two kinds of
-    #: record, which is why it defaults rather than being required.
+    #: Keyed by h_neutral source, e.g.
     z: dict[str, dict[str, float]] = field(default_factory=dict)
-    #: $\Delta \hat{P}_t$ for ``next_dataset``: axis and encoder current, the
-    #: predicted term still $M_0$'s cached answers. Unqualified because it is
-    #: the key every trajectory on disk has always written (see
-    #: :meth:`method.config.DeltaPView.key`) -- the hat lives in
-    #: :attr:`delta_p_current`'s absence, not in this name. Analysis frames
-    #: spell it out; see :data:`method.visualization.decay.SERIES_COLUMNS`.
-    #: Absent on the final checkpoint.
+    #: $\Delta \hat{P}_t$ for ``next_dataset``: axis and encoder current, the predicted term still $M_0$'s cached answers.
     delta_p: dict[str, float] | None = None
     next_dataset: str | None = None  # "dataset/version"; absent on final checkpoint
     #: DeltaP for datasets measured at *this* checkpoint whether or not the
@@ -54,12 +43,7 @@ class StepRecord:
     #: last, unlike ``delta_p``. Empty for trajectories saved before probing
     #: existed, which is why it defaults rather than being required.
     probes: dict[str, dict[str, float]] = field(default_factory=dict)
-    #: The same two quantities under the other views of the projection
-    #: difference (see :class:`method.config.DeltaPView`): ``_v0`` holds the
-    #: axis at $v^{(0)}$ while the encoder moves, ``_current`` lets the
-    #: checkpoint answer the prompts itself, and ``_v0_current`` does both --
-    #: the fourth corner of that 2x2. Empty on every run that did not ask for
-    #: them, which is all of them but the families scoped to pay.
+    #: The same two quantities under the other views of the projection difference (see :class:`method.config.DeltaPView`): ``_v0`` holds the axis at $v^{(0)}$ while the encoder moves.
     delta_p_v0: dict[str, float] | None = None
     probes_v0: dict[str, dict[str, float]] = field(default_factory=dict)
     delta_p_current: dict[str, float] | None = None
@@ -135,12 +119,7 @@ class Trajectory:
     seed: int
     steps: tuple[StepRecord, ...]
     source: Path | None = None
-    #: How this run's ``p`` and ``q`` are normalised (see
-    #: :data:`method.latent.CONVENTION`). Runs written before ``z`` became
-    #: cosines carry no marker, so their absence *is* the legacy answer -- and
-    #: since the two conventions differ by a fixed rescaling, mixing them in
-    #: one figure is silent rather than obviously broken. See
-    #: :attr:`z_is_stale`.
+    #: How this run's ``p`` and ``q`` are normalised (see :data:`method.latent.CONVENTION`).
     z_convention: str = LEGACY_Z_CONVENTION
 
     @classmethod
