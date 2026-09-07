@@ -163,12 +163,11 @@ One important consideration when using a state is its cost. For example, refresh
     \setlength{\tabcolsep}{2pt}
     \input{plots/real/exp2/exp2_forecast_supertable.tex}
     \caption{Each cell is the RMSE in judge points, averaged over the
-    three trunks and the seven checkpoints using the aforementioned leave-one-out cross-validation protocol. The $c_t\equiv1$ corresponds to not using dynamic recalibration. Bold marks the smallest error in a trait's target block for each
-    projection.}
+    three trunks and the seven checkpoints using the aforementioned leave-one-out cross-validation protocol. The $c_t\equiv1$ corresponds to not using dynamic recalibration. Bold marks the smallest error for each trait and projection, taken across both target blocks; the refit forecaster $f_t$ is excluded from this comparison, since it is a ceiling rather than a candidate.}
     \label{tab:forecast-supertable}
 \end{table}
 
-As we can see, 
+As we can see, the results are mixed. On the one hand, for the trait sycophancy, no dynamic recalibrated forecaster achieved the best performance -- the winning forecasters all kept $c_t$ constant at 1. However, it helped 
 
 
 % The same encoding laid out the other way -- all six variants in one panel
