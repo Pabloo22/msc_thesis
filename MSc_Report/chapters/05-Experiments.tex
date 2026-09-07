@@ -184,27 +184,10 @@ In this experiment, we investigated whether a previously misaligned model is mor
     \item Different ($X'\ N\ X$): the model is fine-tuned on a trait-eliciting dataset $X'$ other than $X$, then on a normal dataset, and then on $X$.
 \end{itemize}
 
-
 \begin{figure}[H]
     \centering
     \input{figures/exp3_design}
-    \caption{The second experiment design. Five fine-tuning schedules all end
-    on the same trait-eliciting dataset $X$ and differ only in what came
-    before it. Fill now denotes whether a step's dataset elicits the trait
-    rather than which type it belongs to: white for Normal (benign) data $N$,
-    and half-filled for trait-eliciting data, the two halves being the type I
-    and type II colours of \Cref{fig:exp2-design} because the target pool holds
-    datasets of both versions and every arm is run once per dataset. Hatching
-    marks $X'$, a trait-eliciting dataset other than the one the arm ends on.
-    Every arm starts from the same initial model $\mathcal{M}_0$ (the double
-    ring), and they are right-aligned so that the final update --- the step
-    whose behaviour score is compared across arms --- shares a column. \emph{Baseline} meets $X$
-    for the first time. \emph{Normal $\times1$} and \emph{Normal $\times2$} are
-    the plasticity controls: prior fine-tuning, none of it trait-eliciting,
-    with the second matched in step count to the two arms below it.
-    \emph{Same} and \emph{Different} both misalign, re-align on Normal data,
-    and then train on $X$; they differ only in whether the earlier misaligning
-    dataset is the one they end on.}
+    \caption{The second experiment design, as described above. Nodes represent fine-tuning events, and their colour denotes the type of dataset used. Trait-eliciting nodes are half-filled to indicate that they could represent training on either misalignment I or II datasets.}
     \label{fig:exp3-design}
 \end{figure}
 
