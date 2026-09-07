@@ -1,4 +1,15 @@
-"""Synchronise experiment artifacts with local or rclone remotes."""
+"""Synchronise experiment artifacts with local or rclone remotes.
+
+The commands that can be run are:
+
+- ``poetry run python -m method.sync push``
+- ``poetry run python -m method.sync pull``
+- ``poetry run python -m method.sync push-runs``
+- ``poetry run python -m method.sync push-adapter <id>``
+- ``poetry run python -m method.sync push-measurements <id>``
+- ``poetry run python -m method.sync push-sample <id>``
+- ``poetry run python -m method.sync pull-run <id>``
+"""
 
 from __future__ import annotations
 
