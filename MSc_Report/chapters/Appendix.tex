@@ -25,6 +25,42 @@
     \label{tab:forecast-bias}
 \end{table}
 
+\begin{table}[H]
+    \centering
+    \singlespacing
+    \scriptsize
+    \setlength{\tabcolsep}{2pt}
+    \input{plots/real/exp2/exp2_forecast_supertable.tex}
+    \caption{The recalibration sweep in full: every state a gain may be
+    regressed on, against every projection difference measured, under both of
+    $f_0$'s targets. Each cell is the RMSE in judge points, averaged over the
+    three trunks and the seven checkpoints. Traits are kept apart because a
+    persona vector and a judge are defined per trait. The $c_t\equiv1$ row
+    heading each block leaves the initial forecaster alone; it is the row every
+    correction below it has to beat. The
+    refit sits outside both blocks because it is target-invariant, and it is
+    the ceiling rather than a method: it needs the eight-probe fan-out whose
+    cost is the reason the question is asked. Carrying both targets is what
+    makes the rule of \Cref{subsec:forecaster_eval} checkable rather than
+    assumed. It holds in thirteen of the fourteen trait--projection cells --
+    the $b_{t+1}$ block wins where the predicted responses are still
+    $\mathcal{M}_0$'s and the $\Delta b_{t+1}$ block wins where they were
+    regenerated at the checkpoint -- the exception being
+    $\Delta P_t^{t\leftarrow t,[0]}$ on Evil, which takes the change target by
+    $1.4$ judge points. The states divide by what reading them costs at
+    $\mathcal{M}_t$: those indexed $[0]$ or $[0,0]$ are forward passes over
+    responses $\mathcal{M}_0$ had already generated, while those indexed $[t]$
+    or $[t,0]$ need $\mathcal{M}_t$ to answer the neutral prompts itself, a
+    generation pass on top. Only $p_t$ and $q_t$, and therefore
+    $\mathbf{z}_t$, appear under both: $\rho_t$ and $r_t$ are properties of the
+    persona vector alone and carry no index for the neutral responses.
+    $c_t(b_t)$ is the control, free to read wherever behaviour is already
+    scored. Bold marks the smallest error in a trait's target block for each
+    projection. The cross-validation protocol is the one described for
+    \Cref{fig:forecast-correction-rmse}.}
+    \label{tab:forecast-supertable}
+\end{table}
+
 \begin{figure}[H]
     \centering
     \includegraphics[width=\textwidth]{plots/real/exp2/exp2_forecast_correction_rmse_bar.pdf}
@@ -36,18 +72,18 @@
     values and are descriptive rather than inferential. Bars are ordered from
     smaller to larger error, the best non-refit method is bold and orange, and
     the grey $f_t$ refit is the upper-bound reference. Here $f_0$ denotes the affine
-    forecaster fitted at the initial checkpoint, and $g(\cdot)$ rescales its
+    forecaster fitted at the initial checkpoint, and $c_t(\cdot)$ rescales its
     $\Delta P_0$ input. The projection is the rung
     nothing at $\mathcal{M}_t$ has refreshed, and so the one with something to
     correct.
     Each correction rescales the stale projection by a gain regressed on the
-    checkpoint state: $g(\mathbf{z}_t^{[0,0]})$ on the latent state fitted
-    whole, then each of its four coordinates on its own, and $g(b_t)$ on the
+    checkpoint state: $c_t(\mathbf{z}_t^{[0,0]})$ on the latent state fitted
+    whole, then each of its four coordinates on its own, and $c_t(b_t)$ on the
     behaviour level. Both response sets behind the state are $\mathcal{M}_0$'s,
     which is what the $[0,0]$ marks. The
-    single-coordinate rows carry two parameters apiece, the same as $g(b_t)$,
+    single-coordinate rows carry two parameters apiece, the same as $c_t(b_t)$,
     so a correction that fails with them cannot be failing for want of
-    parsimony --- $g(\mathbf{z}_t^{[0,0]})$ spends five parameters on a fold of roughly fourteen
+    parsimony --- $c_t(\mathbf{z}_t^{[0,0]})$ spends five parameters on a fold of roughly fourteen
     checkpoints drawn from two trunks. All rows are reported at every
     checkpoint rather than only where they win. Everything here is fitted under
     one rule: nothing fitted on dataset $j$ is used to predict dataset $j$. The

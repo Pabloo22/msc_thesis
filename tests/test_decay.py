@@ -62,10 +62,18 @@ def _behavior(trait: str, value: float, se: float = 0.5) -> dict[str, float]:
     }
 
 
+#: How each neutral-response source shifts the fixture's $z_t$. Only $p$ and
+#: $q$ move: $\rho$ and $r$ are properties of the persona vector alone (see
+#: ``labels._Z_INDEX_SLOTS``), so varying them here would invent a dependence
+#: the pipeline does not have and let a wrong merge pass.
+Z_SOURCE_SHIFT = {"base": 0.0, "current": 0.5}
+
+
 def write_run(
     cfg: TrajectoryConfig,
     *,
     behaviors,
+    z_sources=("base",),
     probes=None,
     probes_v0=None,
     probes_current=None,
@@ -83,6 +91,10 @@ def write_run(
     probes. ``h_norm=False`` writes the ``z`` block a run measured before the
     norm was recorded carries, which is what an un-backfilled run on disk still
     looks like.
+
+    ``z_sources`` names which neutral-response sources the ``z`` block holds.
+    A family records only the ones it measured, which is why the decay trunks
+    and ``exp2_hregen`` have to be merged rather than read from either alone.
     """
     n = len(cfg.steps)
     if cfg.measure is not E.MeasurementLevel.FULL:
@@ -101,13 +113,14 @@ def write_run(
                 "weights_id": get_weights_id(cfg, t),
                 "behavior": _behavior(cfg.trait, behaviors[t], se),
                 "z": {
-                    "base": {
-                        "p": 0.1 * t,
-                        "q": 0.2 * t,
+                    source: {
+                        "p": 0.1 * t + Z_SOURCE_SHIFT[source],
+                        "q": 0.2 * t + Z_SOURCE_SHIFT[source],
                         "rho": 1.0 - 0.1 * t,
                         "r": 30.0 + t,
                         **({"h_norm": 60.0 + t} if h_norm else {}),
                     }
+                    for source in z_sources
                 },
                 "probes": {
                     dataset: {"mean": series[t], "std": 0.5, "n": 8}
@@ -305,6 +318,26 @@ def build_onpolicy_regen(*, offset: float = 3.5, trunks=("a",)) -> Collection:
     return collect(configs, group=E.EXP2_ONPOLICY_REGEN)
 
 
+def build_hregen(*, trunks=("a", "c")) -> Collection:
+    r"""The trunk re-measurement carrying $z_t$ off the checkpoint's own answers.
+
+    It disagrees with the decay trunks on ``behavior`` and carries no probes at
+    all. That is not laziness in the fixture: the family re-runs the whole
+    trunk to re-take one measurement, so everything else it records is a
+    *second* measurement of a quantity ``decay_frame`` already has from the
+    decay trunk. A fixture that agreed on those would pass whether or not the
+    merge kept the decay trunk's own series.
+    """
+    configs = E.build_exp2_hregen_configs(
+        measure_traits=("evil",),
+        trunks={name: TRUNKS[name] for name in trunks},
+        probes=PROBES,
+    )
+    for cfg in configs:
+        write_run(cfg, behaviors=[99.0] * 7, z_sources=("current",))
+    return collect(configs, group=E.EXP2_HREGEN)
+
+
 def build_v0regen(*, offset: float = 1.5, trunks=("a",)) -> Collection:
     r"""A re-measurement carrying $\Delta P_t^{(\mathbf{v}_0)}$ and nothing else.
 
@@ -464,6 +497,58 @@ class TestDecayFrame:
         panel = rows[(rows["t"] == 3) & (rows["trunk"] == "a")]
         assert len(panel) == len(PROBES) - 1
         assert not panel["delta_b"].isna().any()
+
+
+class TestNeutralSourceMerge:
+    r"""``decay_frame`` under either neutral-response source.
+
+    The two sources live in different families: the decay trunks answer the
+    neutral prompts with $M_0$, and ``exp2_hregen`` re-runs each trunk so the
+    checkpoint answers them itself. Merging them is what lets a gain be
+    regressed on $\mathbf{z}_t^{[t,0]}$, and the merge has to move $z_t$ and
+    nothing else -- otherwise the two sources' forecasts differ for reasons
+    that have nothing to do with who wrote the neutral answers.
+    """
+
+    def test_only_the_latent_columns_move_between_the_sources(self) -> None:
+        decayed, fan, hregen = build_decay(), build_validation(), build_hregen()
+        base = decay.decay_frame(decayed, fan, neutral=hregen, source="base")
+        current = decay.decay_frame(decayed, fan, neutral=hregen, source="current")
+
+        held = [c for c in base.columns if c not in decay.Z_COMPONENTS]
+        pd.testing.assert_frame_equal(base[held], current[held])
+        shift = Z_SOURCE_SHIFT["current"] - Z_SOURCE_SHIFT["base"]
+        for component in ("p", "q"):
+            assert current[component].to_numpy() == pytest.approx(
+                base[component].to_numpy() + shift
+            )
+        for component in ("rho", "r"):
+            assert current[component].to_numpy() == pytest.approx(
+                base[component].to_numpy()
+            )
+
+    def test_the_base_frame_is_unchanged_by_the_merge(self) -> None:
+        """The regression the merge has to survive: it must add, never replace."""
+        decayed, fan = build_decay(), build_validation()
+        alone = decay.decay_frame(decayed, fan, source="base")
+        merged = decay.decay_frame(
+            decayed, fan, neutral=build_hregen(), source="base"
+        )
+        pd.testing.assert_frame_equal(alone, merged)
+
+    def test_an_uncovered_trunk_keeps_its_rows_with_an_empty_state(self) -> None:
+        """"Not measured here" is a NaN, not a dropped row (see ``decay_frame``)."""
+        rows = decay.decay_frame(
+            build_decay(),
+            build_validation(),
+            neutral=build_hregen(trunks=("a",)),
+            source="current",
+        )
+        assert set(rows["trunk"]) == set(TRUNKS)
+        covered = rows[rows["trunk"] == "a"]
+        skipped = rows[rows["trunk"] == "c"]
+        assert not covered[list(decay.Z_COMPONENTS)].isna().any().any()
+        assert skipped[list(decay.Z_COMPONENTS)].isna().all().all()
 
 
 class TestRemeasuredSeries:

@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import cast
 
 import numpy as np
@@ -440,11 +440,61 @@ def _remeasured_probes(
     return index
 
 
+def _with_latent(
+    trunks: Mapping[tuple[str, str, int], TrunkSeries],
+    runs: Iterable[Run],
+    *,
+    source: str,
+) -> dict[tuple[str, str, int], TrunkSeries]:
+    r"""``trunks`` with each ``latent`` taken from whichever run carries ``source``.
+
+    Only $z_t$ moves. A family that re-answers the neutral prompts at the
+    checkpoint re-runs the whole trunk, so it also holds its own ``probes`` and
+    ``behavior``; taking those as well would let ``delta_p_0`` and
+    ``delta_p_hat_t`` change between two sources that differ only in who
+    answered the *neutral* prompts, and the source comparison would stop being
+    a controlled one.
+
+    Runs not carrying ``source`` are dropped before indexing, as
+    :func:`latent_frame` does and for the same reason: one trunk is measured by
+    two families under one source each, they share a ``(trait, trunk, seed)``
+    key, and without the filter the first one seen takes it.
+
+    A trunk no such family covered keeps its own series, which under a source
+    it does not carry is a run of empty maps. That is the house rule of
+    :func:`decay_frame`: "not measured here" is left as NaN rather than turned
+    into a dropped row.
+    """
+    carrying = [run for run in runs if run.trajectory.has_latent(source)]
+    index = trunk_series(carrying, source=source)
+    return {
+        key: (
+            replace(series, latent=_padded(index[key].latent, len(series.probes)))
+            if key in index
+            else series
+        )
+        for key, series in trunks.items()
+    }
+
+
+def _padded(
+    series: tuple[Mapping[str, float], ...], length: int
+) -> tuple[Mapping[str, float], ...]:
+    """``series`` cut or filled with empty maps to ``length`` checkpoints.
+
+    A re-measuring family may have stopped short of the trunk it re-measures,
+    and a checkpoint it never reached has to read as unmeasured rather than
+    raising here or borrowing a neighbour's value.
+    """
+    return tuple(series[t] if t < len(series) else {} for t in range(length))
+
+
 def decay_frame(
     decay: Collection,
     validation: Collection | None = None,
     remeasured: Iterable[Collection] = (),
     *,
+    neutral: Collection | None = None,
     stat: str = "mean",
     source: str = "base",
 ) -> pd.DataFrame:
@@ -487,13 +537,25 @@ def decay_frame(
     preserve -- "not measured here" is not "measured and small" -- so
     :func:`fit_frame` declines to fit a series it cannot see.
 
+    ``neutral`` supplies $z_t$ where the decay trunks cannot: they answer the
+    neutral prompts with $M_0$ only, so under ``source="current"`` their own
+    ``z`` is empty and the state corrections have no features to regress on.
+    The ``exp2_hregen`` family re-took that one measurement at the checkpoint
+    (:func:`method.experiments.build_exp2_hregen_configs`) and is merged in per
+    trunk by :func:`_with_latent`, which replaces the latent series and nothing
+    else.
+
     Rows whose branch never ran are dropped rather than carried as NaN: a
     partly-finished fan should narrow the scatter it can draw, not poison the
     variance of the one it can. The reseed trunk therefore contributes no rows
     at all (it has no branches by design) and reaches the figures through
     :func:`probe_drift_frame` and :func:`latent_frame` instead.
     """
-    trunks = trunk_series(decay.runs, stat=stat, source=source)
+    trunks = _with_latent(
+        trunk_series(decay.runs, stat=stat, source=source),
+        [*decay.runs, *(neutral.runs if neutral else ())],
+        source=source,
+    )
     branches = _branch_endpoints(decay.runs)
     fan_0 = _validation_endpoints(validation.runs if validation else [])
     recomputed = _remeasured_probes(

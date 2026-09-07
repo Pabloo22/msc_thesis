@@ -171,12 +171,18 @@ def display_dataset_name(dataset_id: str) -> str:
 # both positions: an axis label wants ``$p_t^{[0]}$`` standing alone, a table
 # key wants it inside a larger expression.
 
+#: The pipeline's two names for a response source (:class:`method.config.
+#: HNeutralSource`, :class:`method.config.PredictedSource`): the model the
+#: study starts from, and the checkpoint being measured. Spelled out here so a
+#: caller naming one of them says which it means rather than repeating a string
+#: literal that also happens to be a column value somewhere.
+BASE_SOURCE = "base"
+CURRENT_SOURCE = "current"
+
 #: How the chapter indexes a response source: the base model is ``0`` and the
-#: checkpoint being measured is ``t``. The pipeline names the same two choices
-#: ``"base"`` and ``"current"`` (:class:`method.config.HNeutralSource`,
-#: :class:`method.config.PredictedSource`), so every figure that takes a source
-#: from the CLI translates it here.
-SOURCE_INDICES = {"base": "0", "current": "t"}
+#: checkpoint being measured is ``t``. Every figure that takes a source from
+#: the CLI translates it here.
+SOURCE_INDICES = {BASE_SOURCE: "0", CURRENT_SOURCE: "t"}
 
 
 def source_index(source: str) -> str:

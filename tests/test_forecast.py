@@ -1103,7 +1103,7 @@ class TestMeanRmseFigure:
             r"$f_0$, predicts $\Delta b_{t+1}$",
             r"$f_t$, refit at $t$",
         ]
-        assert r"f_0\!\left(g\!\left(b_t\right)\,\Delta P_0\right)" in corrected
+        assert r"f_0\!\left(c_t\!\left(b_t\right)\,\Delta P_0\right)" in corrected
         assert "M_0" not in ranked + "".join(labels) + corrected
 
     def test_the_two_targets_are_split_by_hue(self) -> None:
