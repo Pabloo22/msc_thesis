@@ -853,6 +853,137 @@ def _trait_separators(fig) -> list:
     ]
 
 
+def _curve_bands(
+    datasets=("hallucination/misaligned_1",),
+    conditions=("normal2", "diff", "same"),
+    n_steps: int = 8,
+) -> pd.DataFrame:
+    """A bands frame shaped like ``training_curves.curve_bands`` returns.
+
+    Each arm sits at a level of its own so a test can tell the lines apart by
+    their values, and the repeat arm is lowest, as the measurement has it.
+    """
+    levels = {"normal2": 3.0, "diff": 2.0, "same": 1.0}
+    rows = []
+    for dataset in datasets:
+        for condition in conditions:
+            for step in range(1, n_steps + 1):
+                level = levels.get(condition, 1.0)
+                rows.append(
+                    {
+                        "dataset": dataset,
+                        "condition": condition,
+                        "optim_step": step,
+                        "runs": 5,
+                        "loss_mean": level,
+                        "loss_sd": 0.1,
+                        "grad_norm_mean": level / 2,
+                        "grad_norm_sd": 0.05,
+                    }
+                )
+    return pd.DataFrame(rows)
+
+
+CURVE_ROWS = (
+    figures.CurveRow("loss_mean", "loss_sd", "Training loss"),
+    figures.CurveRow("grad_norm_mean", "grad_norm_sd", "Gradient norm"),
+)
+
+
+class TestTrainingCurveGrid:
+    def test_a_panel_per_quantity_and_dataset(self) -> None:
+        fig = figures.training_curve_grid(
+            _curve_bands(("a/normal", "b/normal")),
+            rows=CURVE_ROWS,
+            conditions=("normal2", "diff", "same"),
+        )
+        assert len(fig.axes) == 4
+
+    def test_each_arm_is_one_line_with_one_band_per_panel(self) -> None:
+        fig = figures.training_curve_grid(
+            _curve_bands(), rows=CURVE_ROWS, conditions=("normal2", "diff", "same")
+        )
+        for ax in fig.axes:
+            assert len(ax.lines) == 3
+            assert len(ax.collections) == 3
+
+    def test_rows_read_the_columns_they_were_given(self) -> None:
+        fig = figures.training_curve_grid(
+            _curve_bands(), rows=CURVE_ROWS, conditions=("same",)
+        )
+        loss, gradient = fig.axes
+        assert loss.lines[0].get_ydata()[0] == pytest.approx(1.0)
+        assert gradient.lines[0].get_ydata()[0] == pytest.approx(0.5)
+        assert loss.get_ylabel() == "Training loss"
+        assert gradient.get_ylabel() == "Gradient norm"
+
+    def test_an_arm_keeps_its_colour_from_the_bar_chart(self) -> None:
+        """Colour follows the arm, not its position in whatever is drawn: this
+        figure draws three of the five arms and the bar chart draws all five."""
+        fig = figures.training_curve_grid(
+            _curve_bands(), rows=CURVE_ROWS, conditions=("normal2", "diff", "same")
+        )
+        drawn = {line.get_label(): line.get_color() for line in fig.axes[0].lines}
+        for condition in ("normal2", "diff", "same"):
+            expected = style.categorical_color(
+                labels.HYSTERESIS_CONDITIONS.index(condition)
+            )
+            assert drawn[labels.display_condition_name(condition)] == expected
+
+    def test_colour_is_never_the_only_channel(self) -> None:
+        """Purple against plum is the closest pair in the palette, and here it
+        is the two arms a reader most needs to separate, so each arm also gets
+        a dash pattern of its own.
+
+        Read off ``_dash_pattern`` rather than ``get_linestyle``: matplotlib
+        normalises every dash tuple to ``"--"``, so the pattern is the only
+        place the three stay distinguishable.
+        """
+        fig = figures.training_curve_grid(
+            _curve_bands(), rows=CURVE_ROWS, conditions=("normal2", "diff", "same")
+        )
+        dashes = {str(line._dash_pattern) for line in fig.axes[0].lines}
+        assert len(dashes) == 3
+
+    def test_the_legend_names_every_arm_and_the_band(self) -> None:
+        fig = figures.training_curve_grid(
+            _curve_bands(), rows=CURVE_ROWS, conditions=("normal2", "diff", "same")
+        )
+        (legend,) = fig.legends
+        texts = [t.get_text() for t in legend.get_texts()]
+        assert texts[:3] == [
+            labels.display_condition_name(c) for c in ("normal2", "diff", "same")
+        ]
+        assert "SD" in texts[-1]
+
+    def test_columns_are_headed_with_pretty_dataset_names(self) -> None:
+        fig = figures.training_curve_grid(
+            _curve_bands(("hallucination/misaligned_1", "mistake_gsm8k/misaligned_2")),
+            rows=CURVE_ROWS,
+            conditions=("same",),
+        )
+        assert [ax.get_title() for ax in fig.axes[:2]] == [
+            "Hallucination (I)",
+            "GSM8K (Mistake II)",
+        ]
+
+    def test_columns_do_not_share_a_y_axis(self) -> None:
+        """A loss on one dataset is not comparable with a loss on another, and
+        the runs are different lengths, so only x is shared down a column."""
+        bands = _curve_bands(("a/normal", "b/normal"))
+        bands.loc[bands["dataset"] == "b/normal", "loss_mean"] *= 20
+        fig = figures.training_curve_grid(bands, rows=CURVE_ROWS, conditions=("same",))
+        left, right = fig.axes[0], fig.axes[1]
+        assert left.get_ylim() != right.get_ylim()
+
+    def test_an_arm_absent_from_the_frame_is_simply_not_drawn(self) -> None:
+        bands = _curve_bands(conditions=("normal2", "same"))
+        fig = figures.training_curve_grid(
+            bands, rows=CURVE_ROWS, conditions=("normal2", "diff", "same")
+        )
+        assert len(fig.axes[0].lines) == 2
+
+
 class TestDatasetMarks:
     """A dataset is a family and a version, and they are different kinds of
     fact: the family is nominal and takes the shape channel, the version is

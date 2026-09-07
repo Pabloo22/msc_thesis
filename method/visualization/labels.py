@@ -78,6 +78,18 @@ HYSTERESIS_CONDITION_SEQUENCES = {
     "diff": r"$X'\,N\,X$",
 }
 
+#: The short name the Experiments chapter introduces each arm under, which is
+#: not the same register as :data:`HYSTERESIS_CONDITION_LABELS`: those describe
+#: an arm ("After realign (same data)"), these *name* it, so that a figure's
+#: key and the prose around it use one word for one thing.
+HYSTERESIS_CONDITION_NAMES = {
+    "baseline": "Baseline",
+    "normal1": r"Normal $\times$1",
+    "normal2": r"Normal $\times$2",
+    "same": "Same",
+    "diff": "Different",
+}
+
 TRAITS = ("evil", "sycophantic")
 
 #: Trait as it should appear in a figure title.
@@ -136,6 +148,34 @@ def trunk_index(trunk: str) -> int:
 def display_trait_name(trait: str) -> str:
     """``"sycophantic"`` -> ``"Sycophancy"``, falling back to the raw string."""
     return TRAIT_TITLES.get(trait, trait.capitalize())
+
+
+def condition_index(condition: str) -> int:
+    """Palette slot for an exp3 arm: its position in :data:`HYSTERESIS_CONDITIONS`.
+
+    The counterpart of :func:`trunk_index`, and for the same reason: colour
+    follows the arm, never its row number in whatever frame is being drawn, so
+    the Same arm keeps one hue across the bar chart, the latent audit and the
+    training curves even in a figure that draws three of the five arms.
+    """
+    return (
+        HYSTERESIS_CONDITIONS.index(condition)
+        if condition in HYSTERESIS_CONDITIONS
+        else len(HYSTERESIS_CONDITIONS)
+    )
+
+
+def display_condition_name(condition: str) -> str:
+    r"""``"same"`` -> ``"Same ($X\,N\,X$)"``: the arm's name and its schedule.
+
+    Both halves, because the two figures exp3 prints identify an arm
+    differently -- the bar chart gives each arm a tick of its own carrying the
+    schedule, while a curve has only a legend entry -- and a reader moving
+    between them needs the one label that closes over both.
+    """
+    name = HYSTERESIS_CONDITION_NAMES.get(condition, condition)
+    sequence = HYSTERESIS_CONDITION_SEQUENCES.get(condition)
+    return f"{name} ({sequence})" if sequence else name
 
 
 def display_dataset_name(dataset_id: str) -> str:

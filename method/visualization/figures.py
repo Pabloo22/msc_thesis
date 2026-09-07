@@ -29,7 +29,9 @@ from method.visualization.labels import (
     DELTA_P_BASE,
     HYSTERESIS_CONDITION_SEQUENCES,
     HYSTERESIS_CONDITIONS,
+    condition_index,
     delta_p_symbol,
+    display_condition_name,
     display_dataset_name,
 )
 from method.visualization.metrics import (
@@ -524,6 +526,143 @@ def hysteresis_bar(
         ],
     )
     return fig
+
+
+#: Line style per exp3 arm, so a curve keeps an identity that survives a
+#: greyscale print and any colour-vision deficiency. Colour alone would have to
+#: separate purple from plum -- the closest pair in :data:`~method.visualization
+#: .style.CATEGORICAL`, and here the two arms a reader most needs to tell apart.
+#: Solid goes to the repeat arm, which is the one the figure is about.
+CONDITION_LINESTYLES = {
+    "baseline": (0, (1, 1.6)),
+    "normal1": (0, (5, 1.4, 1, 1.4)),
+    "normal2": (0, (1.4, 1.6)),
+    "diff": (0, (4.5, 1.8)),
+    "same": "-",
+}
+
+
+@dataclass(frozen=True)
+class CurveRow:
+    """One row of :func:`training_curve_grid`: a quantity and how to read it.
+
+    ``mean`` and ``sd`` are the frame's columns for the line and the half-width
+    of its band; ``label`` names the quantity on the row's left-hand axis.
+    """
+
+    mean: str
+    sd: str
+    label: str
+
+
+def training_curve_grid(
+    df: pd.DataFrame,
+    *,
+    rows: Sequence[CurveRow],
+    datasets: Sequence[str] | None = None,
+    conditions: Sequence[str] = HYSTERESIS_CONDITIONS,
+    dataset_col: str = "dataset",
+    condition_col: str = "condition",
+    x_col: str = "optim_step",
+    xlabel: str = "Optimiser step within the final fine-tuning",
+    dataset_labels: Mapping[str, str] | None = None,
+    band_label: str = r"Mean $\pm$ 1 SD across training runs",
+) -> Figure:
+    r"""What each arm's *final* fine-tuning run did, quantity by quantity.
+
+    One column per dataset that final step trained on, one row per quantity in
+    ``rows`` -- the training loss and the gradient norm, in the exp3 figure --
+    and one line per arm within a panel.
+
+    The two rows belong in one figure because the reading is the contrast
+    between them. A lower entry loss on its own would say only that the repeat
+    arm starts nearer to fitting the data, which is compatible with it catching
+    up and ending in the same place; the loss row shows that it does catch up.
+    What does not close is the gradient row, and it is distance travelled in
+    weight space, not final loss, that a smaller behavioural change requires.
+    Splitting the two across figures would leave that comparison to the reader's
+    memory.
+
+    Columns share an x-axis and nothing else. Each dataset's run is a different
+    length (one epoch over a different number of examples), so there is no
+    shared step axis to draw them on, and the loss of one dataset is not
+    comparable with the loss of another -- a shared y-axis would spend a panel
+    on empty space to say so.
+
+    ``conditions`` selects and orders the arms; it defaults to all five, but
+    exp3 draws the three whose final step sits at the same depth in the chain,
+    since a lower entry loss can otherwise be read as depth rather than as
+    having met the data before.
+    """
+    style.apply_style()
+    dataset_labels = dataset_labels or {}
+    datasets = list(datasets) if datasets else list(dict.fromkeys(df[dataset_col]))
+    # Sized to be printed at close to 1:1. A figure wider than the text block
+    # is scaled down by ``\includegraphics``, and its labels with it, so the
+    # panels are kept narrow rather than drawn large and shrunk: a line chart
+    # needs far less width than the bar chart it sits beside, whose five
+    # schedule ticks per panel are what makes that one wide.
+    fig, axes = plt.subplots(
+        len(rows),
+        len(datasets),
+        figsize=(2.4 * len(datasets) + 1.0, 2.1 * len(rows) + 1.1),
+        sharex="col",
+        squeeze=False,
+    )
+    for r, row in enumerate(rows):
+        for c, dataset in enumerate(datasets):
+            ax = axes[r][c]
+            panel = df[df[dataset_col] == dataset]
+            if panel.empty:
+                _mark_empty(ax)
+                continue
+            for condition in conditions:
+                series = panel[panel[condition_col] == condition].sort_values(x_col)
+                if series.empty:
+                    continue
+                _draw_curve(ax, series, row, condition, x_col=x_col)
+            if r == 0:
+                ax.set_title(
+                    dataset_labels.get(dataset, display_dataset_name(dataset)),
+                    fontsize=9.5,
+                    color=style.SECONDARY_INK,
+                )
+        axes[r][0].set_ylabel(row.label, fontsize=10)
+
+    handles, texts = _shared_legend(axes.flat)
+    handles.append(Patch(facecolor=style.MUTED, edgecolor="none", alpha=0.15))
+    texts.append(band_label)
+    ncol = min(4, len(handles))
+    fig.legend(handles, texts, loc="lower center", ncol=ncol)
+    _layout_grid(fig, axes.flat, xlabel=xlabel, legend_rows=-(-len(handles) // ncol))
+    return fig
+
+
+def _draw_curve(
+    ax: Axes,
+    series: pd.DataFrame,
+    row: CurveRow,
+    condition: str,
+    *,
+    x_col: str,
+) -> None:
+    """One arm's mean line and its band, in that arm's fixed colour and style."""
+    x = series[x_col].to_numpy(dtype=float)
+    mean = series[row.mean].to_numpy(dtype=float)
+    spread = np.nan_to_num(series[row.sd].to_numpy(dtype=float))
+    color = style.categorical_color(condition_index(condition))
+    ax.plot(
+        x,
+        mean,
+        color=color,
+        linestyle=CONDITION_LINESTYLES.get(condition, "-"),
+        linewidth=1.5,
+        label=display_condition_name(condition),
+        zorder=3,
+    )
+    ax.fill_between(
+        x, mean - spread, mean + spread, color=color, alpha=0.15, linewidth=0, zorder=2
+    )
 
 
 def mean_rmse_bar(

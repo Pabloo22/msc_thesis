@@ -48,7 +48,7 @@ import pandas as pd
 
 from method import experiments, seed_noise
 from method.latent import H_NORM
-from method.visualization import decay, figures, forecast, style
+from method.visualization import decay, figures, forecast, style, training_curves
 from method.visualization.collect import (
     Collection,
     axis_refresh_frame,
@@ -63,6 +63,7 @@ from method.visualization.labels import (
     HYSTERESIS_CONDITIONS,
     TRAITS,
     TRUNKS,
+    display_condition_name,
     display_dataset_name,
     display_trait_name,
     display_trunk_name,
@@ -168,6 +169,11 @@ ERROR_SCALE = _Scale(1, lambda table: -table)
 
 #: The same precision, ranked by distance from zero (see :class:`_Scale`).
 BIAS_SCALE = _Scale(1, lambda table: -table.abs())
+
+#: Two decimals, because a loss and a gradient norm here differ between arms in
+#: the second one, and smallest leads: the table is read for which arm entered
+#: its final step with the least left to learn.
+TRACE_SCALE = _Scale(2, lambda table: -table)
 
 
 def _key_blocks(table: pd.DataFrame) -> list[pd.Index]:
@@ -2103,6 +2109,117 @@ def build_exp3(collection: Collection, out_dir: Path) -> list[Path]:
         ylabel=r"Trait score after the final step ($b_T$)",
     )
     _emit(fig, "exp3_hysteresis", out_dir, saved)
+    saved += build_exp3_training_curves(collection, out_dir)
+    return saved
+
+
+#: The two quantities the training-curve figure stacks, top row first, as
+#: :func:`method.visualization.training_curves.curve_bands` names their columns.
+#: Loss above gradient because that is the order the argument runs in: the
+#: repeat arm already fits the data, and so it pulls less hard on the weights.
+TRAINING_CURVE_ROWS = (
+    figures.CurveRow("loss_mean", "loss_sd", "Training loss"),
+    figures.CurveRow("grad_norm_mean", "grad_norm_sd", "Gradient norm"),
+)
+
+#: Column headings of the entry table, keyed to the frame
+#: :func:`~method.visualization.training_curves.entry_summary` returns. "Entry"
+#: is optimiser step 1, logged while the learning rate is still 0, so it reads
+#: the state the run was handed rather than anything this run has done yet.
+TRACE_COLUMNS = {
+    "loss_init": "Loss (entry)",
+    "loss_median": "Loss (median)",
+    "grad_norm_init": r"$\lVert g \rVert$ (entry)",
+    "grad_norm_median": r"$\lVert g \rVert$ (median)",
+}
+
+
+def _final_step_datasets(collection: Collection) -> dict[str, str]:
+    """Trajectory directory name -> the ``dataset/version`` its last step used.
+
+    The join the recovered curves cannot make for themselves: they record the
+    content hash of the training examples, which says two runs trained on the
+    same data but never which data that was. Taken from each run's config
+    rather than parsed out of its directory name, since the name is a
+    convention and the config is the fact.
+    """
+    return {run.path.parent.name: run.label("dataset") for run in collection.runs}
+
+
+def build_exp3_training_curves(collection: Collection, out_dir: Path) -> list[Path]:
+    """The loss and gradient-norm curves of every arm's final fine-tuning step.
+
+    Why the figure exists: the hysteresis bars show that the Same arm ends
+    lowest, and this is the measurement of why. See
+    :mod:`method.visualization.training_curves` for what the curves are
+    recovered from and how they are reduced.
+
+    Skipped, with a warning, where ``data/results/exp3_grad_points.csv`` is
+    absent -- it is not version controlled, so a checkout that has every
+    trajectory may still have none of the training curves.
+    """
+    saved: list[Path] = []
+    points = training_curves.load_points()
+    if points.empty:
+        return saved
+
+    run_datasets = _final_step_datasets(collection)
+    curves = training_curves.final_step_curves(points, run_datasets)
+    if curves.empty:
+        logger.warning("exp3: no final-step training curves matched a config; skipping")
+        return saved
+
+    # Column order from the collection, not from the curves: this figure is
+    # read beside the hysteresis bars, which take theirs from the same place,
+    # and two exp3 figures ordering their columns differently would make a
+    # reader re-find the dataset they were looking at.
+    present = set(curves["dataset"])
+    datasets = [d for d in dict.fromkeys(run_datasets.values()) if d in present]
+    conditions = [
+        condition
+        for condition in training_curves.CURVE_CONDITIONS
+        if condition in set(curves["condition"])
+    ]
+    fig = figures.training_curve_grid(
+        training_curves.curve_bands(curves),
+        rows=TRAINING_CURVE_ROWS,
+        datasets=datasets,
+        conditions=conditions,
+    )
+    _emit(fig, "exp3_training_curves", out_dir, saved)
+
+    summary = training_curves.entry_summary(curves)
+    table = (
+        summary.assign(
+            **{
+                "Final dataset $X$": summary["dataset"].map(display_dataset_name),
+                "Arm": summary["condition"].map(display_condition_name),
+                # Both keys ordered as the figure draws them, not
+                # alphabetically: the table is the figure's numbers, and a
+                # reader checking one against the other should not have to
+                # re-find the row.
+                "dataset_order": summary["dataset"].map(datasets.index),
+                "arm_order": summary["condition"].map(conditions.index),
+            }
+        )
+        .sort_values(["dataset_order", "arm_order"])
+        .set_index(["Final dataset $X$", "Arm"])
+        .loc[:, list(TRACE_COLUMNS)]
+        .rename(columns=TRACE_COLUMNS)
+    )
+    _emit_table(
+        table,
+        ["Final dataset $X$", "Arm"],
+        "Final fine-tuning step",
+        "exp3_training_curves",
+        out_dir,
+        saved,
+        scale=TRACE_SCALE,
+        note=(
+            "Medians over the distinct training runs of each arm; "
+            "entry = optimiser step 1, where the learning rate is still 0."
+        ),
+    )
     return saved
 
 

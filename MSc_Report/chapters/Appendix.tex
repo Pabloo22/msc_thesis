@@ -1,4 +1,5 @@
 \chapter{Tables}
+\newpage
 
 \begin{table}[htbp]
     \centering
@@ -9,72 +10,42 @@
     \label{tab:decay-correlations}
 \end{table}
 
-\begin{table}[H]
-    \centering
-    \scriptsize
-    \setlength{\tabcolsep}{3pt}
-    \input{plots/real/exp2/exp2_forecast_bias.tex}
-    \caption{Mean signed error, in judge points, of the same frozen forecasts:
-    positive where $f_0$ promised more behaviour change than the step
-    delivered. This is what staleness looks like that an RMSE cannot separate
-    from scatter --- as a trunk drifts, the frozen line over-predicts every
-    probe at once. The refitted forecaster is omitted rather than shown at
-    zero: least squares with a free intercept leaves residuals summing to zero,
-    so its bias is an identity and not a measurement. Bold marks the row
-    nearest zero at each checkpoint, over- and under-prediction counting alike.}
-    \label{tab:forecast-bias}
-\end{table}
+% \begin{table}[H]
+%     \centering
+%     \scriptsize
+%     \setlength{\tabcolsep}{3pt}
+%     \input{plots/real/exp2/exp2_forecast_bias.tex}
+%     \caption{Mean signed error, in judge points, of the same frozen forecasts:
+%     positive where $f_0$ promised more behaviour change than the step
+%     delivered. This is what staleness looks like that an RMSE cannot separate
+%     from scatter --- as a trunk drifts, the frozen line over-predicts every
+%     probe at once. The refitted forecaster is omitted rather than shown at
+%     zero: least squares with a free intercept leaves residuals summing to zero,
+%     so its bias is an identity and not a measurement. Bold marks the row
+%     nearest zero at each checkpoint, over- and under-prediction counting alike.}
+%     \label{tab:forecast-bias}
+% \end{table}
 
 
+% \begin{table}[H]
+%     \centering
+%     \small
+%     \setlength{\tabcolsep}{3pt}
+%     \input{plots/real/exp2/exp2_forecast_correction_bias.tex}
+%     \caption{Mean signed error of the same forecasts of $\Delta P_0$,
+%     showing how much of each correction's gain is the removal of a systematic
+%     over-prediction rather than a tightening of the scatter. The refitted
+%     forecaster is again omitted, for the reason given in
+%     \Cref{tab:forecast-bias}.}
+%     \label{tab:forecast-correction-bias}
+% \end{table}
 
-\begin{figure}[H]
-    \centering
-    \includegraphics[width=\textwidth]{plots/real/exp2/exp2_forecast_correction_rmse_bar.pdf}
-    \caption{Whether the freely observable state of a checkpoint can stand in
-    for the fan-out a refit would need, scored on $\Delta P_0$. Each bar is the
-    mean of 42 checkpoint-level RMSEs spanning two traits, three trunks, and
-    seven checkpoints, with each constituent RMSE calculated over eight probe
-    datasets. Error bars show one sample standard deviation across those 42
-    values and are descriptive rather than inferential. Bars are ordered from
-    smaller to larger error, the best non-refit method is bold and orange, and
-    the grey $f_t$ refit is the upper-bound reference. Here $f_0$ denotes the affine
-    forecaster fitted at the initial checkpoint, and $c_t(\cdot)$ rescales its
-    $\Delta P_0$ input. The projection is the rung
-    nothing at $\mathcal{M}_t$ has refreshed, and so the one with something to
-    correct.
-    Each correction rescales the stale projection by a gain regressed on the
-    checkpoint state: $c_t(\mathbf{z}_t^{[0,0]})$ on the latent state fitted
-    whole, then each of its four coordinates on its own, and $c_t(b_t)$ on the
-    behaviour level. Both response sets behind the state are $\mathcal{M}_0$'s,
-    which is what the $[0,0]$ marks. The
-    single-coordinate rows carry two parameters apiece, the same as $c_t(b_t)$,
-    so a correction that fails with them cannot be failing for want of
-    parsimony --- $c_t(\mathbf{z}_t^{[0,0]})$ spends five parameters on a fold of roughly fourteen
-    checkpoints drawn from two trunks. All rows are reported at every
-    checkpoint rather than only where they win. Everything here is fitted under
-    one rule: nothing fitted on dataset $j$ is used to predict dataset $j$. The
-    gain that corrects probe $j$ on a given trunk comes from the other trunks'
-    checkpoints, whose own ideal gains were solved over the remaining probes
-    and against the base line fitted without $j$. Each cell is therefore a
-    cross-validated error over eight predictions made by eight different gain
-    models. Those eight are not near-copies of one another: a probe enters the
-    ideal gain weighted by $\Delta P_0^2$, so the one probe whose projection
-    difference is several times the rest carries most of it, and the model that
-    has to predict that probe is the one fitted without it. Every correction is
-    as cheap to read as the others and far cheaper than re-running the probes.
-    The refit bounds what any of them could achieve.}
-    \label{fig:forecast-correction-rmse}
-\end{figure}
 
-\begin{table}[H]
+\begin{table}[htbp]
     \centering
     \small
-    \setlength{\tabcolsep}{3pt}
-    \input{plots/real/exp2/exp2_forecast_correction_bias.tex}
-    \caption{Mean signed error of the same forecasts of $\Delta P_0$,
-    showing how much of each correction's gain is the removal of a systematic
-    over-prediction rather than a tightening of the scatter. The refitted
-    forecaster is again omitted, for the reason given in
-    \Cref{tab:forecast-bias}.}
-    \label{tab:forecast-correction-bias}
+    \setlength{\tabcolsep}{4pt}
+    \input{plots/real/exp3/exp3_training_curves.tex}
+    \caption{Where each trajectory's final fine-tuning started, and where it sat over the run as a whole; the numbers behind \Cref{fig:exp3-training-curves}. ``Entry'' is the value at the first optimiser step, logged while the learning rate is still zero, so it measures the state the run was handed rather than anything the run has yet done. ``Median'' is the same quantity over all of the run's optimiser steps. $\lVert g \rVert$ is the gradient norm. Each cell is the median over the 9--10 distinct fine-tuning events it covers; because adapters are content-addressed, a fine-tuning event shared by two trajectories is counted once. Bold marks the smallest value in each column within a dataset.}
+    \label{tab:exp3-training-curves}
 \end{table}

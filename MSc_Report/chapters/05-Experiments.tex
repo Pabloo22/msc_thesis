@@ -71,7 +71,7 @@ In this experiment, we run three trajectory trunks, which we name A, B, and C. T
 
 \subsection{Correlation of Projection Differences and Behaviour}
 
-Overall, we found that all projection variants presented in \Cref{sec:deltap-variants}, including $Delta P_0$, remained highly correlated with behaviour for almost all trajectories and steps. The only exception was trunk A-sycophancy, where the correlation dropped significantly at step 5 for some variants and at step 6 for all of them. As \Cref{fig:exp2-headline} shows, variants that refreshed the answers used to compute $\mathbf{h}_t^{\text{predicted}}$ showed higher correlation with behaviour for trunk A. Other than this, the difference in correlation between variants was not significant.
+Overall, we found that all projection variants presented in \Cref{sec:deltap-variants}, including $Delta P_0$, remained highly correlated with behaviour for almost all trajectories and steps. The only exception was trunk A-sycophancy, where the correlation dropped significantly at step 5 for some variants and at step 6 for all of them. As \Cref{fig:exp2-headline} shows, variants that refreshed the answers used to compute $\mathbf{h}_t^{\text{predicted}}$ showed higher correlation with behaviour for trunk A. Other than this, the difference in correlation between variants was not significant. To see a table with all the numerical correlation values per step, including for $\Delta P_0$, see \Cref{tab:decay-correlations}.
 
 \begin{figure}[H]
     \centering
@@ -87,7 +87,7 @@ Overall, we found that all projection variants presented in \Cref{sec:deltap-var
     \label{fig:exp2-decay-summary}
 \end{figure}
 
-Interestingly, $\Delta P_0$, which does not make use of the updated model $\mathcal{M}_t$, maintained similar performance to the variants that did not refresh $\mathbf{h}_t^{\text{predicted}}$, as \Cref{fig:exp2-decay-summary} and \Cref{fig:exp2_decay_grid} show. \Cref{fig:exp2_decay_grid} compares $\Delta P_0$ with $\Delta P_t^{t\leftarrow0,[t]}$, which was the variant that achieved the highest mean correlation across all traits and trunks. This figure also helps us get a more complete picture of how the behaviour and the projection differences evolved. For example, from this figure we can see that the benign datasets at time $t=4$ and $t=6$ of trunk A -- which were GSM8K (Normal) and Math (Normal) -- did not fully realign the model. We also see how refreshing the answers of $\mathbf{h}_t^{\text{predicted}}$ helped at $t=5$ in trunk A-sycophancy. 
+Interestingly, $\Delta P_0$, which does not make use of the updated model $\mathcal{M}_t$, maintained similar performance to the variants that did not refresh $\mathbf{h}_t^{\text{predicted}}$, as \Cref{fig:exp2-decay-summary} and \Cref{fig:exp2_decay_grid} show. \Cref{fig:exp2_decay_grid} compares $\Delta P_0$ with $\Delta P_t^{t\leftarrow0,[t]}$, which was the variant that achieved the highest mean correlation across all traits and trunks. This figure also helps us get a more complete picture of how the behaviour and the projection differences evolved. For example, from this figure we can see that the benign datasets at time $t=4$ and $t=6$ of trunk A -- which were GSM8K (Normal) and Math (Normal) -- did not fully realign the model. We also see how refreshing the answers of $\mathbf{h}_t^{\text{predicted}}$ helped at $t=5$ in trunk A-sycophancy.
 
 \begin{figure}[H]
     \centering
@@ -172,6 +172,13 @@ As we can see, the results are mixed. On the one hand, for the trait sycophancy,
 \section{Experiment 2: History Dependence}
 \label{sec:hysteresis}
 % \subsection{Design}
+\begin{figure}[H]
+    \centering
+    \input{figures/exp3_design}
+    \caption{The second experiment design, as described above. Nodes represent fine-tuning events, and their colour denotes the type of dataset used. Trait-eliciting nodes are half-filled to indicate that they could represent training on either misalignment I or II datasets.}
+    \label{fig:exp3-design}
+\end{figure}
+
 % TODO: Specify the target datasets, normal datasets, selection of the different earlier dataset, seed counts, and completed runs.
 % TODO: Specify how runs are paired across arms by final dataset and seed.
 % TODO: State how final behaviour and final-step behaviour change are compared, how results are aggregated, and how uncertainty is measured.
@@ -184,15 +191,44 @@ In this experiment, we investigated whether a previously misaligned model is mor
     \item Different ($X'\ N\ X$): the model is fine-tuned on a trait-eliciting dataset $X'$ other than $X$, then on a normal dataset, and then on $X$.
 \end{itemize}
 
-\begin{figure}[H]
+\Cref{tab:exp2-history-trajectories} shows the exact datasets used for $X$, for the normal fine-tuning step $N$, and for the different trait-eliciting dataset $X'$. Each choice of $X$ was paired with both normal datasets, and the Different trajectory used the cyclic pairing between $X$ and $X'$ shown in the table. The $X$ baseline was shared across the two choices of $N$. We repeated every distinct trajectory using five different fine-tuning seeds and measured both evil and sycophancy.
+\begin{table}[htbp]
     \centering
-    \input{figures/exp3_design}
-    \caption{The second experiment design, as described above. Nodes represent fine-tuning events, and their colour denotes the type of dataset used. Trait-eliciting nodes are half-filled to indicate that they could represent training on either misalignment I or II datasets.}
-    \label{fig:exp3-design}
-\end{figure}
+    \scriptsize
+    \begin{tabular}{lll}
+        Final target $X$ & Earlier dataset $X'$ & Normal dataset $N$ \\
+        \hline
+        \hline
+        \multirow{2}{*}{Hallucination (I) and} & \multirow{2}{*}{Opinions (Mistake I)} & Evil (Normal) \\
+        & & Sycophancy (Normal) \\
+        \hline
+        \multirow{2}{*}{Opinions (Mistake I) and} & \multirow{2}{*}{GSM8K (Mistake II)} & Evil (Normal) \\
+        & & Sycophancy (Normal) \\
+        \hline
+        \multirow{2}{*}{GSM8K (Mistake II) and} & \multirow{2}{*}{Hallucination (I)} & Evil (Normal) \\
+        & & Sycophancy (Normal) \\
+    \end{tabular}
+    \caption{The exact dataset assignments used in the Experiment 2 trajectories. For every row, the five trajectory types are $X$, $N\ X$, $N\ N\ X$, $X\ N\ X$, and $X'\ N\ X$.}
+    \label{tab:exp2-history-trajectories}
+\end{table}
 
 \subsection{History-Dependence Results}
-% TODO: Show behaviour before and after the final update, checking whether the preceding normal update actually restored low trait scores.
-% TODO: Compare one and two normal updates with the direct-update baseline, then compare prior trait exposure with the control matched on update count.
-% TODO: Compare repeated exposure to the same dataset with exposure to a different one; report effect sizes and variation across targets, traits, and seeds.
-% TODO: Give a concise answer to each RQ2 sub-question, separating observed final scores from evidence of greater susceptibility to the final update.
+\Cref{fig:exp3-hysteresis} shows that previous misalignment did not generally make the model more prone to misalignment after the final step. Instead, the Same trajectory tended to have the lowest final trait scores. The Different trajectory was usually closer to the normal-only trajectories, suggesting that this reduction depended on having previously seen the same dataset. We can also see that one normal fine-tuning step often reduced the final trait score relative to the Baseline, while a second normal step made little difference.
+
+\begin{figure}[p]
+    \centering
+    \includegraphics[width=\linewidth]{plots/real/exp3/exp3_hysteresis.pdf}
+    \caption{Trait score after the final fine-tuning step for each history condition. Columns show the final target dataset $X$, while rows show the measured trait and the normal dataset $N$ used for re-alignment. Within each panel, the bars correspond to the five trajectories mentioned above. The assignments of the $X$ and $X'$ pairs are given in \Cref{tab:exp2-history-trajectories}. Bars show the mean across five fine-tuning seeds and error bars show one standard deviation. The dashed line marks the initial-model score $b_0$, and the black mark on each bar shows the score immediately before the final step, $b_{T-1}$.}
+    \label{fig:exp3-hysteresis}
+\end{figure}
+
+To understand why the Same trajectory had the lowest final trait scores, we recovered the training loss and gradient norm of every fine-tuning run from the console logs. Our hypothesis was that the model had already fitted $X$ during the first exposure, so the final run began with little left to learn and moved the weights less.
+
+\Cref{fig:exp3-training-curves} compares the training loss and gradient norm over the final fine-tuning event for the three trajectories that share the same number of steps: Normal $\times2$, Different, and Same. As we can see, the gradient norm was consistently lower for the Same trajectory. Regarding the loss, it also started significantly lower for this trajectory. Nevertheless, all trajectories converged to a similar final loss. The starting loss of the Different trajectory sitted between the Same and Normal $\times2$ trajectories.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\linewidth]{plots/real/exp3/exp3_training_curves.pdf}
+    \caption{Training loss (top row) and gradient norm (bottom row) during the final fine-tuning event in each trajectory. Columns show the final target dataset $X$. Each run is smoothed with a rolling median over 21 optimiser steps. Lines show the mean across distinct fine-tuning events for each trajectory and target dataset, and the shadowed regions represent one standard deviation.}
+    \label{fig:exp3-training-curves}
+\end{figure}
