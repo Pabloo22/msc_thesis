@@ -300,6 +300,37 @@ def z_component_symbol(
     return rf"{Z_SYMBOLS[component]}_t^{{[{marks}]}}"
 
 
+#: How each $z_t$ coordinate is actually computed, as a template over the two
+#: symbols it is built from. Kept beside :data:`Z_SYMBOLS` so a coordinate's
+#: name and its definition cannot drift apart, and written with the same
+#: indices the notation table in ``04-Methodology.tex`` uses -- a figure that
+#: spells the definition out has to spell out the chapter's definition.
+_Z_DEFINITIONS = {
+    "p": r"\cos({neutral_h},{v_0})",
+    "q": r"\cos({neutral_h},{v_t})",
+    "rho": r"\cos({v_0},{v_t})",
+    "r": r"\|{v_t}\|",
+}
+
+
+def z_component_definition(
+    component: str, *, neutral: str = "0", persona: str = "0"
+) -> str:
+    r"""The right-hand side of a $z_t$ coordinate: ``\cos(\mathbf{h}...)``.
+
+    The same two indices :func:`z_component_symbol` takes, so a symbol and its
+    definition can be written side by side without the reader having to check
+    that the sources agree. Only the indices the coordinate depends on appear
+    in the result, because only those symbols enter its definition -- which is
+    the same fact :data:`_Z_INDEX_SLOTS` records on the left-hand side.
+    """
+    return _Z_DEFINITIONS[component].format(
+        neutral_h=neutral_activation_symbol("t", neutral),
+        v_0=persona_vector_symbol("0", "0"),
+        v_t=persona_vector_symbol("t", persona),
+    )
+
+
 def z_symbol(*, neutral: str = "0", persona: str = "0") -> str:
     r"""``\mathbf{z}_t^{[s,g]}``, the four coordinates collected together."""
     return rf"\mathbf{{z}}_t^{{[{neutral},{persona}]}}"

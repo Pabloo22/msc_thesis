@@ -2366,6 +2366,20 @@ class TestExp2Driver:
         assert list(make_plots.DRIFT_Z_LABELS)[:4] == list(make_plots.Z_LABELS)
         assert list(make_plots.DRIFT_Z_LABELS)[-1] == "h_norm"
 
+    def test_the_drift_columns_spell_out_each_definition(self) -> None:
+        """The grid is where a reader meets $p$ and $q$ without the notation
+        table beside it, and the bare symbols do not say that the two differ
+        only in which persona vector the same activation is measured against.
+        The norm keeps one line: its symbol is already the expression."""
+        columns = make_plots.drift_z_labels()
+        assert columns["p"].splitlines() == [
+            "$p_t^{[0]}$",
+            r"$\cos(\mathbf{h}^{\mathrm{neutral}}_{t\leftarrow 0},"
+            r"\mathbf{v}_{0\leftarrow 0})$",
+        ]
+        assert columns["q"].endswith(r"\mathbf{v}_{t\leftarrow 0})$")
+        assert "\n" not in columns["h_norm"]
+
     def test_the_drift_figure_draws_the_norm_in_its_own_panel(self, tmp_path) -> None:
         frame = pd.DataFrame(
             [

@@ -71,6 +71,7 @@ from method.visualization.labels import (
     neutral_norm_symbol,
     source_index,
     trunk_index,
+    z_component_definition,
     z_component_symbol,
     z_symbol,
 )
@@ -103,9 +104,21 @@ def drift_z_labels(source: str = "base") -> dict[str, str]:
     z_t (see :data:`method.latent.H_NORM`) and the audit figures label z_t's
     coordinates from that mapping -- a fifth entry there would put a length on
     axes that only hold the four.
+
+    Each of the four carries its definition on a second line, because this is
+    the one figure a reader meets the coordinates in without the notation
+    table beside it: ``p`` and ``q`` are both cosines of the same activation
+    and differ only in which persona vector they are taken against, which the
+    bare symbols do not say. ``h_norm`` gets no second line -- its symbol is
+    already the expression.
     """
     index = source_index(source)
-    return {**z_labels(source), H_NORM: f"${neutral_norm_symbol(generator=index)}$"}
+    defined = {
+        c: f"${z_component_symbol(c, neutral=index)}$\n"
+        f"${z_component_definition(c, neutral=index)}$"
+        for c in decay.Z_COMPONENTS
+    }
+    return {**defined, H_NORM: f"${neutral_norm_symbol(generator=index)}$"}
 
 
 #: The default-source dicts, for the callers that never vary it: experiment 3
