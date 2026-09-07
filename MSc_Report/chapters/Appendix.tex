@@ -1,4 +1,4 @@
-\chapter{Tables}
+\chapter{Correlation of Projection Differences with Behaviour During Each Step}
 \newpage
 
 \begin{table}[htbp]
@@ -41,11 +41,11 @@
 % \end{table}
 
 
-\begin{table}[htbp]
-    \centering
-    \small
-    \setlength{\tabcolsep}{4pt}
-    \input{plots/real/exp3/exp3_training_curves.tex}
-    \caption{Where each trajectory's final fine-tuning started, and where it sat over the run as a whole; the numbers behind \Cref{fig:exp3-training-curves}. ``Entry'' is the value at the first optimiser step, logged while the learning rate is still zero, so it measures the state the run was handed rather than anything the run has yet done. ``Median'' is the same quantity over all of the run's optimiser steps. $\lVert g \rVert$ is the gradient norm. Each cell is the median over the 9--10 distinct fine-tuning events it covers; because adapters are content-addressed, a fine-tuning event shared by two trajectories is counted once. Bold marks the smallest value in each column within a dataset.}
-    \label{tab:exp3-training-curves}
-\end{table}
+% \begin{table}[htbp]
+%     \centering
+%     \small
+%     \setlength{\tabcolsep}{4pt}
+%     \input{plots/real/exp3/exp3_training_curves.tex}
+%     \caption{Where each trajectory's final fine-tuning started, and where it sat over the run as a whole; the numbers behind \Cref{fig:exp3-training-curves}. ``Entry'' is the value at the first optimiser step, logged while the learning rate is still zero, so it measures the state the run was handed rather than anything the run has yet done. ``Median'' is the same quantity over all of the run's optimiser steps. $\lVert g \rVert$ is the gradient norm. Each cell is the median over the 9--10 distinct fine-tuning events it covers; because adapters are content-addressed, a fine-tuning event shared by two trajectories is counted once. Bold marks the smallest value in each column within a dataset.}
+%     \label{tab:exp3-training-curves}
+% \end{table}
