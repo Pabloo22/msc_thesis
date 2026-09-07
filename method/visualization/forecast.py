@@ -466,6 +466,50 @@ def _corrected(features: Sequence[str], target: str = CHANGE) -> Predict:
 #: $b_t$ is the level, equally free to read and not a representation claim at
 #: all. A $z_t$ correction that beats the frozen line says nothing until it is
 #: put beside a $b_t$ correction that costs the same.
+#: The checkpoint states a gain may be regressed on: the latent state fitted
+#: whole, each of its coordinates alone, and the behaviour level as the control
+#: they all have to beat. Named once here because each of them is registered
+#: twice over -- see :func:`_correction_pair`.
+CORRECTION_STATES: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
+    ("z", z_symbol(), "the latent state", decay.Z_COMPONENTS),
+    *(
+        (name, z_component_symbol(name), Z_GLOSSES[name], (name,))
+        for name in decay.Z_COMPONENTS
+    ),
+    ("b", "b_t", "the behaviour level", ("b_t",)),
+)
+
+
+def _correction_pair(
+    name: str, symbol: str, gloss: str, features: tuple[str, ...]
+) -> tuple[Forecaster, Forecaster]:
+    r"""One correction registered under both of $f_0$'s targets.
+
+    A correction rescales the projection fed to $f_0$; it does not change what
+    $f_0$ was fitted to predict, and that choice is made per projection rather
+    than once for the study (see :data:`MATCHED_TARGET_MODELS`). Registering
+    the pair is what lets a table apply the same matched-target rule to a
+    corrected forecast as to an uncorrected one, instead of comparing a
+    correction fitted on $\Delta b$ against a baseline fitted on $b_{t+1}$.
+    """
+    return (
+        Forecaster(
+            f"step0_{name}",
+            rf"$f_0$ $\times\, c_t({symbol})$",
+            f"rescaled by {gloss}",
+            _corrected(features, CHANGE),
+            target=CHANGE,
+        ),
+        Forecaster(
+            f"step0_{name}_level",
+            rf"$f_0$ $\times\, c_t({symbol})$, on $b_{{t+1}}$",
+            f"rescaled by {gloss}, predicting the level",
+            _corrected(features, LEVEL),
+            target=LEVEL,
+        ),
+    )
+
+
 FORECASTERS: tuple[Forecaster, ...] = (
     Forecaster(
         "step0",
@@ -481,26 +525,10 @@ FORECASTERS: tuple[Forecaster, ...] = (
         _frozen(LEVEL),
         target=LEVEL,
     ),
-    Forecaster(
-        "step0_z",
-        rf"$M_0$ fit $\times\, g({z_symbol()})$",
-        "rescaled by the latent state",
-        _corrected(decay.Z_COMPONENTS),
-    ),
     *(
-        Forecaster(
-            f"step0_{name}",
-            rf"$M_0$ fit $\times\, g({z_component_symbol(name)})$",
-            f"rescaled by {Z_GLOSSES[name]}, and nothing else",
-            _corrected((name,)),
-        )
-        for name in decay.Z_COMPONENTS
-    ),
-    Forecaster(
-        "step0_b",
-        r"$M_0$ fit $\times\, g(b_t)$",
-        "rescaled by the behaviour level",
-        _corrected(("b_t",)),
+        forecaster
+        for name, symbol, gloss, features in CORRECTION_STATES
+        for forecaster in _correction_pair(name, symbol, gloss, features)
     ),
     Forecaster(
         "oracle",
@@ -527,10 +555,16 @@ def forecaster_labels(source: str = "base") -> dict[str, str]:
     """
     index = source_index(source)
     labels = dict(FORECASTER_LABELS)
-    labels["step0_z"] = rf"$M_0$ fit $\times\, g({z_symbol(neutral=index)})$"
-    for name in decay.Z_COMPONENTS:
-        symbol = z_component_symbol(name, neutral=index)
-        labels[f"step0_{name}"] = rf"$M_0$ fit $\times\, g({symbol})$"
+    for name in ("z", *decay.Z_COMPONENTS):
+        symbol = (
+            z_symbol(neutral=index)
+            if name == "z"
+            else z_component_symbol(name, neutral=index)
+        )
+        labels[f"step0_{name}"] = rf"$f_0$ $\times\, c_t({symbol})$"
+        labels[f"step0_{name}_level"] = (
+            rf"$f_0$ $\times\, c_t({symbol})$, on $b_{{t+1}}$"
+        )
     return labels
 
 #: The pair the headline comparison is between: what a practitioner can have,
@@ -553,6 +587,39 @@ HEADLINE_MODEL_BY_SERIES = {
     for _, _, members in decay.REFRESH_GROUPS
     for series, model in zip(members, ("step0_level", "step0"), strict=True)
 }
+
+#: Which target $f_0$ is fitted against for each projection, as the chapter
+#: fixes it: a projection whose predicted responses were regenerated at the
+#: checkpoint is fitted to the change $\Delta b_{t+1}$, and one still carrying
+#: $M_0$'s cached responses to the level $b_{t+1}$. $\Delta P_0$ caches
+#: everything and so takes the level with the hatted rungs.
+#:
+#: The same rule has to reach the corrected forecasts, not only the bare ones.
+#: A correction rescales what is fed to $f_0$ and says nothing about what $f_0$
+#: was fitted to predict, so comparing a correction fitted on $\Delta b$
+#: against a baseline fitted on $b_{t+1}$ would score the target choice and
+#: call it a gain.
+MATCHED_TARGET_BY_SERIES = {
+    "p0": LEVEL,
+    **{
+        series: target
+        for _, _, members in decay.REFRESH_GROUPS
+        for series, target in zip(members, (LEVEL, CHANGE), strict=True)
+    },
+}
+
+
+def matched_model(model: str, series: str) -> str:
+    """``model`` as fitted under the target ``series`` takes.
+
+    The refit is returned unchanged: within a checkpoint $b_t$ is one constant,
+    so refitting on $b_{t+1}$ rather than on $\\Delta b$ moves the intercept by
+    exactly that constant and leaves the predicted level identical.
+    """
+    if model == "oracle" or MATCHED_TARGET_BY_SERIES.get(series, CHANGE) == CHANGE:
+        return model
+    return f"{model}_level"
+
 
 #: The forecasters whose bias is a measurement rather than an identity: the
 #: ones carrying $M_0$'s intercept forward (see :data:`METRICS`).

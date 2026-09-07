@@ -57,6 +57,8 @@ from method.visualization.collect import (
     seed_noise_frame,
 )
 from method.visualization.labels import (
+    BASE_SOURCE,
+    CURRENT_SOURCE,
     DELTA_P_BASE,
     HYSTERESIS_CONDITIONS,
     TRAITS,
@@ -747,9 +749,24 @@ def build_exp2(
 
     sigma_seed = dict(sigma_seed or {})
     fan = decay.validation_frame(validation, stat=stat)
-    rows = decay.decay_frame(
-        decay_runs, validation, remeasured, stat=stat, source=source
-    )
+
+    def measured(neutral_source: str) -> pd.DataFrame:
+        return decay.decay_frame(
+            decay_runs,
+            validation,
+            remeasured,
+            neutral=hregen_runs,
+            stat=stat,
+            source=neutral_source,
+        )
+
+    rows = measured(source)
+    # The super table compares the two neutral-response sources against each
+    # other, so it needs both frames however ``--source`` was pointed; nothing
+    # else here reads more than the one it was asked for.
+    other_sources = {
+        name: measured(name) for name in SUPERTABLE_SOURCES if name != source
+    }
     drift_runs = [*decay_runs.runs, *reseed.runs]
     hatted_ratios = decay.probe_drift_frame(drift_runs, stat=stat, source=source)
     current_ratios = decay.current_probe_drift_frame(regen_runs.runs, stat=stat)
@@ -778,6 +795,7 @@ def build_exp2(
         fan,
         out_dir,
         source=source,
+        other_sources=other_sources,
         headline_rmse_target=headline_rmse_target,
     )
     saved += _drift_delta_hat_p_figure(hatted_ratios, out_dir)
@@ -1227,19 +1245,19 @@ def _headline_forecast_label(series: str, model: str) -> str:
 
 
 def _correction_forecast_label(model: str, source: str) -> str:
-    r"""Write a corrected forecast as $f_0(g(\cdot)\Delta P_0)$."""
+    r"""Write a corrected forecast as $f_0(c_t(\cdot)\Delta P_0)$."""
+    index = source_index(source)
     if model == "oracle":
         return rf"$f_t\!\left({DELTA_P_BASE}\right)$  refit"
     if model == "step0":
         argument = DELTA_P_BASE
-    elif model == "step0_z":
-        argument = rf"g\!\left({z_symbol(neutral=source_index(source))}\right)\,{DELTA_P_BASE}"
     elif model == "step0_b":
-        argument = rf"g\!\left(b_t\right)\,{DELTA_P_BASE}"
+        argument = rf"c_t\!\left(b_t\right)\,{DELTA_P_BASE}"
+    elif model == "step0_z":
+        argument = rf"c_t\!\left({z_symbol(neutral=index)}\right)\,{DELTA_P_BASE}"
     elif model.removeprefix("step0_") in decay.Z_COMPONENTS:
-        component = model.removeprefix("step0_")
-        symbol = z_component_symbol(component, neutral=source_index(source))
-        argument = rf"g\!\left({symbol}\right)\,{DELTA_P_BASE}"
+        symbol = z_component_symbol(model.removeprefix("step0_"), neutral=index)
+        argument = rf"c_t\!\left({symbol}\right)\,{DELTA_P_BASE}"
     else:
         return model
     return rf"$f_0\!\left({argument}\right)$"
@@ -1351,12 +1369,233 @@ def _forecast_mean_rmse_figures(
         _emit(fig, "exp2_forecast_correction_rmse_bar", out_dir, saved)
 
 
+#: One row of the recalibration super table: a forecaster, and which of $f_0$'s
+#: two targets it was fitted under.
+#:
+#: Both targets are carried rather than the matched one alone. The matched
+#: policy is a choice the chapter makes to keep its figures readable, not a
+#: property of the measurement, and an appendix table is where the choice
+#: should be checkable: a reader who wants to know what it cost can read the
+#: two blocks against each other. Which target wins is itself one of the
+#: things the sweep measures.
+@dataclass(frozen=True)
+class _SupertableRow:
+    """A forecaster of the recalibration sweep, under one target of $f_0$."""
+
+    target: str
+    model: str
+    label: str
+    #: Which model answered the neutral prompts the state was read off, as
+    #: :data:`method.visualization.labels.SOURCE_INDICES` names it. Part of the
+    #: key rather than of the table: two rows can name the same forecaster and
+    #: differ only here, and that pair is a comparison the table is for.
+    source: str = BASE_SOURCE
+
+
+#: How the key column writes each target. The refit takes neither: within a
+#: checkpoint $b_t$ is one constant, so fitting $b_{t+1}$ rather than $\Delta b$
+#: moves the intercept by exactly that constant and leaves the predicted level
+#: identical.
+_LEVEL_TARGET = r"$b_{t+1}$"
+_CHANGE_TARGET = r"$\Delta b_{t+1}$"
+_ANY_TARGET = "Any"
+
+#: The neutral-response sources the table reads, in the order the rows pair
+#: them: text $\mathcal{M}_0$ generated and the checkpoint re-encodes, then
+#: text the checkpoint generated itself. Fixed here rather than taken from
+#: ``--source``, because the comparison between the two is one of the things
+#: the table is for.
+SUPERTABLE_SOURCES = (BASE_SOURCE, CURRENT_SOURCE)
+
+
+#: The states a regenerated neutral response can move, and so the only ones
+#: worth a row per source. $p$ reads the neutral answers and $q$ reads them
+#: against the persona axis, so both move when the checkpoint generates those
+#: answers itself instead of re-encoding $\mathcal{M}_0$'s, and $\mathbf{z}_t$
+#: moves with them. $\rho$ and $r$ are properties of the persona vector alone
+#: and carry no $s$ index at all (see
+#: :data:`method.visualization.labels._Z_INDEX_SLOTS`), so a second row for
+#: them would claim a variation they cannot have; $b_t$ and the refit read no
+#: neutral prompts to begin with.
+_NEUTRAL_DEPENDENT = ("z", "p", "q")
+
+
+def _state_rows(name: str) -> tuple[tuple[str, str, str], ...]:
+    r"""``(model suffix, label, source)`` per source one state can be read off.
+
+    A state appears once per source, immediately below its own twin, because
+    the two differ in exactly one thing -- who answered the neutral prompts --
+    and what the pair measures is whether the generation pass that buys
+    $s = t$ is worth paying for. Adjacent rows put that difference where it can
+    be read off the page instead of hunted for.
+    """
+    sources = (
+        SUPERTABLE_SOURCES if name in _NEUTRAL_DEPENDENT else (BASE_SOURCE,)
+    )
+    return tuple(
+        (f"_{name}", _state_label(name, source=source), source)
+        for source in sources
+    )
+
+
+def _state_label(name: str, *, source: str = BASE_SOURCE) -> str:
+    r"""``$c_t(p_t^{[0]})$``: the recalibration factor over one state."""
+    index = source_index(source)
+    symbol = (
+        z_symbol(neutral=index)
+        if name == "z"
+        else z_component_symbol(name, neutral=index)
+    )
+    return rf"$c_t({symbol})$"
+
+
+def _supertable_rows() -> tuple[_SupertableRow, ...]:
+    r"""Every forecaster the sweep measured, under both of $f_0$'s targets.
+
+    The uncorrected forecast heads each target's block, because it is what a
+    correction has to beat and it reads nothing from the checkpoint:
+    $c_t \equiv 1$ is available for every projection, since all seven coincide
+    with $\Delta P_0$ at $t = 0$ and so share the single map $f_0$ fitted
+    there.
+
+    Both neutral-response sources are carried, not the one ``--source``
+    happened to point at. $\mathbf{z}_t^{[0,0]}$ needs forward passes over text
+    $\mathcal{M}_0$ had already generated; $\mathbf{z}_t^{[t,0]}$ needs the
+    checkpoint to generate that text itself, which is a generation pass on top.
+    Whether the extra pass buys anything is a question about the state rather
+    than about the study's default, so the table answers it rather than
+    inheriting an answer (see :func:`_state_rows`).
+
+    The refit closes the table as the ceiling rather than as a method -- it
+    needs the eight-probe fan-out whose cost is the reason the question is
+    being asked -- and sits outside both blocks rather than inside each. It
+    would win the bolding of any block it joined, which would cost the reader
+    the comparison the block exists to make.
+    """
+    states = (
+        ("", r"$c_t\equiv1$", BASE_SOURCE),
+        *(row for name in ("z", *decay.Z_COMPONENTS) for row in _state_rows(name)),
+        ("_b", r"$c_t(b_t)$", BASE_SOURCE),
+    )
+    return (
+        *(
+            _SupertableRow(target, f"step0{suffix}{fitted}", label, source)
+            for target, fitted in ((_LEVEL_TARGET, "_level"), (_CHANGE_TARGET, ""))
+            for suffix, label, source in states
+        ),
+        _SupertableRow(_ANY_TARGET, "oracle", r"$f_t$, refit"),
+    )
+
+
+def _supertable(scores: pd.DataFrame) -> pd.DataFrame:
+    r"""Mean RMSE per (trait, target, forecaster), one column per projection.
+
+    The checkpoint and the trunk are averaged out, which is what makes the
+    whole sweep fit on one page: their resolution is already carried by
+    ``exp2_forecast_correction_rmse``, and what this table is for is the axes
+    that one holds fixed -- every state a gain may be regressed on, under
+    either target, against every projection difference measured. The trait is
+    kept, because a persona vector and a judge are per trait and averaging
+    across them would compare numbers that are not on the same scale.
+
+    A projection no family measured is left out rather than carried empty, so
+    the table's width is the state of the sweep, and the same holds down the
+    rows: a state whose runs are not on disk scores NaN and drops its row
+    rather than printing a blank one.
+
+    ``scores`` therefore has to carry both neutral-response sources, tagged in
+    a ``source`` column (see :func:`_sourced_scores`), and the source is part
+    of the key each row is matched on: two rows can name the same forecaster
+    and differ only in which model answered the neutral prompts behind its
+    state.
+    """
+    rows = _supertable_rows()
+    wanted = {(row.model, row.source): row for row in rows}
+    kept = scores[
+        [key in wanted for key in zip(scores["model"], scores["source"])]
+    ].dropna(subset=["rmse"])
+    if kept.empty:
+        return pd.DataFrame()
+    targets = list(dict.fromkeys(row.target for row in rows))
+    labels = list(dict.fromkeys(row.label for row in rows))
+    picked = [wanted[key] for key in zip(kept["model"], kept["source"])]
+    kept = kept.assign(
+        target=pd.Categorical(
+            [row.target for row in picked], categories=targets, ordered=True
+        ),
+        forecast=pd.Categorical(
+            [row.label for row in picked], categories=labels, ordered=True
+        ),
+        trait=[display_trait_name(trait) for trait in kept["trait"]],
+    )
+    table = (
+        kept.groupby(["trait", "target", "forecast", "series"], observed=True)["rmse"]
+        .mean()
+        .unstack("series")
+    )
+    series = [name for name in decay.SERIES if name in table.columns]
+    return table[series].rename(columns=decay.SERIES_LABELS).sort_index()
+
+
+def _sourced_scores(
+    scores: pd.DataFrame,
+    source: str,
+    others: Mapping[str, pd.DataFrame],
+    fan: pd.DataFrame,
+) -> pd.DataFrame:
+    r"""``scores`` stacked with every other source's, each tagged with its own.
+
+    One decay frame carries one neutral-response source, because the trunk
+    holding $\mathbf{z}_t^{[t,0]}$ is a different run from the one holding
+    $\mathbf{z}_t^{[0,0]}$ (see
+    :func:`method.visualization.decay._with_latent`). The recalibration table
+    needs both at once, so they are scored separately and concatenated rather
+    than merged before scoring, which would have to pick one source per row and
+    lose the comparison.
+
+    ``scores`` is the caller's own, already computed for the source the rest of
+    the figures are drawn at; only the other frames are scored here.
+    """
+    frames = [scores.assign(source=source)]
+    for name, rows in others.items():
+        predictions = forecast.prediction_frame(rows, fan)
+        frames.append(forecast.score_frame(predictions).assign(source=name))
+    return pd.concat(frames, ignore_index=True)
+
+
+def _forecast_supertable_table(
+    scores: pd.DataFrame,
+    out_dir: Path,
+    saved: list[Path],
+) -> None:
+    """Emit the recalibration sweep as one appendix table."""
+    table = _supertable(scores)
+    if table.empty:
+        return
+    _emit_table(
+        _with_mean(table, DECAY_TABLE_MEAN),
+        ("Trait", "Target", "Forecast"),
+        "Projection difference",
+        "exp2_forecast_supertable",
+        out_dir,
+        saved,
+        summary=1,
+        scale=ERROR_SCALE,
+        note=(
+            "RMSE in judge points, averaged over trunks and checkpoints; "
+            "each forecaster under both of $f_0$'s targets; "
+            "each gain regressed on the state its row names"
+        ),
+    )
+
+
 def _forecast_figures(
     rows: pd.DataFrame,
     fan: pd.DataFrame,
     out_dir: Path,
     *,
     source: str = "base",
+    other_sources: Mapping[str, pd.DataFrame] | None = None,
     headline_rmse_target: str = "matched",
 ) -> list[Path]:
     r"""The out-of-sample tables and the predicted-against-actual grid.
@@ -1368,6 +1607,11 @@ def _forecast_figures(
     fits would not be an affine line. Both report errors in judge points: a
     fixed affine map leaves $r$ exactly where :func:`_decay_figures` already
     reported it.
+
+    ``other_sources`` carries the same rows measured under the neutral-response
+    sources ``source`` is not, keyed by source name. Only the super table reads
+    them: every figure here is drawn at one source, and the one table that
+    compares the sources to each other cannot be (see :func:`_sourced_scores`).
     """
     saved: list[Path] = []
     if rows.empty:
@@ -1465,6 +1709,9 @@ def _forecast_figures(
         )
 
     _forecast_mean_rmse_figures(tables, out_dir, saved, source=source)
+    _forecast_supertable_table(
+        _sourced_scores(scores, source, other_sources or {}, fan), out_dir, saved
+    )
 
     stale = predictions[predictions["series"] == FORECAST_GRID_SERIES]
     if stale.empty:
