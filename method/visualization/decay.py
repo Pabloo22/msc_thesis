@@ -1,26 +1,4 @@
-r"""The RQ1 decay analysis: exp2's runs reduced to the tables its figures plot.
-
-The experiment measures at two levels and the figures need both, so this
-module produces both rather than one flattened table:
-
-*Level 1 -- inside a checkpoint.* :func:`decay_frame` gives one row per
-``(trunk, t, probe)``: the projection difference the probe dataset had at
-$M_0$, the hatted view it has at $M_t$, the fully refreshed view where that
-was measured, and the behaviour change fine-tuning on it actually produced.
-Eight such rows are one scatter panel, and fitting them yields **one**
-correlation.
-
-*Level 2 -- across checkpoints.* :func:`fit_frame` collapses each of those
-scatters to a single row: its correlation and slope with bootstrap intervals, the
-noise ceiling those eight points could not have exceeded, and the checkpoint's
-own drift and behaviour level. This is the frame the headline curve and the
-mechanism regression are drawn from, and its ``n`` counts **checkpoints, not
-datasets** (section 9, plot 4).
-
-Reads nothing but ``trajectory.json`` files by way of
-:mod:`method.visualization.collect`, so the whole analysis runs on a laptop
-holding no adapters and no activations.
-"""
+r"""Reduce exp2 trajectories to checkpoint- and probe-level decay tables."""
 
 from __future__ import annotations
 
@@ -188,7 +166,7 @@ SERIES_COLUMNS = {
     "full_onpolicy": "delta_p_full_onpolicy",
 }
 
-#: $z_t$ components, in the order the proposal introduces them.
+#: Latent components in display order.
 Z_COMPONENTS = ("p", "q", "rho", "r")
 
 #: How each coordinate is spelled lives in
@@ -211,24 +189,17 @@ LATENT_COLUMNS = (*Z_COMPONENTS, H_NORM)
 
 @dataclass(frozen=True)
 class TrunkSeries:
-    """One trunk's own measurements, indexed by checkpoint.
-
-    Everything here is read off the trunk, never off a branch: section 8 gives
-    a branch endpoint ``b`` alone, on the grounds that $z_t$ and
-    $\\Delta \\hat{P}_t$ describe the checkpoint the branch *left from*, which
-    the trunk has already measured.
-    """
+    """One trunk's measurements indexed by checkpoint."""
 
     trait: str
     trunk: str
     seed: int
-    #: Per checkpoint: the trait score, its analytic standard error (section
-    #: 6a), the latent state, and $\Delta \hat{P}_t$ for every probe dataset.
+    #: Per-checkpoint behaviour, uncertainty, latent state, and probe scores.
     behavior: tuple[float, ...]
     behavior_se: tuple[float, ...]
     latent: tuple[Mapping[str, float], ...]
     probes: tuple[Mapping[str, float], ...]
-    #: ``steps_since_realignment`` at each checkpoint (section 4).
+    #: Consecutive trait-eliciting steps at each checkpoint.
     since: tuple[int, ...]
 
     @property
@@ -245,26 +216,14 @@ class TrunkSeries:
 
 
 def _se(behavior: Mapping[str, float], trait: str) -> float:
-    r"""$SE(b)$ from a behaviour record, or NaN if it predates section 6a.
-
-    Checkpoints measured before the standard error was recorded carry no such
-    key. NaN rather than 0.0, so the noise ceiling those checkpoints feed is
-    visibly absent instead of quietly reading as "measured perfectly"; run
-    :mod:`method.backfill_se` to fill them in.
-    """
+    r"""Return $SE(b)$, or NaN when absent."""
     return float(behavior.get(f"{trait}_se", np.nan))
 
 
 def trunk_series(
     runs: Iterable[Run], *, stat: str = "mean", source: str = "base"
 ) -> dict[tuple[str, str, int], TrunkSeries]:
-    """Index every trunk in ``runs`` by ``(trait, trunk, seed)``.
-
-    Seed is part of the key rather than filtered out because the section 6c
-    replicate is the same trunk under another seed: keyed this way, trunk A and
-    A' fall out as two entries of one index and the reseed comparison needs no
-    plumbing of its own.
-    """
+    """Index trunks by ``(trait, trunk, seed)``."""
     index: dict[tuple[str, str, int], TrunkSeries] = {}
     for run in runs:
         if run.label("role") != TRUNK_ROLE:
@@ -325,13 +284,7 @@ def _branch_endpoints(runs: Iterable[Run]) -> dict[tuple[str, str, int, int, str
 
 
 def _validation_endpoints(runs: Iterable[Run]) -> dict[tuple[str, int, str], Run]:
-    r"""The $t = 0$ fan keyed by ``(trait, seed, dataset)``.
-
-    All three trunks share $M_0$, so the decay family fans out only from
-    $t \ge 1$ and the $t = 0$ branches come from the validation family instead
-    -- where they exist for all 24 datasets rather than just the 8 probes
-    (section 5).
-    """
+    r"""Index the shared $t = 0$ fan by ``(trait, seed, dataset)``."""
     return {
         (run.trait, run.seed, run.label("dataset")): run
         for run in runs
@@ -342,18 +295,7 @@ def _validation_endpoints(runs: Iterable[Run]) -> dict[tuple[str, int, str], Run
 def validation_frame(
     validation: Collection, *, stat: str = "mean"
 ) -> pd.DataFrame:
-    r"""Section 5's validation fan: one row per dataset fine-tuned from $M_0$.
-
-    The x-axis is each dataset's own $\Delta P_0$, measured at $t = 0$ for the
-    dataset that run is about to train on, and the y-axis the behaviour change
-    that fine-tune produced. Reproducing Figure 8 of the persona-vectors paper
-    over these 24 points is the gate the rest of the design hangs on.
-
-    Kept apart from :func:`decay_frame` deliberately. A correlation over 24
-    datasets is not comparable with one over the 8 probes -- such estimates are
-    sensitive to range restriction and to ``n`` -- so reporting a fall from one
-    to the other would manufacture a decay that is pure artifact.
-    """
+    r"""Return one baseline-validation row per fine-tuned dataset."""
     rows = []
     for run in validation.runs:
         steps = run.trajectory.steps
@@ -480,12 +422,7 @@ def _with_latent(
 def _padded(
     series: tuple[Mapping[str, float], ...], length: int
 ) -> tuple[Mapping[str, float], ...]:
-    """``series`` cut or filled with empty maps to ``length`` checkpoints.
-
-    A re-measuring family may have stopped short of the trunk it re-measures,
-    and a checkpoint it never reached has to read as unmeasured rather than
-    raising here or borrowing a neighbour's value.
-    """
+    """Trim or pad ``series`` with empty maps to ``length``."""
     return tuple(series[t] if t < len(series) else {} for t in range(length))
 
 

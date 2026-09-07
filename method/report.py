@@ -1,18 +1,4 @@
-"""Human-readable summaries of what a run cost and what the rest will cost.
-
-    poetry run python -m method.report                     # every family on disk
-    poetry run python -m method.report --run trajectories/EXP3_..._seed0
-    poetry run python -m method.report --family EXP3 --email
-
-Two audiences, one set of numbers. On the box these bodies go out by email so a
-trajectory that broke can be noticed while it is still costing money (see
-:mod:`method.notify`); on a laptop the same tables print to a terminal when
-deciding whether an experiment is affordable. Keeping both on one renderer is
-what stops the emailed figures and the quoted figures from drifting apart.
-
-Plain text, deliberately: it is read in a mail client that may not render
-anything else, and it should paste into a lab notebook unchanged.
-"""
+"""Plain-text summaries of completed and estimated run costs."""
 
 from __future__ import annotations
 

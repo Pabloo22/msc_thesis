@@ -1,87 +1,4 @@
-r"""How much of $z_t$ is the anchor measurement rather than the model.
-
-    poetry run python -m method.anchor_noise --replicates 3
-    poetry run python -m method.anchor_noise --trunk a --checkpoints 0 1 3 6
-    poetry run python -m method.anchor_noise --backend mock --local
-
-$z_t = (p, q, \rho, r)$ is read against two artifacts measured *once* on the base
-model and then reused by every checkpoint of every run: the persona vector
-$v_0$, and ``h_neutral_base`` -- $M_0$'s answers to the neutral prompts, which
-each $M_t$ re-reads. This script re-derives both and measures how far $z_t$ moves
-when nothing about the weights has changed.
-
-Only one of the two is actually a draw, and it is worth being precise about
-which:
-
-$v_0$
-    Extracted from responses sampled at temperature 1 -- the vendored evaluator
-    samples whenever more than one response per question is asked for, and
-    ``extract_n_per_question`` is 10 -- then filtered by a judge. A rerun would
-    have produced different text, different scores, and a slightly different
-    direction. This is the term the experiment measures.
-``h_neutral_base``
-    Generated greedily: :mod:`method._generate_worker` defaults to temperature 0
-    and no caller overrides it. On a fixed $M_0$ the same 500 prompts return the
-    same 500 answers, so this contributes no sampling error to $z_t$ at all.
-
-That asymmetry is deliberate rather than incidental. ``h_neutral_base`` is a
-fixed probe re-read by every checkpoint, and decoding it greedily is what makes
-movement in $p$ and $q$ attributable to the weights instead of to churn in the
-probe; the averaging that multiple samples would buy is already supplied by the
-500 *distinct* prompts. The cost is that re-deriving it per replicate is
-redundant work -- see :func:`ensure_neutral_answers`.
-
-Why nothing else already answers this:
-
-``method.visualization.latent_audit``
-    Reports the spread between runs that landed on the same checkpoint. That is
-    an estimate only where the *cache* failed -- a superseded ``weights_id``, a
-    miss on a second box -- because a checkpoint measured twice normally reads
-    ``latent.json`` back verbatim. Once the store is consistent the spread is
-    zero by construction, which says the cache worked, not that the measurement
-    is precise.
-``method.seed_noise`` / the ``exp2_reseed`` trunk
-    Vary the *fine-tuning* seed: different weights, same recipe. Their spread
-    contains measurement noise but cannot separate it, and -- because
-    ``weights_key`` normalises the seed away at $t = 0$ -- every seed in those
-    families reads one cached anchor, so the anchor's own error contributes
-    exactly nothing to what they measure.
-
-The anchor error is *common-mode*: one bad draw shifts every checkpoint of every
-run together, so it never averages out with more seeds or a longer trajectory.
-That is why it is worth paying for separately, and why the summary reports the
-spread of within-replicate *differences* ($z_t - z_0$) beside the spread of the
-levels -- a term that shifts the whole series cancels in the difference, and the
-decay figures read differences.
-
-**A replicate** is one independent re-derivation of the whole base bundle:
-``extract_pos.csv`` / ``extract_neg.csv`` (per trait) and ``neutral_answers.jsonl``
-(shared by both traits, since neither depends on the trait). Per the above, the
-pos/neg halves come back different every time and the neutral answers come back
-identical, so a replicate is in effect a draw of $v_0$ alone.
-
-Replicate 0 *is* the production bundle -- the artifacts exp2 and exp3 actually
-used -- so it costs no generation and the reported spread says where the numbers
-in the thesis sit inside their own sampling distribution. Replicates 1..R-1 are
-fresh draws written to a quarantined subdirectory, so nothing already on disk is
-touched or invalidated.
-
-Replicates are indexed by *location*, not by any seed: replicate 0 is the one
-that reads the ordinary production paths (see :func:`_replicate_dir`), and
-nothing here seeds generation. Raising ``--replicates`` therefore resumes rather
-than restarts -- every existing replicate short-circuits on its artifacts being
-present, and only the new indices are drawn.
-
-No training happens here. Every checkpoint is materialised from adapters that
-must already exist, and each replicate costs generation plus forward passes.
-
-Footprint: each (checkpoint, replicate>=1) pair adds an ``h_neutral_base``
-directory to that checkpoint's measurement bundle, whose per-sample tensor
-dominates at roughly ``n_neutral * d_model`` floats (~7MB at 7B x 500 prompts) --
-byte-identical across replicates, for the reason given above.
-Measurement bundles are pushed as whole tars, so a large ``--replicates`` on many
-checkpoints is bandwidth as well as disk.
-"""
+r"""Estimate latent-state uncertainty from repeated base-anchor extraction."""
 
 from __future__ import annotations
 
@@ -115,16 +32,10 @@ from method.utils import (
 
 logger = logging.getLogger("anchor_noise")
 
-#: Subdirectory of a checkpoint's measurement bundle holding re-drawn anchors.
-#: Nested inside the bundle rather than parallel to it so that
-#: :meth:`method.sync.Syncer.push_measurement`, which tars the whole directory,
-#: carries replicates without needing to learn about them.
+#: Subdirectory for re-extracted anchors.
 REPLICATE_SUBDIR = "anchor_replicates"
 
-#: The replicate that is not a re-draw: the artifacts the production
-#: measurement path already wrote, read from their ordinary locations. Keeping
-#: it in the family (rather than comparing re-draws only among themselves) is
-#: what makes the spread interpretable as "where the number we published sits".
+#: Existing production artifacts, included as replicate zero.
 PRODUCTION_REPLICATE = 0
 
 #: The latent components, in the order the tables print them.

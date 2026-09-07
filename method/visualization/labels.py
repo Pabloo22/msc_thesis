@@ -1,13 +1,4 @@
-r"""Human-readable display names for ``dataset/version`` identifiers.
-
-The pipeline identifies a dataset by its folder name under ``dataset/`` (see
-:mod:`method.experiments`) plus a :class:`method.config.DatasetVersion`, e.g.
-``"mistake_gsm8k/misaligned_2"``. That is the right identifier for data
-plumbing (it round-trips through the real store), but it is not what the
-proposal calls the dataset -- it writes "GSM8K (Mistake II)". This module is
-the one place that translation lives, so every figure renders the same names
-as the write-up.
-"""
+r"""Display labels for datasets, experiment arms, and mathematical symbols."""
 
 from __future__ import annotations
 
@@ -23,10 +14,7 @@ DATASET_TITLES = {
     "mistake_opinions": "Opinions",
 }
 
-#: Word placed before the "I"/"II" numeral for a misaligned version. The three
-#: pure-trait datasets (evil, sycophancy, hallucination) get a bare numeral;
-#: the domain-mistake datasets are qualified, and "insecure_code" uses
-#: "Insecure" rather than "Mistake" since it is not a wrong-answer dataset.
+#: Prefix for each dataset's misalignment-level numeral.
 DATASET_MODIFIERS = {
     "evil": "",
     "sycophancy": "",
@@ -40,15 +28,7 @@ DATASET_MODIFIERS = {
 
 _VERSION_NUMERALS = {"normal": None, "misaligned_1": "I", "misaligned_2": "II"}
 
-#: Display name and bar order for the ``condition`` label of each experiment
-#: family (see :attr:`method.config.TrajectoryConfig.labels`). Keys must match
-#: the strings the builders in :mod:`method.experiments` write, so these dicts
-#: double as the readable definition of what each condition *is*.
-#: Ordered by how much training precedes the final step: none, one and two
-#: steps of normal data, then the two arms whose two prior steps included
-#: misalignment. Reading left to right within a group therefore separates "was
-#: it fine-tuned at all" (baseline -> normal1 -> normal2) from "was it
-#: *misaligned*" (normal2 -> same/diff, which are step-count-matched).
+#: Hysteresis conditions ordered by training before the final step.
 HYSTERESIS_CONDITIONS = ("baseline", "normal1", "normal2", "same", "diff")
 HYSTERESIS_CONDITION_LABELS = {
     "baseline": "First exposure",
@@ -58,18 +38,7 @@ HYSTERESIS_CONDITION_LABELS = {
     "diff": "After realign (other data)",
 }
 
-#: Each arm's training schedule, in the same alphabet the exp2 trunks use:
-#: ``X`` a trait-eliciting step, ``N`` a normal (re-aligning) one, ``X'`` a
-#: *different* trait-eliciting dataset. Steps read left to right in training
-#: order, so the rightmost ``X`` is the final step whose score the bar reports.
-#:
-#: The severity numeral stays out of the sequence on purpose. ``I I N`` and
-#: ``II N`` are the same glyphs, so spelling the version inline would make
-#: exp2's trunk B -- whose whole point is two drivers before each re-alignment
-#: -- ambiguous. The dataset the bars are grouped under already names it
-#: ("GSM8K (Mistake II)"), which is why ``X'`` is the useful thing to mark
-#: instead: in the ``diff`` arm the other dataset's version varies by group
-#: while "some other trait-eliciting set" is what every group has in common.
+#: Training schedules: ``X`` trait-eliciting, ``N`` normal, ``X'`` other data.
 HYSTERESIS_CONDITION_SEQUENCES = {
     "baseline": r"$X$",
     "normal1": r"$N\,X$",
@@ -78,10 +47,7 @@ HYSTERESIS_CONDITION_SEQUENCES = {
     "diff": r"$X'\,N\,X$",
 }
 
-#: The short name the Experiments chapter introduces each arm under, which is
-#: not the same register as :data:`HYSTERESIS_CONDITION_LABELS`: those describe
-#: an arm ("After realign (same data)"), these *name* it, so that a figure's
-#: key and the prose around it use one word for one thing.
+#: Short condition names used in legends.
 HYSTERESIS_CONDITION_NAMES = {
     "baseline": "Baseline",
     "normal1": r"Normal $\times$1",
@@ -95,11 +61,7 @@ TRAITS = ("evil", "sycophantic")
 #: Trait as it should appear in a figure title.
 TRAIT_TITLES = {"evil": "Evil", "sycophantic": "Sycophancy"}
 
-#: The exp2 trunks, in the order the design presents them: a dose-response
-#: ladder from the most aggressive schedule to the control.
-#: Fixed here rather than taken from whatever a frame happens to contain, so
-#: that a trunk keeps its colour in every figure even when another is missing
-#: -- a reader who learned "A is blue" must not be repainted by a partial sweep.
+#: Trunks in fixed display order.
 TRUNKS = ("a", "b", "c")
 TRUNK_LABELS = {
     "a": r"A: II drivers, $X\,N\,X\,N\,X\,N$",
@@ -199,29 +161,13 @@ def display_dataset_name(dataset_id: str) -> str:
 
 
 # --- mathematical notation --------------------------------------------- #
-#
-# The symbols the Methodology chapter's notation table defines. They are built
-# from parts here rather than written out at each use because every one of them
-# is the same template with the same slots -- which checkpoint encoded the
-# activations, which one generated the text they were read off -- and two
-# figures spelling one quantity differently is exactly what this module exists
-# to prevent.
-#
-# Each symbol is returned *without* math delimiters, because callers need it in
-# both positions: an axis label wants ``$p_t^{[0]}$`` standing alone, a table
-# key wants it inside a larger expression.
+# Symbols omit math delimiters so callers can compose them.
 
-#: The pipeline's two names for a response source (:class:`method.config.
-#: HNeutralSource`, :class:`method.config.PredictedSource`): the model the
-#: study starts from, and the checkpoint being measured. Spelled out here so a
-#: caller naming one of them says which it means rather than repeating a string
-#: literal that also happens to be a column value somewhere.
+#: Response-source names shared by configuration and figures.
 BASE_SOURCE = "base"
 CURRENT_SOURCE = "current"
 
-#: How the chapter indexes a response source: the base model is ``0`` and the
-#: checkpoint being measured is ``t``. Every figure that takes a source from
-#: the CLI translates it here.
+#: Mathematical indices for response sources.
 SOURCE_INDICES = {BASE_SOURCE: "0", CURRENT_SOURCE: "t"}
 
 
@@ -240,34 +186,12 @@ def persona_vector_symbol(encoder: str = "t", generator: str = "0") -> str:
 
 
 def activation_symbol(encoder: str = "t", generator: str = "0") -> str:
-    r"""``\mathbf{h}^{\mathrm{predicted}}_{t\leftarrow g}``: read at $M_t$,
-    off predicted-response text generated by $M_g$.
-
-    The two indices every symbol in this family carries, and nothing else. It
-    names the activations a projection difference is actually taken of, which
-    is what separates the two members of a
-    :data:`method.visualization.decay.REFRESH_GROUPS` group: both read the
-    candidate dataset's responses at the checkpoint, and they differ only in
-    which model generated the *predicted* responses those are differenced
-    against.
-
-    Distinct from :func:`neutral_activation_symbol`, which superscripts the
-    same symbol to mark the one activation in this project that is taken of a
-    fixed neutral prompt set rather than of a dataset's responses.
-    """
+    r"""Predicted-response activation encoded by $M_t$ from $M_g$ text."""
     return rf"\mathbf{{h}}^{{\mathrm{{predicted}}}}_{{{encoder}\leftarrow {generator}}}"
 
 
 def neutral_activation_symbol(encoder: str = "t", generator: str = "0") -> str:
-    r"""``\mathbf{h}^{\mathrm{neutral}}_{t\leftarrow s}``, the neutral activation.
-
-    ``\mathrm`` rather than the chapter's ``\text``, and ``\|`` rather than its
-    ``\lVert`` below: these strings are typeset twice, by LaTeX in the emitted
-    tables and by matplotlib's own mathtext in the figures (no ``usetex`` --
-    see :func:`method.visualization.style.apply_style`), and mathtext knows
-    neither ``\text`` nor ``\lVert``. Both spellings render identically, so the
-    figures and the chapter still agree on the page.
-    """
+    r"""Neutral-response activation encoded by $M_t$ from $M_s$ text."""
     return rf"\mathbf{{h}}^{{\mathrm{{neutral}}}}_{{{encoder}\leftarrow {generator}}}"
 
 
@@ -282,10 +206,8 @@ def neutral_norm_symbol(encoder: str = "t", generator: str = "0") -> str:
     return rf"\|{neutral_activation_symbol(encoder, generator)}\|"
 
 
-# ``\leftarrow`` is always followed by a space: an index can be the letter
-# ``t``, and ``\leftarrowt`` is an unknown command rather than an arrow. The
-# space is discarded after a control word, so nothing moves on the page for the
-# numeric indices either.
+# Keep a space after ``\leftarrow`` so a following ``t`` is not parsed as part
+# of the command.
 def delta_p_symbol(
     *,
     encoder: str = "t",
@@ -293,26 +215,11 @@ def delta_p_symbol(
     generator: str = "0",
     predicted: str = "0",
 ) -> str:
-    r"""``\Delta P_t^{a\leftarrow g,[p]}``, the projection difference.
-
-    Three independent choices, one slot each: ``encoder`` is the checkpoint
-    whose activations the candidate dataset is read with, ``axis\leftarrow
-    generator`` names the persona vector it is projected onto, and
-    ``predicted`` is the checkpoint that generated the responses the targets
-    are differenced against. Holding all three at the base model is $t = 0$
-    itself, which the chapter writes as the bare :data:`DELTA_P_BASE`.
-
-    ``predicted`` is bracketed because it is a *generator* index, the same role
-    the brackets mark in :func:`z_component_symbol`'s ``p_t^{[s]}``: one rule
-    -- brackets hold the checkpoint that produced the text, arrows hold
-    encoder-from-generator -- reads both families.
-    """
+    r"""Return ``\Delta P_t^{a\leftarrow g,[p]}``."""
     return rf"\Delta P_{encoder}^{{{axis}\leftarrow {generator},[{predicted}]}}"
 
 
-#: $\Delta P_0$, the shorthand the chapter defines for
-#: $\Delta P_0^{0\leftarrow0,[0]}$: at the base model nothing is stale, so
-#: there is no ambiguity for the indices to resolve.
+#: Shorthand for $\Delta P_0^{0\leftarrow0,[0]}$.
 DELTA_P_BASE = r"\Delta P_0"
 
 #: How each $z_t$ coordinate is written, before its indices are attached.
@@ -340,11 +247,7 @@ def z_component_symbol(
     return rf"{Z_SYMBOLS[component]}_t^{{[{marks}]}}"
 
 
-#: How each $z_t$ coordinate is actually computed, as a template over the two
-#: symbols it is built from. Kept beside :data:`Z_SYMBOLS` so a coordinate's
-#: name and its definition cannot drift apart, and written with the same
-#: indices the notation table in ``04-Methodology.tex`` uses -- a figure that
-#: spells the definition out has to spell out the chapter's definition.
+#: Definitions for each displayed $z_t$ coordinate.
 _Z_DEFINITIONS = {
     "p": r"\cos({neutral_h},{v_0})",
     "q": r"\cos({neutral_h},{v_t})",

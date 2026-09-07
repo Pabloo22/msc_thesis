@@ -1,10 +1,4 @@
-r"""Fake but schema-faithful data, for exercising every figure without a GPU,
-a judge model, or a real fine-tuning run.
-
-Generators are deterministic given a seed. ``DeltaP`` statistics reuse
-:func:`method.latent.summarize`, the exact function the real pipeline calls,
-so a synthetic ``StepRecord.delta_p`` has precisely the keys a real one does.
-"""
+r"""Deterministic, schema-faithful data for testing figures without a GPU."""
 
 from __future__ import annotations
 
@@ -20,8 +14,7 @@ from method.latent import summarize
 from method.visualization import labels
 from method.visualization.schema import StepRecord, Trajectory
 
-#: One instance of the 8-dataset design from "Running One Trajectory with
-#: Multiple Seeds" (proposal, Section "Experiments and Plots").
+#: Default eight-dataset synthetic trajectory.
 DEFAULT_DATASETS = (
     "mistake_gsm8k/misaligned_2",
     "sycophancy/normal",
@@ -42,14 +35,7 @@ def _dataset_pull(dataset: str) -> float:
 
 
 def _stable_seed(*parts: str) -> int:
-    r"""A ``numpy`` RNG seed derived deterministically from string ``parts``.
-
-    Unlike ``hash()``, this is stable across processes and Python versions
-    (``PYTHONHASHSEED`` randomises string hashing), which matters for
-    :func:`delta_p_0_for`: two trajectories that mention the same dataset must
-    derive the exact same $\Delta P_0$ regardless of when or where they run,
-    mirroring the real store's content-addressed reuse.
-    """
+    r"""Derive a process-independent ``numpy`` seed from strings."""
     digest = hashlib.sha256(":".join(parts).encode()).hexdigest()
     return int(digest[:8], 16)
 
@@ -85,30 +71,14 @@ def synthetic_trajectory(
     behavior_scale: float = 25.0,
     noise: float = 0.08,
 ) -> Trajectory:
-    r"""One fake trajectory, shaped exactly like a real ``trajectory.json``.
-
-    A toy random walk stands in for the real dynamics: each step nudges
-    behaviour, the persona vector's rotation ($\rho$) and norm ($r$), and the
-    cosines $p$/$q$ toward the upcoming dataset's "pull" (misaligned datasets
-    push up, normal ones pull back down), with per-seed noise. The result has
-    the qualitative shape the proposal expects to test for -- partial
-    re-alignment, a drifting neutral state, measurement noise -- without
-    running any real fine-tuning.
-    """
+    r"""Build a schema-faithful random-walk trajectory."""
     rng = np.random.default_rng(seed * 1_000_000 + _stable_seed(name) % 1_000_000)
     behavior = baseline_behavior
     rho = 1.0
     r = float(abs(rng.normal(29.5, 0.5)))
-    # $p$ and $q$ are cosines, so the walk has to stay on $[-1, 1]$ to be
-    # schema-faithful at all. Start and step size are taken from the real
-    # trunks, where the neutral state sits a little negative on the trait axis
-    # and each step moves it by a few hundredths.
+    # Keep cosine-valued state within $[-1, 1]$.
     q = float(rng.normal(-0.22, 0.02))
-    # The length the cosines were divided by. Recorded rather than implied so
-    # the fixtures exercise the same schema the real runs write (see
-    # method.latent.H_NORM); the level and the few-percent creep per step are
-    # both taken from the measured trunks, where the neutral state grows
-    # slightly as training goes on.
+    # Record the cosine normalizer to match real trajectory records.
     h_norm = float(rng.normal(63.7, 1.5))
 
     steps: list[StepRecord] = []

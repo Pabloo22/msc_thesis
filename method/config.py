@@ -290,38 +290,14 @@ class DatasetVersion(StrEnum):
 
 
 class MeasurementLevel(StrEnum):
-    """How much of a trajectory is measured, and at which checkpoints.
-
-    A *branch* -- a trajectory fine-tuned from a checkpoint purely to read the
-    behaviour change it produces, then discarded -- shares its whole prefix
-    with the trunk it came off. Content-addressing makes every artifact at a
-    shared checkpoint reusable regardless of which config computes it, but the
-    fan is hundreds of branches sharded across rental boxes with no guaranteed
-    order against their trunks -- so "reusable" does not mean "already there".
-    A branch that happened to run before its trunk's measurements had synced
-    would generate them itself: persona-vector extraction, ``h_neutral``, and
-    DeltaP for every probe, all expensive. ``ENDPOINT_BEHAVIOR`` sidesteps the
-    ordering question rather than betting on it: a branch never touches its
-    prefix's measurements at all, so it stays a fixed one-train-one-eval unit
-    no matter what else has or hasn't run yet.
+    """Select full checkpoint measurements or branch endpoint behaviour.
 
     ``FULL``
         Every checkpoint yields ``b_t``, ``v_t``, ``h_neutral``, ``z_t``, and
         DeltaP both for the dataset the next step trains on and for every entry
         in :attr:`TrajectoryConfig.probes`. What a trunk needs.
     ``ENDPOINT_BEHAVIOR``
-        Only the final checkpoint, and only ``b``. What a branch needs, per
-        the measurement schedule in section 8: ``b_{t+1}`` and nothing else.
-
-    Relies on its trunk being measured ``FULL`` somewhere in the run; nothing
-    checks this. A branch run without its trunk still trains and scores its own
-    endpoint fine, but the ``z_t`` and probe series it was meant to share with
-    the trunk are simply absent from the collected results.
-
-    Deliberately absent from :meth:`TrajectoryConfig.weights_key`, like every
-    other measurement setting: it changes what is read off a checkpoint, never
-    the checkpoint. A branch and the trunk step it duplicates therefore resolve
-    to one adapter, which is what makes the fan-out affordable at all.
+        Only final-checkpoint ``b``.
     """
 
     FULL = "full"

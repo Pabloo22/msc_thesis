@@ -292,13 +292,8 @@ def projection_pairs(
     ``delta_p_t`` column here, because that name would read as the fully
     refreshed $\Delta P_t$, which no trajectory carries under the default view.
 
-    ``delta_p_0`` maps ``"dataset/version"`` to the projection difference that
-    dataset would have produced against the base model $M_0$ -- computable in
-    advance for any dataset, per the action-encoder definition in the
-    proposal, so it does not need to come from the same trajectory. Steps
-    whose dataset is missing from ``delta_p_0`` are skipped. This is the data
-    behind the RQ1 projection-correlation scatter
-    (``figures.scatter_projection_correlation``).
+    ``delta_p_0`` maps each dataset version to its initial-model projection
+    difference. Missing datasets are skipped.
     """
     rows = []
     for traj in trajectories:

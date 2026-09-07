@@ -1,13 +1,4 @@
-"""Named trajectory configurations.
-
-Each experiment is a module-level constant, so nested defaults stay expressible
-in Python and can be composed by ordinary means (``dataclasses.replace``,
-comprehensions over seeds) rather than by templating YAML.
-
-Run one with::
-
-    poetry run python -m method.run_trajectory --config SMOKE_MOCK
-"""
+"""Named trajectory configurations."""
 
 from __future__ import annotations
 
@@ -33,15 +24,8 @@ from method.config import (
 )
 
 # --- models ---------------------------------------------------------------
-# `layer` is the persona-vector layer reported for this model; it is fixed
-# rather than swept so that seeds and trajectories stay comparable.
-#
-# The local proxy is Qwen2.5-0.5B rather than a smaller model such as
-# SmolLM2-135M because the vendored eval.model_utils.load_vllm_model hardcodes
-# max_model_len=30000. Any model whose context window is shorter than that (e.g.
-# SmolLM2's 8192) makes vLLM abort at load time, and persona_vectors is vendored
-# and must not be patched. Qwen2.5-0.5B has a 32768 window, fits in ~1GB of
-# VRAM, and shares the target model's family and tokenizer.
+# Keep the reported persona-vector layer fixed across runs. Qwen2.5-0.5B is the
+# smallest compatible local proxy for the vendored 30,000-token vLLM context.
 QWEN_7B = ModelConfig(name="Qwen/Qwen2.5-7B-Instruct", layer=20)
 QWEN_0_5B = ModelConfig(name="Qwen/Qwen2.5-0.5B-Instruct", layer=13)
 
@@ -74,8 +58,7 @@ _LOCAL_EXP1_STEPS = tuple(
     dataclasses.replace(s, n_examples=64, train=LOCAL_TRAIN) for s in _EXP1_STEPS
 )
 
-#: No model is loaded at all: fake artifacts with real shapes, so the
-#: orchestration, hashing, resume and z_t/DeltaP maths all run for real.
+#: Schema-faithful mock artifacts; no model is loaded.
 SMOKE_MOCK = TrajectoryConfig(
     name="smoke_mock",
     trait="evil",
@@ -86,11 +69,10 @@ SMOKE_MOCK = TrajectoryConfig(
     latent=LOCAL_LATENT,
 )
 
-#: One real integration check on the laptop GPU: real vLLM, real unsloth,
-#: real merges, stubbed judge. Validates the vendored plumbing before renting.
+#: Local integration check with a stubbed judge.
 SMOKE_TINY = dataclasses.replace(SMOKE_MOCK, name="smoke_tiny")
 
-#: The paper-scale version, for the rental GPU.
+#: Full-scale configuration.
 EXP1 = TrajectoryConfig(
     name="exp1",
     trait="evil",
@@ -103,28 +85,13 @@ EXP1 = TrajectoryConfig(
 
 
 # --- experiments 2-4: shared axes ------------------------------------------
-# Trait is intentionally *not* part of TrajectoryConfig.weights_key (see
-# config.py), so several TrajectoryConfigs that differ only in `trait` and
-# otherwise share model/seed/steps resolve to the same weights_id: the
-# fine-tuning chain is trained once and then measured once per trait. Every
-# builder below always measures both traits; `realign_traits`, where it
-# appears, is a *separate* axis controlling which trait's "normal" dataset is
-# used as a re-alignment step, since that does change the steps (and hence the
-# weights).
+# Traits do not affect ``weights_key``; identical model/seed/step chains share
+# adapters and are measured separately per trait.
 
-#: Experiment-family tags, mirroring the proposal's sections. Every generated
-#: config carries one, and the plotting code collects by it (see
-#: ``method.visualization.collect``). Named constants rather than bare strings
-#: so a typo is an ImportError here instead of an empty plot later.
-#
-#: The RQ1 decay experiment is three families rather than one. They share a
-#: model and a base checkpoint but differ in what they gate, what they cost and
-#: which figures they feed, and they are run in this order because the first
-#: can invalidate the design before the third is paid for. Splitting them is
-#: what lets a phase be run, plotted and judged on its own.
-EXP2_VALIDATION = "exp2_validation"  # section 5: the t=0 fan over all 24 datasets
-EXP2_DECAY = "exp2_decay"  # sections 3-4: three trunks, each fanned out at every t
-EXP2_RESEED = "exp2_reseed"  # section 6c: the trunks again under other seeds
+#: Tags used to collect each experiment family.
+EXP2_VALIDATION = "exp2_validation"  # t=0 fan over all 24 datasets
+EXP2_DECAY = "exp2_decay"  # three trunks fanned out at every checkpoint
+EXP2_RESEED = "exp2_reseed"  # trunks repeated under new seeds
 EXP2_AXIS = "exp2_axis"  # the trunks again, re-projected onto the base axis
 EXP2_REGEN = "exp2_regen"  # the trunks again, re-answering the probes at every t
 EXP2_V0REGEN = "exp2_v0regen"  # re-answered probes against the base axis
@@ -132,22 +99,13 @@ EXP2_HREGEN = "exp2_hregen"  # the trunks again, re-answering the neutral prompt
 EXP2_ONPOLICY = "exp2_onpolicy"  # the trunks against their own re-drawn axis
 EXP2_ONPOLICY_REGEN = "exp2_onpolicy_regen"  # that axis, re-answered probes too
 EXP3 = "exp3"  # "Is a model trained on trait-eliciting data more prone to EM?"
-#: Section 6d: how much of z_t is the base measurement rather than the model
-#: (:mod:`method.anchor_noise`). Trains nothing and produces no trajectory --
-#: it re-draws the base anchor and re-reads existing checkpoints against each
-#: draw -- so the tag exists for provenance, not for ``collect_group``.
+#: Repeated base-anchor measurements; trains nothing.
 ANCHOR_NOISE = "anchor_noise"
-#: Whether freezing the extraction text at M_0 still yields the right axis once
-#: the model has drifted (:mod:`method.axis_refresh`). Trains nothing and
-#: produces no trajectory either, for the same reason ANCHOR_NOISE does not.
+#: Re-extracted axes at existing checkpoints; trains nothing.
 AXIS_REFRESH = "axis_refresh"
 
 MEASURE_TRAITS: tuple[str, ...] = ("evil", "sycophantic")
-#: SFT dataset directory for each trait's "normal" (re-alignment) data. Note
-#: the trait string "sycophantic" (matches
-#: persona_vectors/data_generation/trait_data_*/sycophantic.json) differs from
-#: the SFT dataset directory name "sycophancy" (dataset/sycophancy/) -- these
-#: name two different things and must not be used interchangeably.
+#: Map measurement traits to their normal SFT datasets.
 TRAIT_TO_DATASET: dict[str, str] = {"evil": "evil", "sycophantic": "sycophancy"}
 SEEDS: tuple[int, ...] = tuple(range(5))
 
@@ -167,18 +125,7 @@ def _localize_steps(steps: tuple[StepConfig, ...]) -> tuple[StepConfig, ...]:
 
 
 def _probe_steps(probes: Sequence[StepConfig], local: bool) -> tuple[StepConfig, ...]:
-    """Deduplicate a probe set by dataset and scale it exactly like ``steps``.
-
-    Scaling has to match: a probe naming a dataset the trajectory also trains on
-    only shares that step's cached DeltaP when both resolve to the same
-    ``training_sample_id``, and that hash includes ``n_examples``. Localising one
-    but not the other would silently double the measurement cost.
-
-    Duplicates are dropped rather than rejected, because a per-design default can
-    legitimately name one dataset twice -- a dataset pool whose first entry is
-    also the re-alignment dataset, say -- and ``TrajectoryConfig`` refuses
-    duplicate probes.
-    """
+    """Deduplicate probes and apply the trajectory's scale preset."""
     unique: dict[str, StepConfig] = {}
     for probe in probes:
         unique.setdefault(probe.dataset_id, probe)
@@ -215,28 +162,14 @@ DATASET_NAMES: tuple[str, ...] = (
     "sycophancy",
 )
 
-#: All 24 datasets: the validation fan's population, and the pool that probes
-#: and drivers are drawn from.
+#: All datasets available to validation, probes, and drivers.
 ALL_DATASETS: tuple[StepConfig, ...] = tuple(
     StepConfig(dataset=name, version=version)
     for name in DATASET_NAMES
     for version in DatasetVersion
 )
 
-#: The K = 8 datasets fine-tuned from *every* checkpoint of every trunk and then
-#: discarded. Fixed across checkpoints so the design is paired, and globally
-#: disjoint from every trunk's drivers so no probe's DeltaP ever reflects
-#: memorisation of data the model already trained on (section 3b).
-#:
-#: **Provisional.** Section 3c wants these chosen to span the observed range of
-#: ``Delta P_0``, and those values do not exist until the validation fan has
-#: run -- so this is a stratified guess (2 Normal, 3 misaligned-I, 3
-#: misaligned-II) standing in until phase 2 replaces it. It is shaped to satisfy
-#: the section 3b feasibility check, which is tight: leaving only 6 Normal
-#: datasets in the driver pool is exactly what trunk C consumes, so a probe set
-#: taking a third Normal makes trunk C infeasible. :func:`check_exp2_feasibility`
-#: enforces that at import, so a replacement that does not fit fails loudly here
-#: rather than 48 runs later.
+#: Eight fixed probes, paired across checkpoints and disjoint from all drivers.
 EXP2_PROBES: tuple[StepConfig, ...] = (
     StepConfig(dataset="insecure_code", version=DatasetVersion.NORMAL),
     StepConfig(dataset="mistake_medical", version=DatasetVersion.NORMAL),
@@ -257,26 +190,8 @@ _N = DatasetVersion.NORMAL
 _I = DatasetVersion.MISALIGNED_1
 _II = DatasetVersion.MISALIGNED_2
 
-#: The three trunks, as a dose-response ladder (section 4). They replace seed
-#: replication of one trajectory: seeds estimate within-condition noise, trunks
-#: estimate generalisation across trajectories, and the RQ1 claim's weakest
-#: point is "you showed this for one arbitrary sequence" rather than noisy error
-#: bars.
-#:
-#: The schedules deliberately differ, which costs a clean "A > B > C" reading
-#: and buys a better one. Trunk A alternates because ``II`` data saturates the
-#: top of the trait scale, and a ceiling would flatten ``Delta b`` across every
-#: probe regardless of its ``Delta P`` -- collapsing R^2 for a trivial reason
-#: indistinguishable from staleness. Trunk B doubles up because ``I`` data will
-#: not saturate, so alternating would merely waste the chance to let
-#: misalignment accumulate. Varied schedules also decorrelate drift from
-#: behaviour level, which is what makes their separate contributions
-#: identifiable in the mechanism regression.
-#:
-#: No dataset repeats within a trunk: training twice on the same data is the
-#: repeated-exposure effect exp3 isolates, and allowing it here would leave
-#: the decay curve confounded between drift and repetition. Reuse *across*
-#: trunks is fine -- they are independent trajectories.
+#: Varied, non-repeating trunks separate drift from behaviour level and avoid
+#: confounding decay with repeated exposure.
 EXP2_TRUNKS: dict[str, tuple[StepConfig, ...]] = {
     # X N X N X N -- trait-eliciting II drivers, large expected drift.
     "a": (
@@ -307,40 +222,14 @@ EXP2_TRUNKS: dict[str, tuple[StepConfig, ...]] = {
     ),
 }
 
-#: One seed for the whole decay design. Section 4 spends the replication budget
-#: on three *trunks* rather than three seeds of one trunk, so a second seed here
-#: would buy the thing the design explicitly decided not to buy.
+#: The decay design varies trunks rather than seeds.
 EXP2_SEED = 0
-#: The replicates of trunk A (section 6c), which exist to ask whether the
-#: *latent* trajectory ``z`` is stable under reseeding -- stability of ``b``,
-#: which exp3 already shows, does not imply it. With :data:`EXP2_SEED` this is
-#: ``sigma_seed(z)`` at ``n = 5`` on the trunk the decay claim is read off, out
-#: to ``t = 6``: the depth :mod:`method.seed_noise` explicitly cannot reach,
-#: since exp3's five seeds stop at ``t = 3`` and are not this trunk.
-#:
-#: Measured *without* probes (see :func:`build_exp2_reseed_configs`), which is
-#: what makes five of them affordable at all.
-#:
-#: Note what this spread does *not* contain: ``weights_key`` normalises the seed
-#: away at ``t = 0``, so every seed reads one cached anchor (``v_0``,
-#: ``h_neutral_base``) and the anchor's own error contributes nothing. That term
-#: is :mod:`method.anchor_noise`'s to estimate, and the two add.
+#: Additional seeds for estimating trunk-level latent-state variability.
 EXP2_RESEED_SEEDS: tuple[int, ...] = (1, 2, 3, 4)
 
 
 def steps_since_realignment(drivers: Sequence[StepConfig]) -> tuple[int, ...]:
-    """How many trait-eliciting drivers precede each checkpoint uninterrupted.
-
-    One value per checkpoint, so the result is one longer than ``drivers``:
-    ``0`` immediately after a Normal driver, ``1`` after one trait-eliciting
-    driver, ``2`` after two. Section 4 records this rather than a binary phase
-    label because it applies uniformly across all three schedules and carries
-    strictly more information.
-
-    Checkpoint 0 is ``0`` by construction -- ``M_0`` has had no drivers at all,
-    which is the same "freshly benign" state a Normal driver returns the model
-    to behaviourally, and the quantity is defined in terms of drivers applied.
-    """
+    """Count consecutive trait-eliciting drivers before each checkpoint."""
     counts = [0]
     for driver in drivers:
         counts.append(0 if driver.version is _N else counts[-1] + 1)
@@ -351,20 +240,7 @@ def check_exp2_feasibility(
     trunks: Mapping[str, Sequence[StepConfig]] | None = None,
     probes: Sequence[StepConfig] = EXP2_PROBES,
 ) -> None:
-    """Enforce the section 3b constraints that make the design interpretable.
-
-    Both failures are silent if unchecked and expensive to discover late, which
-    is why this runs at import rather than at run time:
-
-    *A probe that is also a driver* has been trained on by the time the trunk
-    reaches its later checkpoints, so its ``Delta P`` measures memorisation
-    rather than predicted susceptibility -- and it is the *late* checkpoints,
-    where decay is meant to be visible, that are corrupted.
-
-    *A dataset repeated within a trunk* confounds the decay curve between drift
-    and repeated exposure, which is the very effect exp3 exists to
-    isolate.
-    """
+    """Reject duplicate drivers and any probe/driver overlap."""
     if trunks is None:
         trunks = EXP2_TRUNKS
     probe_ids = {p.dataset_id for p in probes}
@@ -378,16 +254,15 @@ def check_exp2_feasibility(
         repeated = {d for d in driver_ids if driver_ids.count(d) > 1}
         if repeated:
             raise ValueError(
-                f"trunk {name!r} trains twice on {sorted(repeated)}; section 3b "
-                "forbids within-trunk reuse, which would confound drift with "
-                "repeated exposure"
+                f"trunk {name!r} trains twice on {sorted(repeated)}, "
+                "confounding drift with repeated exposure"
             )
         overlap = probe_ids & set(driver_ids)
         if overlap:
             raise ValueError(
                 f"trunk {name!r} uses {sorted(overlap)} as driver(s), but they are "
                 "also probes; a probe the model has trained on measures "
-                "memorisation, not susceptibility (section 3b)"
+                "memorisation, not susceptibility"
             )
 
 
@@ -409,15 +284,7 @@ def _exp2_config(
     axis: ProjectionAxis = ProjectionAxis.CURRENT,
     h_neutral: HNeutralSource = HNeutralSource.BASE,
 ) -> TrajectoryConfig:
-    """One exp2 trajectory at the requested scale.
-
-    ``predicted``, ``axis`` and ``h_neutral`` override only *which* quantity is
-    measured, leaving the scale preset's other fields alone -- ``mode`` and
-    ``n_samples`` for DeltaP, ``n_neutral`` and ``neutral_prompts_name`` for
-    the latent state. Those settings are independent, and a local run must keep
-    its subsample and its 32-prompt neutral set whichever projection or whose
-    answers it takes over them.
-    """
+    """Build one exp2 trajectory at local or full scale."""
     model, eval_cfg, delta_p, latent = _scale_presets(local)
     delta_p = dataclasses.replace(delta_p, predicted=predicted, axis=axis)
     latent = dataclasses.replace(latent, h_neutral_source=h_neutral)
@@ -444,32 +311,7 @@ def build_exp2_validation_configs(
     datasets: Sequence[StepConfig] = ALL_DATASETS,
     local: bool = False,
 ) -> list[TrajectoryConfig]:
-    """Section 5: fine-tune ``M_0`` once on each of the 24 datasets.
-
-    This is the ``t = 0`` fan, and it is the gate the whole project hangs on: it
-    reproduces Figure 8 of the persona-vectors paper, and if the implementation
-    does not recover that correlation at ``t = 0`` then nothing downstream is
-    interpretable. It also supplies the ceiling the decay curve falls from, and
-    the ``Delta P_0`` values section 3c needs in order to pick a probe set
-    spanning the range rather than guessing at one.
-
-    All three trunks share ``M_0``, so this fan is computed once and the decay
-    family does not re-emit it -- see :func:`build_exp2_decay_configs`.
-
-    Measured in full rather than at ``ENDPOINT_BEHAVIOR``, unlike the branches
-    it is otherwise shaped like. Three reasons, none of them costly: ``b_0`` has
-    to come from somewhere and this family must be runnable as phase 1 on its
-    own; the step's own ``Delta P`` measured at ``t = 0`` *is* ``Delta P_0``,
-    the x-axis of the figure; and with ``h_neutral`` read from the base model's
-    fixed answers, the extra work at each endpoint is forward passes rather than
-    generation.
-
-    Note the R^2 here is over 24 points and is **not** comparable with the
-    8-point decay curve -- correlation estimates are sensitive to range
-    restriction and to ``n``, so reporting a drop from one to the other would
-    manufacture a decay that is pure artifact. Section 5 keeps them as two
-    separate figures for that reason.
-    """
+    """Fine-tune ``M_0`` once per dataset for full baseline measurements."""
     return [
         _exp2_config(
             name=f"exp2_validation_{dataset.dataset}_{dataset.version.value}_{trait}",
@@ -494,35 +336,7 @@ def build_exp2_decay_configs(
     probes: Sequence[StepConfig] = EXP2_PROBES,
     local: bool = False,
 ) -> list[TrajectoryConfig]:
-    """Sections 3-4: three trunks, each fanned out into K probes at every ``t``.
-
-    Per trunk this emits one trunk config plus ``6 x K`` branch configs. A
-    branch is just ``drivers[:t] + (probe,)``: because ``weights_key`` hashes
-    the step *prefix*, the trunk's adapters are found in the store and the
-    branch trains exactly one new step. That is what makes fanning out at every
-    checkpoint affordable, and it is why branches need no orchestration of their
-    own.
-
-    Branches carry ``measure=ENDPOINT_BEHAVIOR``, so they contribute ``b_{t+1}``
-    and nothing else (section 8). Everything else the analysis needs at
-    checkpoint ``t`` -- ``z_t``, ``b_t``, and ``Delta hat P_t`` for all K
-    probes -- is measured once by the trunk, which is why the probe set is
-    attached there rather than to the branches.
-
-    Fanned from ``t = 1`` upward, not from ``t = 0``: all three trunks share
-    ``M_0``, so the ``t = 0`` fan would be emitted three times over, and it is
-    already covered (over all 24 datasets rather than just the 8 probes) by
-    :func:`build_exp2_validation_configs`.
-
-    Measured at *every* checkpoint rather than a subset. The schedules interleave
-    misaligning and re-aligning drivers, so ``b`` follows a sawtooth; sampling
-    only post-re-alignment checkpoints would read its troughs and, if
-    re-alignment partially restores the representation, the troughs of drift too
-    -- understating how far the model has moved and so understating decay, a
-    bias pointing against the hypothesis. It also doubles the rows available to
-    the mechanism regression, and lets drift and behaviour level be identified
-    separately instead of holding the latter constant by construction.
-    """
+    """Fan each trunk checkpoint into one endpoint-only branch per probe."""
     check_exp2_feasibility(trunks, probes)
     configs: list[TrajectoryConfig] = []
     for trait in measure_traits:
@@ -556,10 +370,7 @@ def build_exp2_decay_configs(
                                     ("trunk", trunk),
                                     ("t", str(t)),
                                     ("probe", probe.dataset_id),
-                                    # Recorded where the builder already knows
-                                    # it: the checkpoint this branch left from
-                                    # is trunk[t], so the phase is the trunk's
-                                    # at t, not at t+1.
+                                    # The phase belongs to the source checkpoint.
                                     ("steps_since_realignment", str(since[t])),
                                 ),
                                 local=local,
@@ -577,38 +388,9 @@ def build_exp2_reseed_configs(
     probes: Sequence[StepConfig] = (),
     local: bool = False,
 ) -> list[TrajectoryConfig]:
-    """Section 6c: every trunk again under other fine-tuning seeds, no branches.
+    """Repeat trunks under new seeds to estimate latent-state variability.
 
-    Six fine-tunings per seed and no fan, because only ``Delta b`` needs
-    training -- ``z`` is a forward pass, so re-running the trunk alone
-    re-measures the drift axis of the mechanism regression.
-
-    Worth paying for even though behavioural stability under reseeding is
-    already observed, because that evidence is about ``b`` and this question is
-    about ``z``: two seeds can reach the same behaviour by different
-    representational paths, and under the hysteresis assumption the design leans
-    on -- behaviour re-aligning while drift persists -- that dissociation is
-    exactly what is expected.
-
-    **No probes**, unlike every other builder here, and the default is ``()``
-    rather than :data:`EXP2_PROBES` so that probing has to be asked for. Two
-    reasons, one per axis of section 9's plot 5: the probes are ~two thirds of a
-    trunk's wall clock and ``z`` never touches them, and exp3's five seeds
-    already show ``Delta P`` reproducing to ~1% without compounding in ``t``.
-    The measurements behind both, their limits, and how to re-derive them are in
-    ``docs/reseed_probes.md``; that file is the authority on the numbers, and
-    reverting this default without reading it would quadruple the family's cost
-    to re-measure a quantity already known to be stable.
-
-    ``z`` gets the opposite treatment because the question is genuinely open
-    there: nothing says a representational path has to reproduce just because a
-    projection does.
-
-    Covers every trunk, like :func:`build_exp2_decay_configs`, so that plot 5's
-    band is a spread across seeds in all three columns rather than in one. Narrow
-    to a subset by passing a smaller ``trunks`` mapping, or leave the registry
-    alone and select at launch with ``run_family.sh EXP2_RESEED --trunks b``,
-    which reads the config's trunk label.
+    Probes default to empty because ``z`` does not depend on them.
     """
     if EXP2_SEED in seeds:
         raise ValueError(
@@ -880,9 +662,8 @@ def build_exp2_onpolicy_configs(
     once -- and :mod:`method.axis_refresh` measures what it costs, as an angle
     between the two vectors.
 
-    An angle is not an answer to the question the thesis is actually asking.
-    A ruler can turn a long way and still order the same datasets the same
-    way, and it is the ordering that RQ1 is about. This family closes that gap:
+    Axis rotation alone does not show whether dataset ordering changed. This
+    family measures that directly:
     the same probes at the same checkpoints, projected onto
     $v^{(t \leftarrow t)}$, so the freeze can be read as a change in a
     *prediction* rather than as a change in a direction.
@@ -1070,7 +851,7 @@ def build_anchor_noise_configs(
     trunks: Mapping[str, Sequence[StepConfig]] = EXP2_TRUNKS,
     local: bool = False,
 ) -> list[TrajectoryConfig]:
-    """Section 6d: one config per trait over an existing trunk, for re-measuring.
+    """Build one anchor-noise configuration per trait.
 
     Deliberately identical to :func:`build_exp2_decay_configs`' trunk in
     everything ``weights_key`` hashes -- model, seed, steps -- so it resolves to
@@ -1174,8 +955,8 @@ def base_template_config(
     )
 
 
-# --- experiment 3 (section 6.3, RQ2): hysteresis ---------------------------
-# Three example datasets from the proposal's plot description.
+# --- experiment 3: hysteresis ----------------------------------------------
+# Trait-eliciting datasets used by the hysteresis design.
 HYSTERESIS_DATASETS: tuple[StepConfig, ...] = (
     StepConfig(dataset="hallucination", version=DatasetVersion.MISALIGNED_1),
     StepConfig(dataset="mistake_opinions", version=DatasetVersion.MISALIGNED_1),
@@ -1193,7 +974,7 @@ def build_hysteresis_configs(
     probes: Sequence[StepConfig] | None = None,
     local: bool = False,
 ) -> list[TrajectoryConfig]:
-    """Section 6.3: is a realigned model easier (or harder) to re-misalign?
+    """Build trajectories testing susceptibility after re-alignment.
 
     For each seed x measured trait:
       - one 1-step *baseline* trajectory per D2 (train on D2 straight from

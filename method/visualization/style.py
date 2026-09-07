@@ -1,19 +1,4 @@
-"""Shared look-and-feel for every figure: palette, rcParams, and file output.
-
-Figures here are meant to be dropped straight into the dissertation and an
-ICLR-style paper, so the same rcParams and colors are applied everywhere
-rather than left to each plotting function's defaults.
-
-The categorical palette below is five hues assigned in a fixed order, checked
-pairwise under simulated protanopia, deuteranopia and tritanopia (see the
-comment above :data:`CATEGORICAL` for the method and the numbers). Slot 1
-(blue) and slot 2 (orange) double as the paired "computed at $t=0$" vs
-"recomputed at $t$" series the proposal repeatedly asks for.
-
-Colour is never the only channel carrying an identity. Datasets use shape plus
-a lightness ramp, and the bar charts name each arm on its own tick, so a reader
-who cannot separate two hues still loses nothing.
-"""
+"""Shared plotting palette, rcParams, and file output."""
 
 from __future__ import annotations
 
@@ -21,9 +6,7 @@ from dataclasses import dataclass
 
 import matplotlib
 
-# Headless by construction: every figure here is written to disk (png + pdf),
-# never shown interactively, so the backend must not depend on a display
-# being available (e.g. in CI or a remote dev container).
+# Use a headless backend for file output.
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt  # noqa: E402  (must follow matplotlib.use)
@@ -34,19 +17,8 @@ from method.utils import REPO_ROOT  # noqa: E402
 
 PLOTS_DIR = REPO_ROOT / "plots"
 
-# --- categorical palette (fixed order; five slots, and five is the limit) --
-# Validated by simulating protanopia, deuteranopia and tritanopia with the
-# Machado, Oliveira & Fernandes (2009) severity-1.0 matrices and measuring
-# every pair in OKLab: the closest pair, under any of the three, is 14.0 apart
-# (x100) -- purple against plum under protanopia -- where ~12 is the point at
-# which two fills stop being confusable. For scale, the best five-colour subset
-# of Okabe-Ito scores 13.1 on the same test.
-#
-# Five slots, not eight, because five is what the figures need -- the five
-# hysteresis arms, and nothing else comes close (three trunks, two projection
-# series). Eight nominal hues cannot be made safe at all: the
-# dichromacies collapse hue onto roughly one axis, so past about five the only
-# separation left is lightness, and Okabe-Ito itself fails 8 of its 28 pairs.
+# --- categorical palette --------------------------------------------------
+# Five fixed hues validated under simulated colour-vision deficiencies.
 BLUE = "#2a78d6"
 ORANGE = "#eb6834"
 GREEN = "#145e00"
@@ -54,42 +26,14 @@ PURPLE = "#6b139e"
 PLUM = "#a94677"
 CATEGORICAL = (BLUE, ORANGE, GREEN, PURPLE, PLUM)
 
-#: Two more hues, deliberately outside :data:`CATEGORICAL` and outside the
-#: guarantee above. A decay panel can hold seven projection-difference series
-#: once every one of them has been measured
-#: (:data:`method.visualization.figures._DECAY_SERIES`), and seven nominal hues
-#: cannot be made dichromacy-safe at all. So these two are added for the panel
-#: that draws all seven, not promoted into the palette: each is the on-policy
-#: twin of a series already in it -- teal beside green, rust beside orange --
-#: and the figures the thesis prints draw two series, never seven (see
-#: :data:`method.visualization.make_plots.DECAY_GRID_SERIES`).
+#: Extra hues for optional seven-series decay panels.
 TEAL = "#0f6f77"
 RUST = "#8a4b12"
 
-#: An ordered three-step ramp, red to blue, for the persona vector a
-#: projection difference is taken onto: held at $v_{0\\leftarrow0}$, re-encoded
-#: at the checkpoint, or re-extracted from the checkpoint's own responses (see
-#: :data:`method.visualization.decay.REFRESH_GROUPS`). That is an *order* --
-#: each step has moved further from $M_0$ than the last -- and an order asks
-#: for a ramp rather than for three nominal hues.
-#:
-#: Three steps, not six, because the six variants are a 3x2 and the other
-#: factor takes a channel of its own: six hues cannot be told apart, and the
-#: figure that tried read as one wash of purple. Lightness falls by 0.12 in
-#: OKLab per step, so the order survives every colour-vision deficiency and a
-#: greyscale print; hue turns with it, red through violet to blue, the short
-#: way round rather than through the yellows and greens.
-#:
-#: Measured the same way :data:`CATEGORICAL` was: the closest pair under any of
-#: the three severity-1.0 dichromacies is 16.9 apart in OKLab (x100) -- violet
-#: against blue under protanopia -- against 14.5 for the five categorical
-#: slots and ~12 for the point at which two hues stop being separable. The
-#: lightest step clears 3.2:1 against :data:`SURFACE`.
+#: Ordered ramp for base, re-encoded, and re-extracted persona vectors.
 VECTOR_RAMP = ("#e86059", "#9348b1", "#00268a")
 
-#: Not a categorical slot: a semantic accent for "over the line" in the latent
-#: audit, where it is read against :data:`BLUE` alone rather than against the
-#: rest of the palette.
+#: Semantic accent for threshold exceedance.
 RED = "#e34948"
 
 # --- chrome & ink (light chart surface only; these are print figures) -----
@@ -102,14 +46,7 @@ BASELINE = "#c3c2b7"
 
 
 def categorical_color(index: int) -> str:
-    """The ``index``-th fixed categorical hue, wrapping past the last slot.
-
-    Wrapping keeps an unexpected extra series plotting rather than raising, but
-    it is a failure mode, not a feature: the separability guarantee in
-    :data:`CATEGORICAL` holds over the five slots and nothing beyond them. A
-    figure that needs more categories needs a second channel (see
-    :data:`DATASET_MARKERS`), not more hues.
-    """
+    """Return a fixed categorical hue, wrapping after the last slot."""
     return CATEGORICAL[index % len(CATEGORICAL)]
 
 

@@ -1,27 +1,8 @@
-"""Figures for the sequential fine-tuning proposal, built from either real
-``trajectory.json`` measurements or the synthetic fixtures in
-:mod:`method.visualization.synthetic`.
-
-    from method.visualization import figures, schema, style, synthetic
-
-    trajectories = synthetic.synthetic_trajectory_set(n_seeds=5)
-    dp0 = synthetic.synthetic_delta_p_0_lookup()
-    pairs = schema.projection_pairs(trajectories, dp0)
-    fig = figures.scatter_projection_correlation(
-        pairs["delta_p_0"], pairs["delta_p_hat_t"], pairs["delta_behavior"]
-    )
-    style.save_figure(fig, "projection_correlation")
-
-See :mod:`method.visualization.demo` for a runnable script that generates
-every figure this way and saves it under ``plots/``.
-"""
+"""Visualize real trajectories or schema-faithful synthetic fixtures."""
 
 from __future__ import annotations
 
-# NB: the ``collect`` *function* is deliberately not re-exported here. Binding
-# it as ``method.visualization.collect`` would shadow the submodule of the same
-# name, so ``from method.visualization import collect`` would hand back a
-# function. Import it from :mod:`method.visualization.collect` directly.
+# Do not export a ``collect`` function that would shadow the submodule.
 from method.visualization.collect import (
     Collection,
     Run,
