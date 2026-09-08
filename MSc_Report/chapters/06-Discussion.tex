@@ -2,6 +2,15 @@
 \label{ch:discussion}
 This project aimed to investigate 
 
+% The main findings of this project were:
+
+% - Projection differences remained a good predictor of evilness and sycophancy during a sequential fine-tuning consisting of six benign supervised datasets.
+% - Importantly, the regret with respect to a perfectly fitted forecaster did not increase over time for this trajectory.
+% - We found evidence of the internal representations of the model drifting and not coming to normal after realignment. This relates to papers like the basin safety one. Behavior is not the same as representation drift. 
+% - Despite this representation drift, a realigned Qwen2.5 experimented the same misalignment after seeing a new EM-eliciting dataset than its never-misaligned counterpart.
+% - Indeed, we found that if the second EM-eliciting misalignment dataset was the same as the first one, then the model experienced less misalignment.
+% - We also found a mechanistic explanation to this last findings. Updates to the model weights were smaller through training for the second training event in the same data, despite having a realignment step between those.
+% - While these findings open new avenues for future research (e.g., can we create vaccines for misalignment?). We do not recommend, however, realigning a model if reinitialising the model from a checkpoint prior to misalignment is possible, because EM can be very broad and realignment could leave some misalignment leftovers as other papers in the literature suggest.
 
 % \citet{nghiem2026trait_space} also found that benign training causes drift over long sequences. which required recalibrating the monitor. To address this problem, they added information about the training step and recalibrated the monitor using other benign long-horizon trajectories. They also reported that performance can deteriorate when the starting model changes.
 % \citet{nghiem2026trait_space} also found a degradation in their monitor's performance when the starting model was already misaligned. 
