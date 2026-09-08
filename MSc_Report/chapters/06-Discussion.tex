@@ -1,42 +1,69 @@
 \chapter{Discussion}
 \label{ch:discussion}
-This project aimed to investigate 
+This chapter discusses the main findings of the experiments presented in \Cref{ch:experiments} and their implications for the research questions posed in \Cref{ch:intro}. We also relate the findings to the existing literature presented in \Cref{ch:background_related_work}. Finally, we discuss the limitations of our study and directions for future work.
 
-% The main findings of this project were:
-
-% - Projection differences remained a good predictor of evilness and sycophancy during a sequential fine-tuning consisting of six benign supervised datasets.
-% - Importantly, the regret with respect to a perfectly fitted forecaster did not increase over time for this trajectory.
-% - We found evidence of the internal representations of the model drifting and not coming to normal after realignment. This relates to papers like the basin safety one. Behavior is not the same as representation drift. 
-% - Despite this representation drift, a realigned Qwen2.5 experimented the same misalignment after seeing a new EM-eliciting dataset than its never-misaligned counterpart.
-% - Indeed, we found that if the second EM-eliciting misalignment dataset was the same as the first one, then the model experienced less misalignment.
-% - We also found a mechanistic explanation to this last findings. Updates to the model weights were smaller through training for the second training event in the same data, despite having a realignment step between those.
-% - While these findings open new avenues for future research (e.g., can we create vaccines for misalignment?). We do not recommend, however, realigning a model if reinitialising the model from a checkpoint prior to misalignment is possible, because EM can be very broad and realignment could leave some misalignment leftovers as other papers in the literature suggest.
-
-% \citet{nghiem2026trait_space} also found that benign training causes drift over long sequences. which required recalibrating the monitor. To address this problem, they added information about the training step and recalibrated the monitor using other benign long-horizon trajectories. They also reported that performance can deteriorate when the starting model changes.
-% \citet{nghiem2026trait_space} also found a degradation in their monitor's performance when the starting model was already misaligned. 
-
-In this chapter, we analyse the experiment results presented in \Cref{ch:experiments} and discuss their implications for the research questions posed in \Cref{ch:intro}. We also consider the limitations of our study and suggest directions for future work.
-
-% mention that math datasets seem to align less the model. 
 \section{RQ1: Do Projection Differences Computed From the Initial Model Remain a Good Predictor of Future Behaviour?}
 
 \subsection{Do Projection Differences Remain Useful?}
-Experiment 1 (\Cref{sec:robustness}) shows that all projection differences variants we introduced in \Cref{sec:deltap-variants}, including $\Delta P_0$, remained highly correlated with behaviour for trajectories that consisted only of normal steps. Regarding the observed differences in terms of correlation, while refreshing the persona vector's answers seemed to either hurt ot not affect the correlation, the amount of trajectories studied was small, so we cannot draw strong conclusions from this. However, we found a counterexample, meaning that a projection difference that was predictive of behaviour may stop being so. 
+Experiment 1 (\Cref{sec:robustness}) shows that all projection-difference variants we introduced in \Cref{sec:deltap-variants}, including $\Delta P_0$, remained highly correlated with behaviour for the trajectory that consisted only of normal steps. More generally, the correlation remained high for almost all trajectories and checkpoints. This extends the result of \citet{chen2025persona_vectors}: projection differences were not only predictive for one update from the initial model, but could remain predictive after several sequential updates. Thus, in the settings we tested, recomputing every component of the projection difference after each benign fine-tuning event was unnecessary.
 
-\subsection{RQ2: How Does Prior History Affect future misalignment?}
-One of the most interesting findings of the experiments conducted was that the last dataset had the highest impact on the model's behaviour.
+However, we also found a counterexample. For sycophancy in trunk A, the correlation dropped at step 5 for some projection-difference variants and at step 6 for all of them. Therefore, a projection difference that is predictive at the initial model is not guaranteed to remain predictive. Importantly, during both of these steps, the model was misaligned. This along the results for trunk C suggests that projection differences are more likely to remain predictive for models showing no misalignment, which could be partially explained by the fact that misalignment datasets caused larger changes in the relevant model's representations.
+
+Refreshing the model's answers used to compute $\mathbf{h}^{\text{predicted}}$ recovered much of the correlation at step 5, although it did not prevent the drop at step 6. In contrast, refreshing the persona vector did not produce a consistent improvement. One possible interpretation is that the persona vectors are sufficiently stable, whereas the model's answers can change more quickly. As we mentioned, during step 5, the model was already misaligned, so the answers it produced were likely very different from those produced by the initial model. This suggests a potential limitation with methods, such as the Vector Filter proposed by \citet{kowal2026conceptinfluenceleveraginginterpretability}, that try to approximate the projection difference by avoiding the need to regenerate the model's answers. Nevertheless, we studied only three trajectories and the differences between most variants were small. We therefore cannot conclude that refreshing the answers will generally be more useful than refreshing the persona vector.
+
+\subsection{Can a Forecaster Calibrated on the Initial Model Predict Future Behaviour?}
+High correlation is necessary for a linear forecaster, but it does not imply that a forecaster calibrated at the initial model will remain accurate. Nevertheless, the forecaster fitted at $\mathcal{M}_0$ achieved an RMSE of around 12 judge points for both traits in the trajectory consisting only of normal datasets. Furthermore, its regret relative to the optimal linear refit at each checkpoint remained roughly constant across the six steps and low for some of the variants (around 3 points). Thus, in this trajectory, the initial calibration did not become progressively less useful as updates accumulated.
+
+The same conclusion did not hold for every trajectory. The forecaster produced higher error and regret at particular checkpoints in the trajectories containing misalignment datasets, especially for sycophancy in trunk A. Thus, again, the main failures were localised to particular model states rather than increasing monotonically with time. Therefore, our answer to RQ1 is conditional. A forecaster calibrated at the initial model remained useful over the short benign trajectory we tested, but its reliability cannot be assumed after arbitrary combinations of harmful and realignment updates.
+
+The optimal linear refit $f_t$ is useful here as a reference rather than as a deployable alternative. It is fitted using all eight probe outcomes at the current checkpoint and gives the minimum in-sample RMSE within the class of affine models. It should not, however, be interpreted as regret relative to the optimal linear predictor, which paradoxically would have greater or equal empirical error than $f_t$, as $f_t$ is its minimiser.
+
+\subsection{Can the Model State Improve Calibration?}
+The dynamic recalibration results were mixed. For evil, several forecasters using individual components of the model state modestly improved over keeping $c_t\equiv1$, particularly for projection differences paired with the target they predicted best. For sycophancy, however, none of the dynamically recalibrated forecasters achieved the best performance. The unrecalibrated forecaster remained the best choice for each projection difference under its preferred target.
+
+One possible explanation is that recalibration had more room to help where the original forecaster's regret was higher. Another is that the small number of trajectories provided too little data to learn a stable relationship between the state and the required recalibration factor. The complete four-dimensional state also did not consistently outperform its individual components, which is compatible with overfitting but does not establish that this was the cause. In short, more trajectories are needed to distinguish whether the limitation comes from the state itself, the recalibration model, or the amount of training data.
+
+Representation drift and forecast error did not have a clear relationship. While the components of $\mathbf{z}^{[0,0]}_t$ changed throughout the benign trajectory, the regret of the initial forecaster did not increase. This separation between the representation drift and behaviour is compatible with both the safety-basin hypothesis of \citet{Peng2024safety_basin} and the findings of \citet{wang2026parameterdynamicsriskscoring}, who observed that drift over the safety and dangerous axis can accumulate without an immediate, proportional change in measured behaviour. However, our experiment did not estimate the size of a safety basin or apply sampled parameter perturbations. Thus, we cannot conclude that the model moved towards or beyond a basin boundary.
+
+\subsection{Behavioural Recovery Does Not Imply Representational Recovery}
+Across the five trunk seeds, the components of $\mathbf{z}^{[0,0]}_t$ followed consistent trends even when the model was trained only on normal datasets. Misalignment datasets tended to accentuate some of these trends, while subsequent normal datasets could partially reverse them. However, the relevant internal representations did not generally return to their earlier values when the behavioural scores recovered.
+
+
+These results are consistent with \citet{wang2026persona_em_openai}, who found that emergent realignment could suppress broad misalignment without returning every internal measurement to its initial value. Our results provide related evidence in a sequential open-weight setting. They also show why a behavioural evaluation alone may not describe the full effect of a fine-tuning history. However, the remaining representational difference should not automatically be interpreted as latent misalignment or as evidence that the model is more susceptible to future misalignment. Experiment 2 tests this second question directly.
+
+\section{RQ2: How Does Prior History Affect Future Misalignment?}
+
+\subsection{Is a Recently Realigned Model More Prone to Future Misalignment?}
+One of the most interesting findings of Experiment 2 (\Cref{sec:hysteresis}) was that previous misalignment did not generally make the model more prone to misalignment after the final update. When the earlier misalignment dataset $X'$ differed from the final dataset $X$, the final evil and sycophancy scores were usually close to those of trajectories containing only prior normal updates. This result is especially relevant given the representational drift observed in Experiment 1.
+
+History was not completely irrelevant, however. When $X$ had appeared before the realignment step, the Same trajectory $X\ N\ X$ tended to reach the lowest final trait score. The training curves provide a possible explanation. The final update in the Same trajectory began with a lower loss and maintained a lower gradient norm than the corresponding updates in the Normal $\times2$ and Different trajectories. This lower gradient pressure likely translated into a smaller parameter update, which may explain the lower behavioural change. In other words, the model may have retained part of its previous fit to $X$ through the normal update, leaving less to change when it encountered $X$ again. One caveat, however, is that this explanation is correlational. We did not measure the parameter displacement during each update, nor match the update magnitudes across trajectories.
+
+% The intermediate starting loss of the Different trajectory also suggests some transfer of knowledge (or  the persona) across $X'$ and $X$. \citet{chen2025persona_vectors} studied something 
+
+% This explanation remains correlational. We measured the optimisation signals but did not intervene on the initial loss, match the update magnitudes, or directly test whether a smaller parameter displacement caused the lower trait score. The intermediate starting loss of the Different trajectory also suggests that some training effects may transfer across datasets without producing the same behavioural reduction. Establishing the mechanism would require separating retained task performance from retained persona-related representations.
+
+\subsection{Does Training on Benign Datasets Prevent Misalignment in Future Updates?}
+% One normal fine-tuning step often reduced the final trait score relative to training directly on $X$, whereas adding a second normal step made little additional difference. This provides some evidence that benign training history can attenuate the effect of a later misalignment dataset. However, it did not prevent misalignment consistently, and the effect depended on the final dataset, normal dataset, and measured trait. The most recent dataset still had the largest influence on the final behaviour in most trajectories.
+
+% The normal datasets also differed in how strongly they realigned the model. For example, GSM8K (Normal) and Math (Normal) did not fully reverse the behavioural changes in trunk A of Experiment 1. This is consistent with the results of \citet{wang2026persona_em_openai}, who found that different realignment datasets could suppress broad misalignment to similar degrees while differing in how well they reversed the behaviour learned from the original dataset. Thus, labelling a dataset as normal or benign is not enough to determine how it will interact with the model's previous and future updates.
+
+% These results should therefore not be interpreted as showing that benign updates provide a general defence against EM. In particular, the lower scores in the Same trajectory do not justify deliberately exposing a model to harmful data as a form of ``vaccination'': the first exposure itself caused misalignment, and subsequent realignment may leave behavioural or representational effects that our evaluations do not capture. If a checkpoint from before the misalignment event is available, restoring it avoids this uncertainty. A safer version of this idea would require identifying benign data that reduces the effect of a future harmful update without first inducing the harmful behaviour.
 
 
 \section{Limitations}
 \begin{itemize}
-    \item We only considered one model (Qwen2.5-7B-Instruct).
-    \item We only considered two traits (helpfulness and harmlessness).
-    \item The length of the trajectories was relatively short (six steps). This applies to both experiments. Regarding the first experiment, it is unclear whether training on bening datasets for longer could have caused a degradation in the correlation between $\Delta P_0$ and the behaviour reached after the step.
-    \item We only run one seed for each branch of Experiment 1.
-    \item The correlation and prediction errors were computed from only 8 probe datasets.
-    \item The main limitation of our study is that we only considered a single example dataset. More probe datasets would provide a more robust estimate of the correlation and prediction errors.
-    \item 
+    \item We considered only one model, Qwen2.5-7B-Instruct, and one RSLoRA configuration. The results may differ for other model families, model sizes, or fine-tuning methods.
+    \item We considered only two traits, evil and sycophancy. Safety measurements can change differently after the same update \citep{khan2026safetydriftfinetuningevidence}, so these traits should not be taken as a complete evaluation of emergent misalignment.
+    \item The trajectories were relatively short: six steps in Experiment 1 and at most three in Experiment 2. It remains unclear whether longer benign trajectories would eventually degrade the relationship between $\Delta P_0$ and future behaviour.
+    \item Although we used five seeds to evaluate the trunk-state trajectories, each probe branch in Experiment 1 used only one fine-tuning seed.
+    \item The correlations and prediction errors in Experiment 1 were computed from only eight probe datasets. This makes them sensitive to individual probe outcomes and limits the data available for learning the recalibration function.
+    \item Experiment 2 considered three final misalignment datasets and two normal datasets. Its results provide evidence of history dependence for these combinations, but they do not show that previous misalignment is harmless under other histories or forms of harmful training.
+    \item Sequential supervised fine-tuning is only a proxy for continual learning. A deployed system may receive smaller, noisier, or adaptive updates, and may also learn through reinforcement learning rather than LoRA fine-tuning.
 \end{itemize}
 
 \section{Future Work}
-Future work should explor
+% The most direct extension of this project is to evaluate more models, traits, probe datasets, and longer trajectories. In particular, Experiment 1 should be repeated with multiple seeds for every probe branch. This would allow us to separate variation caused by fine-tuning from changes in the relationship between projection differences and behaviour. Longer benign trajectories would also test whether the stable performance of $f_0$ persists or merely reflects the six-step horizon considered here.
+
+% Future work should also investigate when projection differences need to be refreshed. The failure in trunk A-sycophancy provides a useful counterexample: regenerating the model's answers helped at one checkpoint but not the next. Studying more trajectories around this type of failure could determine whether changes in the model's answers provide an early warning that $\Delta P_0$ is becoming stale. Similarly, the dynamic recalibration method could be trained on a larger and more diverse set of trajectories, or use a simpler subset of state components, to test whether its mixed performance was caused by limited data or by an insufficient state representation.
+
+% Finally, the repeated-dataset effect in Experiment 2 should be tested causally. Future experiments could measure the parameter displacement during each update, match update magnitudes across trajectories, or vary the similarity between $X'$ and $X$. This would help determine whether the reduction comes from remembering the dataset, from smaller updates, or from a more specific change in the persona-related representations. A particularly useful direction would be to search for benign datasets that produce this protective effect without first causing misalignment. Such a method could provide a safer test of whether models can be made more robust to predictable harmful updates.
