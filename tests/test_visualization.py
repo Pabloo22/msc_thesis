@@ -2775,6 +2775,84 @@ class TestCorrelationTableOutput:
         assert all(path.exists() for path in saved)
 
 
+class TestTwoQuantityTableOutput:
+    """A table carrying two quantities of the same rows, side by side.
+
+    The regret table is the one that does: an RMSE and the part of it that
+    refitting would remove. Down the rows they would double the table's height
+    and split each projection in two; across the columns each row stays one
+    projection, as in the correlation table this is read beside.
+    """
+
+    def _table(self) -> pd.DataFrame:
+        return pd.DataFrame(
+            [[10.0, 20.0, 2.0, 4.0], [30.0, 40.0, 6.0, 8.0]],
+            index=pd.MultiIndex.from_tuples(
+                [
+                    ("Evil", "A: II drivers", r"$\Delta P_0$"),
+                    ("Evil", "A: II drivers", r"$\Delta P_t$"),
+                ],
+                names=("trait", "trunk", "series"),
+            ),
+            columns=pd.MultiIndex.from_tuples(
+                [("RMSE", 0), ("RMSE", 1), ("Regret", 0), ("Regret", 1)],
+                names=("quantity", "t"),
+            ),
+        )
+
+    def _summarised(self) -> list[str]:
+        return make_plots._latex_table(
+            make_plots._with_mean(self._table(), _MEAN),
+            _HEADINGS,
+            _SPANNER,
+            summary=1,
+            scale=make_plots.ERROR_SCALE,
+        ).splitlines()
+
+    def test_each_quantity_is_summarised_within_itself(self) -> None:
+        """An average of an RMSE and a regret would summarise neither."""
+        table = make_plots._with_mean(self._table(), _MEAN)
+        assert list(table[("RMSE", _MEAN)]) == [15.0, 35.0]
+        assert list(table[("Regret", _MEAN)]) == [3.0, 7.0]
+
+    def test_a_mean_stays_inside_the_quantity_it_sums(self) -> None:
+        """Rather than both means collecting at the right-hand edge, where a
+        reader would have to count columns to find which is which."""
+        table = make_plots._with_mean(self._table(), _MEAN)
+        assert list(table.columns) == [
+            ("RMSE", 0), ("RMSE", 1), ("RMSE", _MEAN),
+            ("Regret", 0), ("Regret", 1), ("Regret", _MEAN),
+        ]
+
+    def test_each_quantity_is_ruled_off_from_the_next(self) -> None:
+        """The rule between them is what says the columns start over."""
+        assert r"\begin{tabular}{l|l|l|rr|r|rr|r}" in self._summarised()
+
+    def test_the_quantities_head_their_own_columns(self) -> None:
+        """Including their means: a mean of a regret is still a regret, and
+        ``Checkpoint $t$`` over both would name only what they share. The
+        first heading closes on the rule dividing the two, so the division
+        runs the full height of the table."""
+        rows = self._summarised()
+        assert rows[2] == (
+            r" &  &  & \multicolumn{3}{c|}{RMSE} & \multicolumn{3}{c}{Regret} \\"
+        )
+        assert rows[3] == (
+            r"Trait & Trunk & Projection & 0 & 1 & Mean & 0 & 1 & Mean \\"
+        )
+
+    def test_a_leader_is_read_down_one_quantity_at_a_time(self) -> None:
+        """The columns are separate measurements, so the smallest regret is
+        bolded whatever the RMSE beside it did."""
+        leaders = make_plots._leading_cells(
+            self._table(), make_plots.ERROR_SCALE
+        )
+        assert leaders.to_numpy().tolist() == [
+            [True, True, True, True],
+            [False, False, False, False],
+        ]
+
+
 class TestDemo:
     def test_build_and_save_writes_all_figures(self, tmp_path) -> None:
         saved = build_and_save(tmp_path, n_seeds=2)

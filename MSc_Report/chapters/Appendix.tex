@@ -49,3 +49,25 @@
 %     \caption{Where each trajectory's final fine-tuning started, and where it sat over the run as a whole; the numbers behind \Cref{fig:exp3-training-curves}. ``Entry'' is the value at the first optimiser step, logged while the learning rate is still zero, so it measures the state the run was handed rather than anything the run has yet done. ``Median'' is the same quantity over all of the run's optimiser steps. $\lVert g \rVert$ is the gradient norm. Each cell is the median over the 9--10 distinct fine-tuning events it covers; because adapters are content-addressed, a fine-tuning event shared by two trajectories is counted once. Bold marks the smallest value in each column within a dataset.}
 %     \label{tab:exp3-training-curves}
 % \end{table}
+
+\chapter{Forecast Error and Regret During Each Step}
+\newpage
+
+\begin{table}[htbp]
+    \centering
+    \singlespacing
+    \scriptsize
+    \setlength{\tabcolsep}{1pt}
+    \input{plots/real/exp2/exp2_forecast_regret.tex}
+    \caption{Out-of-sample error of the frozen forecaster $f_0$, and its
+    regret, in judge points, at every checkpoint of every trunk for each of
+    the projection difference variants discussed in
+    \Cref{sec:deltap-variants}. Regret is the gap to the forecaster refitted
+    at that same checkpoint, $\text{RMSE}(f_0) - \text{RMSE}(f_t)$. Both quantities
+    use the leave-one-out protocol of \Cref{subsec:forecaster_eval}, and $f_0$
+    is fitted on the target matched to each projection, as in
+    \Cref{fig:exp2-headline-rmse}: $\Delta b_{t+1}$ for the variants that
+    regenerate the answers behind $\mathbf{h}^{\text{predicted}}_t$ and
+    $b_{t+1}$ for those that keep $\mathcal{M}_0$'s.}
+    \label{tab:forecast-regret}
+\end{table}

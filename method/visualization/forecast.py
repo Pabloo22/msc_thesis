@@ -810,3 +810,89 @@ def score_table(
     )
     table = kept.pivot(index=list(by), columns="t", values=metric)
     return table.dropna(how="all").sort_index()
+
+
+#: The reference a regret is measured against: the line refitted on the
+#: checkpoint's own probe outcomes, which is what a forecaster would score if
+#: refitting at every step were free.
+REFIT_MODEL = "oracle"
+
+#: The two rows a regret table carries for each projection: what the frozen
+#: forecaster costs, and how much of that cost refitting would remove. Named
+#: after the ``score_frame`` column each is built from, so the melt below
+#: needs no renaming.
+FROZEN_ROW, REGRET_ROW = "rmse", "regret"
+REGRET_ROWS = (FROZEN_ROW, REGRET_ROW)
+REGRET_LABELS = {FROZEN_ROW: r"RMSE of $f_0$", REGRET_ROW: "Regret"}
+
+#: The key order a regret table is indexed by: the correlation table's, since
+#: it is that table's rows the regret table is read beside. The two quantities
+#: go across the columns rather than down the rows, which keeps a row one
+#: projection and keeps the table to one page.
+BY_PROJECTION = ("trait", "trunk", "series")
+
+
+def regret_table(
+    scores: pd.DataFrame,
+    *,
+    series: Sequence[str] | None = None,
+    model: str = "step0",
+) -> pd.DataFrame:
+    r"""Frozen RMSE and regret per ``(trait, trunk, quantity, series)``.
+
+    A forecaster's *regret* at a checkpoint is how much worse it is there than
+    the same map refitted on that checkpoint: $\text{RMSE}(f_0) -
+    \text{RMSE}(f_t)$, in judge points. It separates the error carried by
+    freezing the line from the error the scatter carries whatever is fitted to
+    it -- a checkpoint that is simply hard scores a large RMSE and a small
+    regret.
+
+    Laid out to be read beside
+    :func:`method.visualization.decay.correlation_table`: the same keys, the
+    same projection ladder, and the same checkpoint columns -- twice over,
+    once per quantity, which is what the two-level column index carries.
+
+    ``model`` names the frozen forecaster, taken under the target its
+    projection matches (:func:`matched_model`), which is what the headline
+    RMSE figure plots. Only that row moves with the target: the refit is
+    target-invariant, so the regret it defines is the same either way.
+    """
+    if scores.empty or FROZEN_ROW not in scores:
+        return pd.DataFrame()
+    wanted = list(series) if series is not None else list(decay.SERIES)
+    kept = scores[scores["series"].isin(wanted)]
+    frozen = kept[
+        kept["model"].eq(kept["series"].map(lambda name: matched_model(model, name)))
+    ]
+    refit = kept[kept["model"].eq(REFIT_MODEL)]
+    if frozen.empty or refit.empty:
+        return pd.DataFrame()
+    paired = frozen.merge(
+        refit[[*CHECKPOINT, "series", FROZEN_ROW]],
+        on=[*CHECKPOINT, "series"],
+        suffixes=("", "_refit"),
+    )
+    paired[REGRET_ROW] = paired[FROZEN_ROW] - paired[f"{FROZEN_ROW}_refit"]
+    long = paired.melt(
+        id_vars=[*CHECKPOINT, "series"],
+        value_vars=list(REGRET_ROWS),
+        var_name="quantity",
+        value_name="value",
+    )
+    long = long.assign(
+        series=pd.Categorical(long["series"], categories=wanted, ordered=True),
+        quantity=pd.Categorical(
+            long["quantity"], categories=REGRET_ROWS, ordered=True
+        ),
+    )
+    table = long.pivot(
+        index=list(BY_PROJECTION), columns=["quantity", "t"], values="value"
+    )
+    # The categoricals were the sort order and have now been spent on it.
+    # Left in place they would refuse the mean column a caller appends, whose
+    # heading is no checkpoint of theirs.
+    table.columns = pd.MultiIndex.from_tuples(
+        [(str(quantity), t) for quantity, t in table.columns],
+        names=table.columns.names,
+    )
+    return table.dropna(how="all").sort_index()

@@ -904,6 +904,57 @@ class TestScoreTable:
         assert forecast.score_table(pd.DataFrame(), "rmse").empty
 
 
+# --- regret_table -----------------------------------------------------------
+
+
+class TestRegretTable:
+    @pytest.fixture(name="scores")
+    def _scores(self, frames) -> pd.DataFrame:
+        rows, fan = frames
+        return forecast.score_frame(forecast.prediction_frame(rows, fan))
+
+    def test_keys_and_columns(self, scores) -> None:
+        """The correlation table's rows, with its checkpoints twice over."""
+        table = forecast.regret_table(scores)
+        assert list(table.index.names) == list(forecast.BY_PROJECTION)
+        assert list(table.columns.names) == ["quantity", "t"]
+        checkpoints = sorted(scores["t"].unique())
+        assert list(table.columns) == [
+            (quantity, t)
+            for quantity in forecast.REGRET_ROWS
+            for t in checkpoints
+        ]
+
+    def test_a_row_is_one_projection(self, scores) -> None:
+        """What keeps the table the same height as the one it is read beside."""
+        block = forecast.regret_table(scores).loc[("evil", "a")]
+        assert block.index.tolist() == list(decay.SERIES)
+
+    def test_regret_is_the_frozen_error_less_the_refit(self, scores) -> None:
+        table = forecast.regret_table(scores)
+        refit = forecast.score_table(scores, "rmse", models=["oracle"])
+        for series in decay.SERIES:
+            row = table.loc[("evil", "a", series)]
+            oracle = refit.loc[("evil", "a", series, "oracle")]
+            for t, value in oracle.items():
+                assert row[("regret", t)] == pytest.approx(row[("rmse", t)] - value)
+
+    def test_the_frozen_columns_take_the_matched_target(self, scores) -> None:
+        """Level for the cached-answer variants, change for the refreshed ones."""
+        table = forecast.regret_table(scores)
+        errors = forecast.score_table(scores, "rmse", models=["step0", "step0_level"])
+        for series in decay.SERIES:
+            matched = forecast.matched_model("step0", series)
+            frozen = errors.loc[("evil", "a", series, matched)]
+            for t, value in frozen.items():
+                assert table.loc[("evil", "a", series), ("rmse", t)] == pytest.approx(
+                    value
+                )
+
+    def test_empty_scores_give_an_empty_table(self) -> None:
+        assert forecast.regret_table(pd.DataFrame()).empty
+
+
 # --- the emitted tables -----------------------------------------------------
 
 
