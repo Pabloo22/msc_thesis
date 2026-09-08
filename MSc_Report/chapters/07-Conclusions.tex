@@ -2,11 +2,9 @@
 \label{ch:conclusions}
 % ~1 page total for these two, then the RQ answers
 
-% [1 paragraph, no citations] Restate the problem and what you did.
-% Continual learning needs safety checks that survive repeated updates;
-% projection differences are the leading cheap predictor but were only
-% validated for a single fine-tuning; we tested them over sequential
-% LoRA fine-tuning of Qwen2.5-7B-Instruct on evil and sycophancy.
+Continual-learning LLMs require monitoring methods that help ensure they remain aligned. However, these monitors need to be computationally efficient and robust to representational drift in the model's latent space. Projection differences, which build on evidence that emergent misalignment can be mediated by linear persona features in the model's activation space \citep{wang2026persona_em_openai}, are a promising method for accomplishing this. However, prior work has only tested them in a single-step fine-tuning setting \citep{chen2025persona_vectors}.
+
+This project addresses this gap in understanding by evaluating the effectiveness of projection differences along persona vectors for predicting evil and sycophancy in Qwen2.5-7B-Instruct during sequential RSLoRA fine-tuning. Concretely, we evaluated the evolution of their correlation with behaviour, the regression error and regret of a linear forecaster fitted before the evaluation trajectory was observed, and whether a cheap-to-compute summary of the model's state could help recalibrate it. Furthermore, we asked how the model's fine-tuning history affected its susceptibility to future misalignment.
 
 \section{Answers to the Research Questions}
 % One tight paragraph per RQ. Each MUST open with a direct answer sentence.
