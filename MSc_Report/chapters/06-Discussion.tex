@@ -1,8 +1,13 @@
 \chapter{Discussion}
 \label{ch:discussion}
-This chapter discusses the main findings of the experiments presented in \Cref{ch:experiments} and their implications for the research questions posed in \Cref{ch:intro}. We also relate the findings to the existing literature presented in \Cref{ch:background_related_work}. Finally, we discuss the limitations of our study and directions for future work.
+This chapter discusses the main findings of the experiments presented in \Cref{ch:experiments} and their implications for the research questions posed in \Cref{ch:intro}. Before interpreting the results, we briefly recall what each experiment measured.
+
+In Experiment 1 (\Cref{sec:robustness}), we sequentially fine-tuned Qwen2.5-7B-Instruct using RSLoRA and measured evil and sycophancy after every update. We considered three six-step trunks starting from the same initial model $\mathcal{M}_0$: one containing only normal datasets and two combining trait-eliciting and normal datasets. At each checkpoint, we used eight fixed probe datasets to create separate one-step branches. These branches provided the projection difference and behavioural measurements needed to test whether the variants introduced in \Cref{sec:deltap-variants} remained correlated with behaviour and whether a forecaster calibrated at $\mathcal{M}_0$ remained accurate. In Experiment 2 (\Cref{sec:hysteresis}), we instead fixed the final trait-eliciting dataset $X$ and varied the history preceding it, comparing five trajectory types over five fine-tuning seeds.
+
+Each experiment addresses one of the research questions. \Cref{sec:discussion-rq1} discusses what the Experiment 1 results imply for RQ1: whether projection differences computed at $\mathcal{M}_0$ remain a reliable basis for forecasting behaviour as updates accumulate. Then, \Cref{sec:discussion-rq2} considers RQ2: whether the effect of a fine-tuning dataset depends on the model's training history. Throughout the chapter, we relate our findings to the literature presented in \Cref{ch:background_related_work}. Finally, \Cref{sec:limitations} describes the limitations of our study, and \Cref{sec:future-work} suggests directions for future work.
 
 \section{RQ1: Reliability of the Initial Forecaster}
+\label{sec:discussion-rq1}
 
 \subsection{Robustness of Projection Differences}
 Experiment 1 (\Cref{sec:robustness}) shows that all projection-difference variants we introduced in \Cref{sec:deltap-variants}, including $\Delta P_0$, remained highly correlated with behaviour for the trajectory that consisted only of normal steps. More generally, the correlation remained high for almost all trajectories and checkpoints. This extends the result of \citet{chen2025persona_vectors}: projection differences were not only predictive for one update from the initial model, but could remain predictive after several sequential updates. Thus, in the settings we tested, recomputing every component of the projection difference after each benign fine-tuning event was unnecessary.
@@ -32,7 +37,7 @@ Across the five trunk seeds, the components of $\mathbf{z}^{[0,0]}_t$ followed c
 These results are consistent with \citet{wang2026persona_em_openai}, who found that emergent realignment could suppress broad misalignment without returning every internal measurement to its initial value. Our results provide related evidence in a sequential open-weight setting. They also show why a behavioural evaluation alone may not describe the full effect of a fine-tuning history. However, the remaining representational difference should not automatically be interpreted as latent misalignment or as evidence that the model is more susceptible to future misalignment. Experiment 2 tests this second question directly.
 
 \section{RQ2: History Dependence of Misalignment}
-
+ \label{sec:discussion-rq2}
 \subsection{Misalignment After Realignment}
 One of the most interesting findings of Experiment 2 (\Cref{sec:hysteresis}) was that previous misalignment did not generally make the model more prone to misalignment after the final update. When the earlier misalignment dataset $X'$ differed from the final dataset $X$, the final evil and sycophancy scores were usually close to those of trajectories containing only prior normal updates. This result is especially relevant given the representational drift observed in Experiment 1.
 
@@ -48,6 +53,7 @@ One normal fine-tuning step often reduced the final trait score relative to trai
 The normal datasets also differed in how strongly they realigned the model. For example, GSM8K (Normal) and Math (Normal) did not fully reverse the behavioural changes in trunk A of Experiment 1. This is consistent with the results of \citet{wang2026persona_em_openai}, who found that different realignment datasets could suppress broad misalignment to similar degrees while differing in how well they reversed the behaviour learned from the original dataset. Thus, labelling a dataset as normal or benign is not enough to determine how it will interact with the model's previous and future updates.
 
 \section{Limitations}
+\label{sec:limitations}
 
 \paragraph{Model and measurement scope.}
 We considered only Qwen2.5-7B-Instruct and one RSLoRA configuration, so the results may differ for other model families, model sizes, or fine-tuning methods. We also measured only evil and sycophancy using fixed question sets and one LLM judge. Safety measurements can change differently after the same update \citep{khan2026safetydriftfinetuningevidence}, and these two trait scores should not be taken as a complete safety evaluation. Finally, sequential supervised fine-tuning is only a proxy for continual learning. A deployed system may receive smaller, noisier, or adaptive updates, and may learn through reinforcement learning rather than LoRA fine-tuning.
@@ -65,6 +71,8 @@ The dynamically calibrated forecasters we evaluated relied on the model's state 
 We evaluated these forecasts using RMSE, which weights errors by their magnitude but does not distinguish whether they cross a deployment decision boundary. In practice, the regressors needs to be thresholded, and we would likely be especially concerned about false negatives, where the forecaster predicts a benign update but the model becomes misaligned. This analysis was out of scope for this project, but it is an important consideration for future work.
 
 \section{Future Work}
+\label{sec:future-work}
+
 The most direct extension of this project is to evaluate more models, traits, trajectories, and probe datasets. In Experiment 1, the highest priority is a larger and more diverse set of trajectories together with a broader set of probe datasets. Benign only trajectories are the most important ones, since presumably, in a real scenario, most datasets the model is trained on will be benign ones (trait-eliciting datasets are less frequent and more likely to be filtered out). Additional probes would make the checkpoint-level correlations less sensitive to individual datasets and provide more data for learning the recalibration function. Having more and longer trajectories could also help determine more clearly when projection differences need to be refreshed and what components are more valuable.
 
 The localised forecast failures also motivate detecting when the initial forecaster becomes unreliable, before performing the next update. This could guide when to refresh projection differences or collect additional calibration data. Such a monitor should be evaluated by how often it misses harmful updates or requests unnecessary checks, together with its computational cost.
