@@ -218,7 +218,7 @@ Once we have identified a direction, we can use it in two different ways: We can
 
 \subsection{Representations Drift During Fine-tuning}
 \label{subsec:representation_drift}
-The preceding results treat featuresas stable directions, but fine-tuning can also change the activation space in which those directions were identified. \citet{masip2026putting_face} describe these changes as two basic transformations of a feature: rotation, which changes its direction, and scaling, which changes its magnitude.
+The preceding results treat features as stable directions, but fine-tuning can also change the activation space in which those directions were identified. \citet{masip2026putting_face} describe these changes as two basic transformations of a feature: rotation, which changes its direction, and scaling, which changes its magnitude.
 
 These transformations can cause forgetting in two ways. First, the changed feature may become misaligned with the model's downstream readout, even if the feature itself remains intact. Second, the feature may lose representational capacity by rotating towards other features or by shrinking in norm, a process the authors call fading. Fading was the main driver of forgetting in their continual-learning case study on a Vision Transformer (a transformer whose tokens represent image patches instead of words), although this does not establish that it is also the dominant mechanism in LLMs. For this project, the broader implication is that a persona vector extracted from the initial model, and the projections measured along it, may become less reliable as sequential fine-tuning changes the model's representations.
 
