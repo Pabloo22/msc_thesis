@@ -11,38 +11,70 @@ We consider a model $\mathcal{M}_0$ whose parameters are modified by training on
 \begin{itemize}
     \item A behaviour measurement returning a behavioural profile $\mathbf{b}_t$. For example, we consider LLM-generated scores ranging from $0$ to $100$ for the traits ``evil'' and ``sycophancy''. This is the behaviour that we are interested in predicting. 
     \item A mechanistic analysis of $\mathcal{M}_t$, yielding a summary vector $\mathbf{z}_t$. This analysis can help us understand how the model's state is changing. While the true model's state is its parameters or activations, we refer to its informative proxy, $\mathbf{z}_t$, as the model's state for simplicity.
-    \item An encoding $\boldsymbol{\phi}_{t+1}(\mathcal{D}_{t+1};\, \mathcal{M}_t, \mathcal{M}_0)$ of a dataset $\mathcal{D}_t$. It can be computed using either the initial model $\mathcal{M}_0$ or the current model $\mathcal{M}_t$, or both. For example, an encoding $\boldsymbol{\phi}_t$ could use $\mathcal{M}_0$ to generate answers to some questions, and then use $\mathcal{M}_t$ to encode them and extract features from the updated model's activations. In this project, we play with this possibility to generate different variations of projection differences.
+    \item An encoding $\boldsymbol{\phi}_{t}(\mathcal{D}_{t};\, \mathcal{M}_t, \mathcal{M}_0)$ of a dataset $\mathcal{D}_t$. It can be computed using either the initial model $\mathcal{M}_0$ or the current model $\mathcal{M}_t$, or both. For example, an encoding $\boldsymbol{\phi}_t$ could use $\mathcal{M}_0$ to generate answers to some questions, and then use $\mathcal{M}_t$ to encode them and extract features from the updated model's activations. In this project, we play with this possibility to generate different variations of projection differences.
     % TODO: reference the encoders mentioned in Background (projection differences and SQDS)
 \end{itemize}
-The goal, then, is to predict either the behavioural change $\Delta \mathbf{b}_{t+1} = \mathbf{b}_{t+1} - \mathbf{b}_t$ or, directly, the next behaviour $\mathbf{b}_{t+1}$, from the dataset encoding $\boldsymbol{\phi}_{t+1}(\mathcal{D}_{t+1};\, \mathcal{M}_t, \mathcal{M}_0)$, and, optionally, from the mechanistic analysis $\mathbf{z}_t$ too.
+Our goal is to predict the model's behavioural score after the next update, $b_{t+1}$, or, alternatively, the change caused by that update, $\Delta b_{t+1}=b_{t+1}-b_t$. The prediction is based on the encoding of the next dataset, $\boldsymbol{\phi}_t(\mathcal{D}_t;\,\mathcal{M}_t,\mathcal{M}_0)$, and may also use the current model state $s_t$. We refer to the function that makes this prediction as a behaviour forecaster or a predictive monitor:
+\begin{equation}
+\widehat{b}_{t+1}
+=
+f\!\left(
+\boldsymbol{\phi}_t(\mathcal{D}_t;\,\mathcal{M}_t,\mathcal{M}_0),
+s_t
+\right).
+\label{eq:forecaster}
+\end{equation}
+
+Importantly, this prediction is made before the update. Therefore, the forecast can be used to decide whether the model should be trained on $\mathcal{D}_t$. This setting presents two main challenges. First, computing the inputs and targets has very different costs. Computing $\boldsymbol{\phi}_t$ requires only forward passes over $\mathcal{D}_t$, whereas obtaining each corresponding behavioural target requires a full fine-tuning run followed by an evaluation of the resulting checkpoint. Second, because collecting these training pairs is expensive, we fit $f$ once at $\mathcal{M}_0$ and reuse the same forecaster at every subsequent checkpoint. \Cref{sec:dynamic-recalibration} investigates whether this initial forecaster remains accurate as the model changes across the trajectory.
+
+Finally, the effect of an update may depend not only on $\mathcal{D}_t$, but also on the updates that preceded it. We therefore investigate whether $b_{t+1}$ and $s_{t+1}$ depend on the order and content of the previous updates.
+
 
 \begin{table}[htbp]
 \centering
-\begin{tabular}{p{0.27\textwidth}p{0.64\textwidth}}
+\small
+\renewcommand{\arraystretch}{1.4}
+\begin{tabular}{@{}p{0.21\textwidth}p{0.72\textwidth}@{}}
 Symbol & Meaning \\
 \hline
+\multicolumn{2}{@{}l}{\textit{Trajectory and data}} \\
 $\mathcal{M}_t$ & Checkpoint after $t$ sequential updates; $\mathcal{M}_0$ is the initial model \\
-$\mathcal{D}_t$ & The dataset used for update $t$ \\
-% $T$ & Trajectory length (number of updates) \\
+$\mathcal{D}_t$ & Dataset used for update $t$, which maps $\mathcal{M}_t \mapsto \mathcal{M}_{t+1}$ \\
+$\tau$ & Trajectory $(\mathcal{M}_t)_{t=0}^{T}$ produced by $T$ successive updates \\
+$\boldsymbol{\phi}_{t}$ & Encoding $\boldsymbol{\phi}_{t}(\mathcal{D}_{t};\mathcal{M}_t,\mathcal{M}_0)$ of a candidate dataset; the input to the predictive monitor \\[1.4ex]
 
-$\mathbf{b}_t$ & Behavioural profile or vector summarising the behaviour of $\mathcal{M}_t$ \\
-$b^{\text{trait}}_t$ & Behavioural trait score of $\mathcal{M}_t$, on $[0,100]$. We omit the superscript when the trait is clear from context. \\
-$\Delta b_{t+1}$ & $b_{t+1} - b_t$: behaviour change caused by update $t$ \\
-% $\mathrm{SE}(b_t)$ & Standard error of $b_t$ from finite generation sampling \\
-% $\sigma_{\text{seed}}$ & Standard deviation of $b$ across fine-tuning seeds \\
-$\mathbf{v}_{t\leftarrow g}$ & Persona responses generated by $\mathcal{M}_g$ and encoded by $\mathcal{M}_t$ at layer $\ell$ \\
-$\mathbf{h}^{\text{neutral}}_{t\leftarrow s}$ & Mean layer-$\ell$ activation of $\mathcal{M}_t$ over neutral responses generated by $\mathcal{M}_s$ \\
+\multicolumn{2}{@{}l}{\textit{Behaviour}} \\
+$\mathbf{b}_t$ & Behavioural profile: vector of trait scores summarising $\mathcal{M}_t$ \\
+$b^{\text{trait}}_t$ & Behavioural trait score of $\mathcal{M}_t$, on $[0,100]$. We omit the superscript when the trait is clear from context \\
+$\Delta b_{t+1}$ & $b_{t+1} - b_t$: behaviour change caused by update $t$ \\[1.4ex]
+
+\multicolumn{2}{@{}l}{\textit{Activations and persona vectors}} \\
+$\ell$ & Residual-stream layer at which activations are read; $\ell = 20$ throughout \\
+$\bar{\mathbf{h}}^{(\ell)}_t(x,y)$ & Layer-$\ell$ activation of $\mathcal{M}_t$ on the pair $(x,y)$, averaged over the response tokens \\
+$\mathbf{v}_{t\leftarrow g}$ & Persona vector: mean $\bar{\mathbf{h}}^{(\ell)}_t$ over positive minus negative persona responses generated by $\mathcal{M}_g$. We write $\mathbf{v}_0 = \mathbf{v}_{0\leftarrow0}$ \\
+$\widehat{\mathbf{v}}_{a\leftarrow g}$ & $\mathbf{v}_{a\leftarrow g}/\lVert\mathbf{v}_{a\leftarrow g}\rVert$: the persona axis, of unit length \\
+$\mathbf{h}^{\text{neutral}}_{t\leftarrow s}$ & Mean $\bar{\mathbf{h}}^{(\ell)}_t$ over the fixed neutral prompts, answered by $\mathcal{M}_s$ \\[1.4ex]
+
+\multicolumn{2}{@{}l}{\textit{Checkpoint state}} \\
 $p_t^{[s]}$ & $\cos(\mathbf{h}^{\text{neutral}}_{t\leftarrow s},\mathbf{v}_{0\leftarrow0})$: neutral state along the base persona axis \\
 $q_t^{[s,g]}$ & $\cos(\mathbf{h}^{\text{neutral}}_{t\leftarrow s},\mathbf{v}_{t\leftarrow g})$: neutral state along a current persona axis \\
 $\rho_t^{[g]}$ & $\cos(\mathbf{v}_{0\leftarrow0},\mathbf{v}_{t\leftarrow g})$: rotation of the persona axis \\
 $r_t^{[g]}$ & $\lVert\mathbf{v}_{t\leftarrow g}\rVert$: magnitude of the persona contrast \\
-$\mathbf{z}_t^{[s,g]}$ & $(p_t^{[s]},q_t^{[s,g]},\rho_t^{[g]},r_t^{[g]})$: the checkpoint state \\
-$\Delta P_t^{a\leftarrow g,[p]}$ & Projection difference encoded by $\mathcal{M}_t$, using axis $\mathbf{v}_{a\leftarrow g}$ and predicted responses from $\mathcal{M}_p$ \\
-$\Delta P_0$ & $\Delta P_0^{0\leftarrow0,[0]}$: projection difference measured at the initial model \\
-% $N_q$, $n_q$ & Number of eval questions; generations scored for question $q$ \\
-% $R^2_{\max}$, $r_{\max}$ & Noise ceiling on the attainable fit, in $R^2$ and $r$ units \\
+$\mathbf{z}_t^{[s,g]}$ & $(p_t^{[s]},q_t^{[s,g]},\rho_t^{[g]},r_t^{[g]})$: the checkpoint state. We write $\mathbf{z}_t$ when the response sources are clear from context \\
+$s_t$ & The model state given to the recalibration function. We instantiate it as $\mathbf{z}_t^{[s,g]}$, as a subset of its components, or as $b_t$ \\[1.4ex]
+
+\multicolumn{2}{@{}l}{\textit{Projection differences}} \\
+$\mathbf{h}^{\text{target}}_{t}(\mathcal{D})$ & Mean $\bar{\mathbf{h}}^{(\ell)}_t$ over the target responses of dataset $\mathcal{D}$ \\
+$\mathbf{h}^{\text{predicted}}_{t\leftarrow p}(\mathcal{D})$ & Mean $\bar{\mathbf{h}}^{(\ell)}_t$ over the responses $\mathcal{M}_p$ generates for the prompts of $\mathcal{D}$ \\
+$\Delta P_t^{a\leftarrow g,[p]}$ & $(\mathbf{h}^{\text{target}}_{t} - \mathbf{h}^{\text{predicted}}_{t\leftarrow p})^{\!\top}\widehat{\mathbf{v}}_{a\leftarrow g}$: projection difference of a dataset \\
+$\Delta P_0$ & $\Delta P_0^{0\leftarrow0,[0]}$: projection difference measured at the initial model \\[1.4ex]
+
+\multicolumn{2}{@{}l}{\textit{Predictive monitor}} \\
+$f_0$ & Behaviour predictor fitted at $\mathcal{M}_0$: $f_0(\Delta P) = \alpha_0 + \beta_0 \Delta P$ \\
+$\alpha_0,\ \beta_0$ & Intercept and slope of $f_0$, frozen after the initial fit \\
+$c_t$ & Factor rescaling $\beta_0$ at checkpoint $t$; $c^*_t$ is the value that matches the observed behaviour \\
 \end{tabular}
-\caption{Notation used throughout this chapter.}
+\caption{Notation used throughout this chapter. An arrow in a subscript reads \emph{encoder from generator}, and square brackets always enclose a generating checkpoint: in $\Delta P_t^{a\leftarrow g,[p]}$ and $\mathbf{z}_t^{[s,g]}$ the subscript $t$ is the checkpoint that encodes, while every other index names a checkpoint that generated the text.}
 \label{tab:notation}
 \end{table}
 
