@@ -63,9 +63,9 @@ This report is submitted as part requirement for the Machine Learning MSc at UCL
 substantially the result of my own work except where explicitly indicated in the text. The report may be freely copied and distributed provided the source is explicitly acknowledged}
 \\ \\
 MSc in Machine Learning\\ \\
-Hugo Hazard (Huawei's Noah's Ark)\\ 
-Zafeirios Fountas (Huawei's Noah's Ark) \\ 
-Prof Jun Wang (UCL)}
+Hugo Hazard (Huawei's Noah's Ark Lab)\\ 
+Zafeirios Fountas (Huawei's Noah's Ark Lab) \\ 
+Prof Jun Wang (UCL Centre for Artificial Intelligence)}
 
 % \title{  	{ \includegraphics[scale=.5]{ucl_logo.png}}\\
 % {{\Huge Project Title}}\\
@@ -90,11 +90,13 @@ Prof Jun Wang (UCL)}
 \onehalfspacing
 \maketitle
 \begin{abstract}
-    % TODO
-Sequential fine-tuning can make earlier safety evaluations stale. This thesis studies emergent misalignment (EM), in which fine-tuning on examples containing mistakes or insecure code can produce broadly concerning behaviour unrelated to the fine-tuning task. A leading explanation attributes this phenomenon to a shift in the model’s embodied persona from a helpful assistant towards an evil or toxic character. Projection differences, activation-based scores derived from steering vectors representing these personas, can predict the misaligning effect of a supervised dataset, but had previously been evaluated only for single fine-tuning steps.
+Sequential fine-tuning can make earlier safety evaluations stale. This thesis studies emergent misalignment, in which fine-tuning on examples containing mistakes or insecure code can produce broadly concerning behaviour unrelated to the fine-tuning task. A leading explanation attributes this phenomenon to a shift in the model’s embodied persona from a helpful assistant towards an evil or toxic character. Projection differences, activation-based scores derived from steering vectors representing these personas, can predict the misaligning effect of a supervised dataset. Intuitively, this metric measures how a given dataset pulls the model's activation towards this toxic persona. Projection differences, however, have previously been evaluated only with respect to a fixed initial model, leaving it unclear whether they remain reliable as the model undergoes sequential fine-tuning. More broadly, training history may affect not only the reliability of such predictors but also the model's susceptibility to subsequent misaligning updates. This thesis investigates both forms of history dependence.
 
-We evaluate projection differences on Qwen2.5-7B-Instruct across three six-step trajectories using rank-stabilised LoRA, with eight one-step probe datasets at each checkpoint. On the trajectory containing only benign updates, projection differences remained strongly correlated with the subsequent expression of the measured misaligned traits. On one trajectory containing misalignment and realignment updates, however, correlation and forecast accuracy deteriorated sharply for one of the two traits. A linear predictive monitor calibrated on the initial model retained relatively low forecast error and regret throughout the benign trajectory and at most checkpoints on the other two trajectories. Nevertheless, both increased sharply at several checkpoints in the mixed trajectory. State-dependent automatic recalibration improved some forecasts but provided no consistent benefit.
-We also found no evidence that a previously misaligned and subsequently realigned model was more susceptible to later misalignment under the three-step histories tested. Histories containing prior updates generally reduced the effect of the final misaligning dataset compared with applying it directly to the initial model, with prior exposure to the same dataset producing the largest reduction. Overall, these results suggest that projection differences can support predictive monitoring of language models undergoing continual learning, although their reliability depends on the trait and fine-tuning history.
+We evaluate projection differences on Qwen2.5-7B-Instruct across three six-step trajectories using rank-stabilised LoRA, with eight one-step probe datasets at each checkpoint. On the trajectory containing only benign updates, projection differences remained strongly correlated with the subsequent expression of the measured misaligned traits. On one trajectory containing misalignment and realignment updates, however, correlation and forecast accuracy deteriorated sharply for one of the two measured toxic traits. A linear predictive monitor calibrated on the initial model retained relatively low forecast error and regret throughout the benign trajectory and at most checkpoints on the other two trajectories. Nevertheless, both increased sharply at several checkpoints in the two mixed trajectories. State-dependent automatic recalibration improved some forecasts but did not provide a consistent benefit.
+
+We also tested the model on three-step trajectories, all of which ended in the same trait-eliciting dataset $X$, and compared the results with direct training on $X$. We found no evidence that a previously misaligned and subsequently realigned model was more susceptible to later misalignment in this setting. All histories tested reduced the effect of the final misaligning dataset compared with applying it directly to the initial model, with prior exposure to the same dataset producing the largest reduction. 
+
+Overall, these results suggest that projection differences can support predictive monitoring of language models undergoing continual learning, although their reliability depends on the trait studied and the fine-tuning history.
 
 \end{abstract}
 
