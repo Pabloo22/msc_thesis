@@ -7,17 +7,33 @@ Continual-learning LLMs require monitoring methods that help ensure they remain 
 This project addresses this gap in understanding by evaluating the effectiveness of projection differences along persona vectors for predicting evil and sycophancy in Qwen2.5-7B-Instruct during sequential RSLoRA fine-tuning. Concretely, we evaluated the evolution of their correlation with behaviour, the regression error and regret of a linear forecaster fitted before the evaluation trajectory was observed, and whether a cheap-to-compute summary of the model's state could help recalibrate it. Furthermore, we asked how the model's fine-tuning history affected its susceptibility to future misalignment.
 
 \section{Answers to the Research Questions}
-% One tight paragraph per RQ. Each MUST open with a direct answer sentence.
-% RQ1 -> "Largely yes, but not unconditionally."
-% RQ2 -> "Yes, history matters, but in the opposite direction to the one
-%         we expected."
-% Then 3-5 sentences of the load-bearing numbers, cross-referenced back
-% to \Cref{ch:experiments} rather than re-derived.
 
-\section{Implications}
-% What someone building a continual-learning system should now do
-% differently. This is the part that is NOT in your Discussion.
+% RQ1: One direct, carefully scoped answer paragraph.
+% Cover correlation, forecast reliability, refreshed components, and
+% dynamic recalibration qualitatively.
 
-\section{Outlook}
-% 1 short paragraph. Where this line of work goes next -- pointing at,
-% not repeating, the Future Work section of \Cref{ch:discussion}.
+\textbf{RQ1: Projection differences computed from the initial model remained good predictors throughout the short benign trajectory, but not across every trajectory and checkpoint.} Their correlation with next-step behaviour remained high as benign updates accumulated, and the initially calibrated forecaster did not progressively lose accuracy (\Cref{sec:robustness}). In trajectories containing misalignment and realignment updates, however, both correlation and forecast accuracy deteriorated in some model checkpoints. Refreshing the model's answers to the dataset prompts sometimes recovered correlation, whereas refreshing the persona vector provided no consistent benefit. Dynamic recalibration also produced mixed results: it improved some evil forecasts, but the unrecalibrated forecaster remained the best choice for sycophancy. Therefore, an initially calibrated projection-difference forecaster can remain useful during short sequences of benign updates, but its reliability cannot be assumed under arbitrary fine-tuning histories.
+
+
+% RQ2: One direct, carefully scoped answer paragraph.
+% Distinguish the absence of increased susceptibility after prior
+% misalignment from the specific repeated-dataset effect.
+\textbf{RQ2: Previous fine-tuning history influenced future misalignment in specific cases, but prior misalignment did not generally increase the model's susceptibility to it.} Prior history containing a different misalignment dataset yielded similar toxic trait scores to histories containing only normal updates (\Cref{sec:hysteresis}). In contrast, when the model had previously encountered the same final misalignment dataset, repeating it after realignment tended to produce less trait expression. The lower starting loss and gradient norms observed during this repeated update are consistent with the model retaining some of its previous fit to the dataset. However, we did not confirm the mechanism. In short, while training history was not irrelevant, we found no evidence that a previously misaligned and subsequently realigned model was more susceptible to future misalignment.
+
+% One synthesis paragraph connecting the two RQs:
+% representational history persisted, but did not consistently translate
+% into behavioural history or increased future susceptibility.
+
+Taken together, the two experiments suggest that a model's training history, representational state, current behaviour, and future susceptibility are related but distinct. Relevant internal representations continued to drift during benign training and did not generally return to their earlier values when behaviour recovered. However, this drift did not translate into a progressive loss of forecast accuracy or greater susceptibility following realignment. At the same time, prior exposure to the same trait-eliciting dataset attenuated its effect when encountered again, showing that training history was not entirely irrelevant.
+
+\section{Implications and Outlook}
+
+% One paragraph on practical implications for predictive monitoring.
+% Explain what the findings support doing, while avoiding new empirical claims.
+
+% One final paragraph stating the study's scope, identifying the most important
+% next step, and ending with the thesis's overall contribution.
+
+For continual-learning systems, our results suggest that a forecaster calibrated on the initial model can provide an efficient first check of proposed datasets during short sequences dominated by benign updates. However, we also show that its reliability is not guaranteed. If a projection difference is refreshed, regenerating the model's answers appears more promising than re-extracting the persona vector while also being cheaper to compute, as it is independent of the number of traits studied. Likewise, while being a promising future direction, the mixed dynamic-recalibration results do not support yet relying on the low-dimensional model-state summary as an automatic correction across traits.
+
+Overall, although further work is needed to establish how broadly these findings generalise, this thesis shows that projection differences are a promising tool for predictive monitoring of LLMs undergoing continual learning.
