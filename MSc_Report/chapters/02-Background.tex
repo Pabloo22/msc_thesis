@@ -125,7 +125,7 @@ Figure \ref{fig:transformer} represents the entire transformer architecture:
     \item Another crucial layer in the transformer architecture is the normalisation one. Concretely, layer normalisation is applied to stabilise and accelerate training. Instead of normalising each vector using the mean and standard deviation statistics of its batch, layer normalisation computes them from the input vector itself. This is essential when the number of vectors that each batch contains varies over time, as is the case with transformers. Computing the statistics from sequences of different lengths adds instability.
 \end{itemize}
 
-\subsection{Encoder-Only Architectures}
+\subsection{Decoder-Only Architectures}
 
 The original transformer contains an encoder, which processes an input sequence, and a decoder, which generates an output sequence \citep{vaswani2017attention}. This is useful when translating text from French to Spanish, for example. The encoder would process the French sequence in parallel, and the decoder would use those representations to autoregressively generate the Spanish translation. 
 
