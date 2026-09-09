@@ -53,7 +53,7 @@ $\Box$ \end{quotation}}
 %%%%%%%%%%%%%%%%%%%%%%%%%%
 
 \title{  	{ \includegraphics[scale=.5]{ucl_logo.png}}\\
-{{\Huge Predicting Emergent Misalignment in a Sequential Fine-Tuning Setting Via Persona Vectors}}\\
+{{\Huge Predicting Emergent Misalignment in a Sequential Fine-Tuning Setting Via Projection Differences}}\\
 % {\large Optional Subtitle}\\
 		}
 \date{Submission date: Day Month Year}
@@ -91,9 +91,9 @@ Prof Jun Wang (UCL)}
 \maketitle
 \begin{abstract}
     % TODO
-Continual learning, the ability of AI systems to learn in real time from interactions with an environment, yields pre-deployment model's evaluations unreliable. This work focuses on the problem of emergent misalignment (EM), where fine-tuning on examples containing mistakes or insecure code can produce broad concerning behaviour unrelated to the tasks the network was trained on. This phenomenon occurs by a change in the model's embodied persona during conversations from helpful and benign assistant to evil or sycophantic roles.
-
-Steering vectors representing these personas, named ``persona vectors'', have been shown to be a good tool for predicting future misalignment. However, it is still unclear how sequential fine-tuning changes the dynamics of EM and whether these predictive tools can still be applicable in a continual learning setting. This project attempts to answer these questions.
+Sequential fine-tuning can make earlier safety evaluations stale. This thesis studies emergent misalignment (EM), in which fine-tuning on examples containing mistakes or insecure code can produce broadly concerning behaviour unrelated to the fine-tuning task. A leading explanation attributes this phenomenon to a shift in the model’s embodied persona from a helpful assistant towards an evil or toxic character. Projection differences, activation-based scores derived from steering vectors representing these personas, can predict the misaligning effect of a supervised dataset, but had previously been evaluated only for single fine-tuning steps.
+We evaluate projection differences on Qwen2.5-7B-Instruct across three six-step trajectories using rank-stabilised LoRA, with eight one-step probe datasets at each checkpoint. On the trajectory containing only benign updates, projection differences remained strongly correlated with the subsequent expression of the measured misaligned traits. On one trajectory containing misalignment and realignment updates, however, correlation and forecast accuracy deteriorated sharply for one of the two traits. A linear predictive monitor calibrated on the initial model retained relatively low forecast error and regret throughout the benign trajectory and at most checkpoints on the other two trajectories. Nevertheless, both increased sharply at several checkpoints in the mixed trajectory. State-dependent automatic recalibration improved some forecasts but provided no consistent benefit.
+We also found no evidence that a previously misaligned and subsequently realigned model was more susceptible to later misalignment under the three-step histories tested. Histories containing prior updates generally reduced the effect of the final misaligning dataset compared with applying it directly to the initial model, with prior exposure to the same dataset producing the largest reduction. Overall, these results suggest that projection differences can support predictive monitoring of language models undergoing continual learning, although their reliability depends on the trait and fine-tuning history.
 
 \end{abstract}
 
