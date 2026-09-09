@@ -1,7 +1,6 @@
 # Sequential persona-vector prediction
 
-Code for reproducing the thesis experiments on sequential Qwen2.5 LoRA fine-tuning. Persona-vector code is vendored from [`safety-research/persona_vectors`](https://github.com/safety-research/persona_vectors/tree/b8e0f044fe2410a6fad579f38324f03f13b4e917).
-
+Code for reproducing the thesis experiments on sequential Qwen2.5 LoRA fine-tuning. Persona-vector code is vendored from [`safety-research/persona_vectors`](https://github.com/safety-research/persona_vectors/tree/b8e0f044fe2410a6fad579f38324f03f13b4e917). We did not include the [`datasets.zip` file](https://github.com/safety-research/persona_vectors/blob/b8e0f044fe2410a6fad579f38324f03f13b4e917/dataset.zip), however, due to its large size. For the code to run correctly, you may need to download it from the original repository and place it in `method/persona_vectors/`.
 ## Setup
 
 Requires Python 3.12, Poetry and CUDA for real runs.
