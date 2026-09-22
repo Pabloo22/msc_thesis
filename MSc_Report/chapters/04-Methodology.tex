@@ -24,11 +24,7 @@ s_t
 \right).
 \label{eq:forecaster}
 \end{equation}
-
-Importantly, this prediction is made before the update. Therefore, the forecast can be used to decide whether the model should be trained on $\mathcal{D}_t$. This setting presents two main challenges. First, computing the inputs and targets has very different costs. Computing $\boldsymbol{\phi}_t$ requires only forward passes over $\mathcal{D}_t$, whereas obtaining each corresponding behavioural target requires a full fine-tuning run followed by an evaluation of the resulting checkpoint. Second, because collecting these training pairs is expensive, we fit $f$ once at $\mathcal{M}_0$ and reuse the same forecaster at every subsequent checkpoint. \Cref{sec:dynamic-recalibration} investigates whether this initial forecaster remains accurate as the model changes across the trajectory.
-
-Finally, the effect of an update may depend not only on $\mathcal{D}_t$, but also on the updates that preceded it. We therefore investigate whether $b_{t+1}$ and $s_{t+1}$ depend on the order and content of the previous updates.
-
+Importantly, this prediction is made before the update. Therefore, the forecast can be used to decide whether to train the model on $\mathcal{D}_t$. Because collecting training data to fit $f$ at every step can be too expensive, we fit $f$ once at $\mathcal{M}_0$ and reuse the same forecaster at every subsequent checkpoint. \Cref{tab:notation} describes the notation used throughout this project.
 
 \begin{table}[htbp]
 \centering
